@@ -12,12 +12,7 @@
   2. 生成 MCP 查询任务清单（供 AI 在 Claude Code 中批量调用）
   3. 读取 MCP 返回的 JSON 结果，生成标准 DDL 到输出文件
 
-  实际使用流程：
-  Step 1: 运行 python3 batch_query_tables.py "表1 表2" output.sql
-          → 生成 output.sql（头部包含 MCP 查询清单）
-  Step 2: 在 Claude Code 中用 MCP 工具逐表查询，将 JSON 结果贴给 AI
-  Step 3: AI 运行 python3 batch_query_tables.py --build input.json output.sql
-          → 将 JSON 字段信息转为 CREATE TABLE DDL
+  支持数据源：Hive, MySQL, MongoDB
 """
 
 import sys
@@ -26,24 +21,24 @@ import re
 from pathlib import Path
 from datetime import datetime
 
+# 预编译正则
+RE_TABLE_NAME = re.compile(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b')
 
 def extract_tables(text):
     """从文本中提取 库名.表名 格式的表名"""
-    # 匹配 database.table 格式
-    pattern = r'[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*'
-    matches = re.findall(pattern, text)
-    # 过滤掉纯数字前缀（如 0.15）
+    matches = RE_TABLE_NAME.findall(text)
     tables = []
     seen = set()
-    for m in matches:
-        if m not in seen:
-            tables.append(m)
-            seen.add(m)
+    for db, tbl in matches:
+        full = f"{db}.{tbl}"
+        if full not in seen:
+            tables.append(full)
+            seen.add(full)
     return tables
 
 
 def generate_task_list(tables):
-    """生成 MCP 查询任务清单（Markdown 格式）"""
+    """生成 MCP 查询任务清单"""
     lines = [
         "-- ==========================================",
         "-- 批量查表任务清单",
@@ -58,39 +53,43 @@ def generate_task_list(tables):
     for i, table in enumerate(tables, 1):
         db, tbl = table.split('.', 1)
         lines.append(f"-- [{i}/{len(tables)}] {table}")
-        lines.append(f"-- MCP: bdp_hive_table_search keywords='{tbl}' dbName='{db}'")
-        lines.append(f"-- → 获取 tblId 后，再调用 bdp_hive_table_get_detail id='<tblId>'")
+        
+        # 根据库名猜测类型（常见数仓库名通常有后缀或前缀）
+        if 'mysql' in db.lower() or 'rds' in db.lower():
+            lines.append(f"-- Type: MySQL")
+            lines.append(f"-- MCP: bdp_mysql_search keywords='{tbl}' dbName='{db}'")
+            lines.append(f"-- → 获取 id 后，再调用 bdp_mysql_get_detail id='<id>'")
+        elif 'mongo' in db.lower():
+            lines.append(f"-- Type: MongoDB")
+            lines.append(f"-- MCP: bdp_mongodb_search keywords='{tbl}' dbName='{db}'")
+            lines.append(f"-- → 获取 id 后，再调用 bdp_mongodb_get_detail id='<id>'")
+        else:
+            lines.append(f"-- Type: Hive")
+            lines.append(f"-- MCP: bdp_hive_table_search keywords='{tbl}' dbName='{db}'")
+            lines.append(f"-- → 获取 tblId 后，再调用 bdp_hive_table_get_detail id='<tblId>'")
         lines.append("")
     return '\n'.join(lines)
 
 
 def build_ddl_from_mcp_result(data):
-    """
-    从 MCP bdp_hive_table_get_detail 的返回结果生成 CREATE TABLE DDL
-
-    Args:
-        data: MCP 返回的 JSON 中的 data 字段
-
-    Returns:
-        CREATE TABLE DDL 语句
-    """
-    db_name = data.get('dbName', 'unknown')
-    tbl_name = data.get('tblName', 'unknown')
-    comment = data.get('comment', '')
-    store_type = data.get('storeType', 'parquet').lower()
-    column_list = data.get('columnList', [])
-
+    """从 MCP 返回的 JSON 结果生成 DDL"""
+    # 兼容不同数据源的字段名
+    db_name = data.get('dbName') or data.get('database') or 'unknown'
+    tbl_name = data.get('tblName') or data.get('tableName') or data.get('collectionName') or 'unknown'
+    comment = data.get('comment') or data.get('remarks') or ''
+    
+    # 获取列信息（不同源字段名不同）
+    column_list = data.get('columnList') or data.get('columns') or data.get('fields') or []
+    
     # 构建字段定义
     columns = []
     for col in column_list:
-        col_name = col.get('columnName', '')
-        col_type = col.get('columnType', 'string')
-        col_comment = col.get('comment', '')
-        col_comment_cn = col.get('columnNameCN', '')
+        col_name = col.get('columnName') or col.get('name') or col.get('fieldName') or ''
+        col_type = col.get('columnType') or col.get('type') or 'string'
+        col_comment = col.get('comment') or col.get('columnNameCN') or col.get('remarks') or ''
 
-        comment_text = col_comment or col_comment_cn
-        if comment_text:
-            columns.append(f"    `{col_name}` {col_type} COMMENT '{comment_text}'")
+        if col_comment:
+            columns.append(f"    `{col_name}` {col_type} COMMENT '{col_comment}'")
         else:
             columns.append(f"    `{col_name}` {col_type}")
 
@@ -98,37 +97,25 @@ def build_ddl_from_mcp_result(data):
         f"-- {db_name}.{tbl_name}" + (f" ({comment})" if comment else ""),
         f"CREATE TABLE IF NOT EXISTS {db_name}.{tbl_name} (",
         ',\n'.join(columns),
-        ")",
+        ")"
     ]
 
     if comment:
         ddl_lines.append(f"COMMENT '{comment}'")
 
-    ddl_lines.append("PARTITIONED BY (`inc_day` string COMMENT '数据分区日期，格式YYYYMMDD')")
-
-    store_map = {
-        'parquet': 'STORED AS PARQUET',
-        'orc': 'STORED AS ORC',
-        'textfile': 'STORED AS TEXTFILE',
-    }
-    ddl_lines.append(store_map.get(store_type, f"STORED AS {store_type.upper()}"))
+    # 数仓表默认增加分区
+    if 'mysql' not in db_name.lower() and 'mongo' not in db_name.lower():
+        ddl_lines.append("PARTITIONED BY (`inc_day` string COMMENT '数据分区日期，格式YYYYMMDD')")
+        store_type = data.get('storeType', 'parquet').lower()
+        store_map = {'parquet': 'STORED AS PARQUET', 'orc': 'STORED AS ORC', 'textfile': 'STORED AS TEXTFILE'}
+        ddl_lines.append(store_map.get(store_type, f"STORED AS {store_type.upper()}"))
+    
     ddl_lines.append(";")
-
     return '\n'.join(ddl_lines)
 
 
 def build_from_json(json_path, output_path):
-    """
-    从 JSON 文件读取 MCP 返回结果，生成 DDL 到 SQL 文件
-
-    JSON 格式：
-    {
-      "tables": [
-        {"table": "db.table1", "detail": { ... MCP data ... }},
-        {"table": "db.table2", "detail": { ... MCP data ... }}
-      ]
-    }
-    """
+    """从 JSON 文件读取结果并生成 DDL"""
     with open(json_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
@@ -159,14 +146,11 @@ def build_from_json(json_path, output_path):
             try:
                 ddl = build_ddl_from_mcp_result(detail)
                 f.write(f"\n{ddl}\n\n")
-                col_count = len(detail.get('columnList', []))
-                print(f"  [OK] {table_name} ({col_count} fields)")
                 success_count += 1
+                print(f"  [OK] {table_name}")
             except Exception as e:
                 f.write(f"-- TODO: {table_name} - DDL 生成失败：{str(e)}\n\n")
                 failed_count += 1
-
-        f.write(f"-- 统计：成功 {success_count}/{len(tables)}，失败 {failed_count}/{len(tables)}\n")
 
     print(f"\nDDL 已生成到：{output_path}")
     print(f"  成功: {success_count}, 失败: {failed_count}")
@@ -178,45 +162,33 @@ def main():
         print(__doc__)
         return 1
 
-    # 模式 2：从 JSON 构建 DDL
     if sys.argv[1] == '--build':
         if len(sys.argv) < 4:
             print("用法: python3 batch_query_tables.py --build <input.json> <output.sql>")
             return 1
         return build_from_json(sys.argv[2], sys.argv[3])
 
-    # 模式 3：从文件读取表名
     if sys.argv[1] == '--file':
         if len(sys.argv) < 4:
             print("用法: python3 batch_query_tables.py --file <tables.txt> <output.sql>")
             return 1
-        file_path = sys.argv[2]
-        output_path = sys.argv[3]
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(sys.argv[2], 'r', encoding='utf-8') as f:
             content = f.read()
         tables = extract_tables(content)
+        output_path = sys.argv[3]
     else:
-        # 模式 1：命令行直接传表名（空格分隔）
-        tables_input = sys.argv[1]
+        tables = extract_tables(sys.argv[1])
         output_path = sys.argv[2] if len(sys.argv) > 2 else 'tables_ddl.sql'
-        tables = extract_tables(tables_input)
 
     if not tables:
-        print("错误：未找到任何有效的表名（格式：库名.表名）")
+        print("错误：未找到任何有效的表名")
         return 1
 
-    print(f"\n找到 {len(tables)} 张表：")
-    for i, t in enumerate(tables, 1):
-        print(f"  {i}. {t}")
-
-    # 生成任务清单到输出文件
     task_list = generate_task_list(tables)
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(task_list)
+    
     print(f"\n任务清单已生成：{output_path}")
-    print("请在 Claude Code 中按清单顺序查询 MCP，然后将 JSON 结果保存为 tables_detail.json")
-    print("最后运行: python batch_query_tables.py --build tables_detail.json " + output_path)
-
     return 0
 
 

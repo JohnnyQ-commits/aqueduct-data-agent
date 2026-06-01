@@ -21,41 +21,39 @@ import re
 from pathlib import Path
 from datetime import datetime
 
+# 预编译正则表达式以优化性能
+RE_TABLE_NAME = re.compile(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b')
+RE_INSERT_OVERWRITE = re.compile(r'insert\s+overwrite\s+table\s+(\w+\.\w+)', re.IGNORECASE)
+RE_INSERT_INTO = re.compile(r'insert\s+into\s+(\w+\.\w+)', re.IGNORECASE)
+RE_CREATE_TABLE = re.compile(r'create\s+table\s+(?:if\s+not\s+exists\s+)?(\w+\.\w+)', re.IGNORECASE)
+RE_JOIN_KEYWORD = re.compile(r'\b(left\s+join|right\s+join|inner\s+join|full\s+join|join)\b', re.IGNORECASE)
+# 简化别名提取正则，依靠后续关键字过滤
+RE_ALIAS_AS = re.compile(r'\bas\s+([a-zA-Z_]\w*)\b', re.IGNORECASE)
+RE_INC_DAY_FILTER = re.compile(r'\binc_day\s*=\s*[\'"]([^\'"]*)[\'"]', re.IGNORECASE)
+
+# 排除的关键字（在解析字段别名时使用）
+EXCLUDED_KEYWORDS = {'select', 'from', 'where', 'group', 'order', 'having', 'end', 'case', 'when', 'then', 'else', 'as', 'join', 'on', 'limit'}
 
 def extract_tables_from_sql(sql):
     """从 SQL 中提取所有 库.表 格式的表名"""
-    # 库名通常有下划线，且不是简单别名（别名通常1-2个字母）
-    # 匹配模式：至少包含一个下划线的库名 + 点 + 表名
-    pattern = r'([a-zA-Z_][a-zA-Z0-9_]*_[a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*_(?:di|df|hi|ho|d|snap|tmp|_di|_df))\b'
-    matches = re.findall(pattern, sql)
-    # 也匹配更一般的库.表模式，但排除常见别名前缀
+    matches = RE_TABLE_NAME.findall(sql)
     tables = []
     seen = set()
     for db, tbl in matches:
-        full = f'{db}.{tbl}'
-        if full not in seen:
-            tables.append(full)
-            seen.add(full)
+        if len(db) > 1: 
+            full = f'{db}.{tbl}'
+            if full not in seen:
+                tables.append(full)
+                seen.add(full)
     return tables
 
 
 def parse_target_table(sql):
     """解析目标表名（从 INSERT OVERWRITE 或 CREATE TABLE）"""
-    # INSERT OVERWRITE TABLE db.table
-    m = re.search(r'insert\s+overwrite\s+table\s+(\w+\.\w+)', sql, re.IGNORECASE)
-    if m:
-        return m.group(1)
-
-    # INSERT INTO db.table
-    m = re.search(r'insert\s+into\s+(\w+\.\w+)', sql, re.IGNORECASE)
-    if m:
-        return m.group(1)
-
-    # CREATE TABLE db.table
-    m = re.search(r'create\s+table\s+(?:if\s+not\s+exists\s+)?(\w+\.\w+)', sql, re.IGNORECASE)
-    if m:
-        return m.group(1)
-
+    for reg in [RE_INSERT_OVERWRITE, RE_INSERT_INTO, RE_CREATE_TABLE]:
+        m = reg.search(sql)
+        if m:
+            return m.group(1)
     return None
 
 
@@ -63,57 +61,37 @@ def parse_source_tables(sql):
     """解析数据源表及其分区条件"""
     sources = []
     tables = extract_tables_from_sql(sql)
-
     target = parse_target_table(sql)
+    
     # 排除目标表
     if target:
         tables = [t for t in tables if t != target]
 
+    # 优化快照表关键字匹配
+    snapshot_keywords = ['snap', 'snapshot', 'dim_', 'dimension']
+
     for table in tables:
         partition_info = '-'
-
-        # 快照表识别
-        snapshot_keywords = ['snap', 'snapshot', '_dim_', 'dimension', '_dim']
         is_snapshot = any(kw in table.lower() for kw in snapshot_keywords)
 
         if is_snapshot:
             partition_info = '快照表(无分区)'
-            sources.append({
-                'table': table,
-                'partition': partition_info,
-            })
-            continue
-
-        # 检查是否有 inc_day 过滤
-        patterns = [
-            rf'from\s+{re.escape(table)}\b.*?where.*?inc_day\s*=\s*[\'"]([^\']*)[\'"]',
-            rf'{re.escape(table)}.*?where.*?inc_day\s*=\s*[\'"]([^\']*)[\'"]',
-        ]
-
-        has_partition = False
-        for pat in patterns:
-            m = re.search(pat, sql, re.IGNORECASE | re.DOTALL)
-            if m:
-                has_partition = True
-                if m.group(1):
-                    partition_info = m.group(1)
-                else:
-                    partition_info = 'inc_day 有过滤'
-                break
-
-        # 兜底：检查 inc_day 是否出现在该表附近
-        if not has_partition:
+        else:
+            # 在表名附近查找 inc_day 过滤
             table_pos = sql.lower().find(table.lower())
             if table_pos >= 0:
-                context = sql[table_pos:table_pos + 500].lower()
-                if 'inc_day' in context and 'where' in context:
+                # 查找表名后 1000 字符内的 inc_day
+                context = sql[table_pos:table_pos + 1000]
+                m = RE_INC_DAY_FILTER.search(context)
+                if m:
+                    partition_info = m.group(1) or 'inc_day 有过滤'
+                elif 'inc_day' in context.lower():
                     partition_info = 'inc_day 有过滤'
 
         sources.append({
             'table': table,
             'partition': partition_info,
         })
-
     return sources
 
 
@@ -124,57 +102,30 @@ def parse_join_logic(sql):
 
     for i, line in enumerate(lines):
         stripped = line.strip().lower()
-        if not re.search(r'\b(left\s+join|inner\s+join|right\s+join|full\s+join|join)\b', stripped):
+        if not RE_JOIN_KEYWORD.search(stripped):
             continue
 
-        if '(' in stripped and stripped.rstrip().endswith('('):
-            # 子查询 JOIN: left join ( ... ) alias on ...
-            # 向后找 ) alias 和下一行的 on
-            depth = 0
-            for j in range(i, len(lines)):
-                for ch in lines[j]:
-                    if ch == '(':
-                        depth += 1
-                    elif ch == ')':
-                        depth -= 1
-                        if depth == 0:
-                            # 这一行包含 ) alias
-                            end_line = lines[j].strip()
-                            alias_match = re.match(r'\)\s+(\w+)\s*$', end_line)
-                            alias = alias_match.group(1) if alias_match else '?'
-
-                            # 下一行找 on 条件
-                            if j + 1 < len(lines):
-                                on_line = lines[j + 1].strip()
-                                if on_line.lower().startswith('on '):
-                                    condition = on_line[3:].strip()
-                                    joins.append({
-                                        'table': '(subquery)',
-                                        'alias': alias,
-                                        'condition': condition,
-                                    })
-                            break
-                if depth <= 0 and joins and joins[-1]['alias'] != '?':
-                    break
-        else:
-            # 普通 JOIN: join table alias on ...
-            match = re.match(
-                r'(?:left\s+join|inner\s+join|right\s+join|full\s+join|join)\s+(?:table\s+)?(\w+\.\w+|\w+)\s+(\w+)\s*$',
-                stripped
-            )
-            if match:
-                table = match.group(1)
-                alias = match.group(2)
-                # 下一行找 on
-                if i + 1 < len(lines):
-                    on_line = lines[i + 1].strip().lower()
-                    if on_line.startswith('on '):
-                        condition = lines[i + 1].strip()[3:].strip()
-                        joins.append({
-                            'table': table,
-                            'alias': alias,
-                            'condition': condition,
-                        })
+        # 尝试解析普通 JOIN: join table alias on ...
+        # 处理可能的换行情况
+        current_context = ' '.join([l.strip() for l in lines[i:i+3]])
+        match = re.search(
+            r'\b(?:left\s+join|inner\s+join|right\s+join|full\s+join|join)\s+(\w+\.\w+|\w+)\s+(\w+)\s+on\s+(.+?)(?:\s+(?:left|inner|right|full|join|where|group|order|limit)|$)',
+            current_context,
+            re.IGNORECASE
+        )
+        if match:
+            joins.append({
+                'table': match.group(1),
+                'alias': match.group(2),
+                'condition': match.group(3).strip(),
+            })
+        elif '(' in stripped:
+            # 简单标记子查询 JOIN
+            joins.append({
+                'table': '(subquery)',
+                'alias': 'alias',
+                'condition': 'see SQL',
+            })
 
     return joins
 
@@ -184,16 +135,12 @@ def parse_field_list_from_sql(sql):
     fields = []
     seen = set()
 
-    # 找所有 as xxx 的别名
-    alias_pattern = r'as\s+([a-zA-Z_]\w*)\s*(?:,|$|\n)'
-
-    for m in re.finditer(alias_pattern, sql, re.IGNORECASE):
+    for m in RE_ALIAS_AS.finditer(sql):
         field_name = m.group(1)
-        if field_name.lower() not in ('select', 'from', 'where', 'group', 'order', 'having', 'end', 'case', 'when', 'then', 'else', 'as'):
+        if field_name.lower() not in EXCLUDED_KEYWORDS:
             if field_name not in seen:
                 fields.append(field_name)
                 seen.add(field_name)
-
     return fields
 
 
@@ -218,45 +165,38 @@ def generate_design(sql_file, requirement_name=None, output_path=None):
     join_logic = parse_join_logic(sql)
     all_tables = extract_tables_from_sql(sql)
 
-    # 构建文档（Markdown 格式）
-    lines = []
-    lines.append(f'# {requirement_name} - 设计文档')
-    lines.append('')
-    lines.append(f'> 自动生成时间: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
-    lines.append(f'> 数据来源: {path.name}')
-    lines.append('')
-    lines.append('<!-- 以下部分需手动确认 -->')
-    lines.append('')
-
-    lines.append('## 一、需求概述')
-    lines.append('')
-    lines.append('- **需求目标**: [请补充]')
-    lines.append('- **业务背景**: [请补充]')
-    lines.append('')
-
-    lines.append('## 二、取数逻辑')
-    lines.append('')
-    lines.append('[请根据 SQL 补充具体取数逻辑]')
-    lines.append('')
-
-    lines.append('## 三、映射关系')
-    lines.append('')
-    lines.append('[请补充各维度映射关系]')
-    lines.append('')
-
-    lines.append('<!-- 以下部分自动生成 -->')
-    lines.append('')
-
-    lines.append('## 四、目标表结构')
-    lines.append('')
-    if target_table:
-        lines.append(f'- **表名**: `{target_table}`')
-    else:
-        lines.append('- **表名**: [未检测到目标表，请手动指定]')
-    lines.append('- **分区**: `inc_day` string (格式 `YYYYMMDD`)')
-    lines.append('')
-    lines.append('| 字段名 | 类型 | 注释 |')
-    lines.append('|--------|------|------|')
+    # 构建文档
+    lines = [
+        f'# {requirement_name} - 设计文档',
+        '',
+        f'> 自动生成时间: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}',
+        f'> 数据来源: {path.name}',
+        '',
+        '<!-- 以下部分需手动确认 -->',
+        '',
+        '## 一、需求概述',
+        '',
+        '- **需求目标**: [请补充]',
+        '- **业务背景**: [请补充]',
+        '',
+        '## 二、取数逻辑',
+        '',
+        '[请根据 SQL 补充具体取数逻辑]',
+        '',
+        '## 三、映射关系',
+        '',
+        '[请补充各维度映射关系]',
+        '',
+        '<!-- 以下部分自动生成 -->',
+        '',
+        '## 四、目标表结构',
+        '',
+        f'- **表名**: `{target_table or "[未检测到目标表]"}`',
+        '- **分区**: `inc_day` string (格式 `YYYYMMDD`)',
+        '',
+        '| 字段名 | 类型 | 注释 |',
+        '|--------|------|------|'
+    ]
 
     fields = parse_field_list_from_sql(sql)
     if fields:
@@ -264,8 +204,8 @@ def generate_design(sql_file, requirement_name=None, output_path=None):
             lines.append(f'| {f} | string | [请补充注释] |')
     else:
         lines.append('| [请从 SQL 中提取或手动补充] | | |')
-    lines.append('')
 
+    lines.append('')
     lines.append('## 五、数据来源与关联关系')
     lines.append('')
     for i, src in enumerate(source_tables, 1):
@@ -283,8 +223,8 @@ def generate_design(sql_file, requirement_name=None, output_path=None):
             lines.append(f'| {j["table"]} | {j["alias"]} | {j["condition"]} |')
     else:
         lines.append('**关联方式**: [请根据 SQL 补充]')
-    lines.append('')
 
+    lines.append('')
     lines.append('## 六、调度配置')
     lines.append('')
     lines.append('- **调度频率**: 每天一次 (T+1)')
@@ -292,12 +232,10 @@ def generate_design(sql_file, requirement_name=None, output_path=None):
     lines.append('- **分区变量**: `inc_day = $[time(yyyyMMdd,-1d)]`')
     lines.append('- **失败策略**: 告警通知 + 重试')
     lines.append('')
-
     lines.append('## 七、数据质量保障')
     lines.append('')
     lines.append('详见 `数据质量测试.sql`')
     lines.append('')
-
     lines.append('## 八、上下游依赖')
     lines.append('')
     lines.append('**上游**:')
@@ -315,7 +253,6 @@ def generate_design(sql_file, requirement_name=None, output_path=None):
     lines.append('**下游**:')
     lines.append('- [请补充下游应用/报表]')
     lines.append('')
-
     lines.append('## 九、文件清单')
     lines.append('')
     lines.append('| 文件 | 用途 |')
@@ -326,15 +263,10 @@ def generate_design(sql_file, requirement_name=None, output_path=None):
     lines.append('| Design.md | 本设计文档 |')
     lines.append('')
 
-    # 写入文件
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write('\n'.join(lines))
 
     print(f"设计文档已生成: {output_path}")
-    print(f"  目标表: {target_table or '未检测到'}")
-    print(f"  数据源: {len(source_tables)} 张表")
-    print(f"  关联逻辑: {len(join_logic)} 条")
-    print(f"  需手动确认部分: 需求概述、取数逻辑、映射关系")
     return 0
 
 

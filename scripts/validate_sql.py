@@ -29,6 +29,27 @@ class Colors:
     BOLD = '\033[1m'
     RESET = '\033[0m'
 
+# 预编译正则表达式以优化性能
+RE_SELECT_STAR = re.compile(r'\bselect\s+\*', re.IGNORECASE)
+RE_UNION = re.compile(r'\bunion\s+all\b|\bunion\b', re.IGNORECASE)
+RE_COMMENT = re.compile(r'^\s*--')
+RE_WHERE = re.compile(r'\bwhere\b', re.IGNORECASE)
+RE_DIVISION = re.compile(r'[a-zA-Z0-9_)]\s*/\s*[a-zA-Z0-9_(]')
+RE_DIV_PROTECT = re.compile(r'(nvl|if|coalesce|case).*?/.*?(nvl|if|coalesce|case)', re.IGNORECASE)
+RE_WHEN_ZERO = re.compile(r'when\s+.+?>\s*0', re.IGNORECASE)
+RE_JOIN = re.compile(r'\b(left\s+join|right\s+join|inner\s+join|full\s+join|join)\b', re.IGNORECASE)
+RE_ON = re.compile(r'\bon\b', re.IGNORECASE)
+RE_SUBQUERY_ALIAS = re.compile(r'^\)\s*\w+')
+RE_SUM_NVL = re.compile(r'\bSUM\s*\(\s*(nvl|coalesce|case)', re.IGNORECASE)
+RE_SUM_RAW = re.compile(r'\bSUM\s*\(\s*[a-zA-Z_]', re.IGNORECASE)
+
+# 分区字段正则列表
+PARTITION_PATTERNS = [
+    re.compile(r'\binc_day\s*(=|in|between)', re.IGNORECASE),
+    re.compile(r'\bday\s*(=|in|between)', re.IGNORECASE),
+    re.compile(r'\bdata_day\s*(=|in|between)', re.IGNORECASE),
+]
+
 def error(msg, line_num=None):
     prefix = f"  Line {line_num}: " if line_num else "  "
     print(f"  {Colors.RED}[ERROR]{Colors.RESET}{prefix}{msg}")
@@ -45,17 +66,14 @@ def check_select_star(sql, lines):
     """检查 1: 禁止 SELECT * (UNION ALL 合并场景除外)"""
     found = False
     for i, line in enumerate(lines, 1):
-        stripped = line.strip().lower()
-        # 跳过注释行
-        if stripped.startswith('--'):
+        if RE_COMMENT.match(line):
             continue
-        if re.search(r'\bselect\s+\*', stripped, re.IGNORECASE):
-            # UNION ALL 场景下 select * 是允许的（合并相同结构的表）
-            # 检查上下几行是否有 union all
+        if RE_SELECT_STAR.search(line):
+            # 检查上下文是否有 union
             context_start = max(0, i - 3)
             context_end = min(len(lines), i + 2)
-            context = ' '.join(l.strip().lower() for l in lines[context_start:context_end])
-            if 'union all' in context or 'union' in context:
+            context = ' '.join(lines[context_start:context_end])
+            if RE_UNION.search(context):
                 continue
             error("使用了 SELECT *，必须显式列出字段", i)
             found = True
@@ -66,23 +84,17 @@ def check_partition_filter(sql, lines):
     """检查 2: 分区过滤"""
     has_where = False
     has_partition = False
-    # 分区字段关键字
-    partition_patterns = [
-        r'inc_day\s*=',
-        r'inc_day\s+in\s*\(',
-        r'\bday\s*=',
-        r'data_day\s*=',
-    ]
 
     for i, line in enumerate(lines, 1):
-        stripped = line.strip().lower()
-        if stripped.startswith('--'):
+        if RE_COMMENT.match(line):
             continue
-        if 'where' in stripped:
+        if RE_WHERE.search(line):
             has_where = True
-            for pat in partition_patterns:
-                if re.search(pat, stripped):
-                    has_partition = True
+        
+        for pat in PARTITION_PATTERNS:
+            if pat.search(line):
+                has_partition = True
+                break
 
     if has_where and not has_partition:
         warn("WHERE 条件中未找到分区字段过滤 (inc_day/day/data_day)")
@@ -93,34 +105,27 @@ def check_partition_filter(sql, lines):
 def check_keyword_case(sql, lines):
     """检查 3: 关键字大写警告"""
     found = False
+    line_start_keywords = [
+        'select', 'from', 'where', 'group by', 'having', 'order by',
+        'left join', 'right join', 'inner join', 'full join', 'join',
+        'union all', 'union', 'insert', 'insert overwrite',
+        'create table', 'drop table', 'with',
+    ]
 
     for i, line in enumerate(lines, 1):
         stripped = line.strip()
-        if stripped.startswith('--'):
+        if not stripped or RE_COMMENT.match(line):
             continue
 
-        # 只检查行首的关键字（最常见的违规场景）
         line_lower = stripped.lower()
-        line_upper = stripped.upper()
-
-        # 行首关键字列表
-        line_start_keywords = [
-            'select', 'from', 'where', 'group by', 'having', 'order by',
-            'left join', 'right join', 'inner join', 'full join', 'join',
-            'union all', 'union', 'insert', 'insert overwrite',
-            'create table', 'drop table', 'with',
-        ]
-
         for kw in line_start_keywords:
             if line_lower.startswith(kw):
-                # 检查原始行是否也是小写开头
-                if not stripped.lower().startswith(kw) or stripped[:len(kw)] != stripped[:len(kw)].lower():
-                    # 原始行首字母是大写
-                    if stripped[:len(kw)] != stripped[:len(kw)].lower():
-                        warn(f"关键字应全小写：{kw}", i)
-                        found = True
-                        break
-
+                # 检查实际内容是否包含大写
+                actual_kw = stripped[:len(kw)]
+                if actual_kw != actual_kw.lower():
+                    warn(f"关键字应全小写：{actual_kw}", i)
+                    found = True
+                    break
     return found
 
 
@@ -128,19 +133,13 @@ def check_division(sql, lines):
     """检查 4: 除法未判空判零"""
     found = False
     for i, line in enumerate(lines, 1):
-        stripped = line.strip()
-        if stripped.startswith('--'):
+        if RE_COMMENT.match(line):
             continue
-        # 查找除法运算符 /
-        if re.search(r'[a-zA-Z0-9_)]\s*/\s*[a-zA-Z0-9_(]', stripped):
-            # 检查是否有 NVL/IF/coalesce 保护
-            if re.search(r'(nvl|if|coalesce|case).*?/.*?(nvl|if|coalesce|case)', stripped, re.IGNORECASE):
+        if RE_DIVISION.search(line):
+            if RE_DIV_PROTECT.search(line):
                 continue
-            # 检查上一行是否有判零条件 (when ... > 0)
-            if i > 1:
-                prev_line = lines[i - 2].strip().lower()
-                if re.search(r'when\s+.+?>\s*0', prev_line):
-                    continue
+            if i > 1 and RE_WHEN_ZERO.search(lines[i-2]):
+                continue
             warn("除法未做判空判零处理", i)
             found = True
     return found
@@ -150,45 +149,25 @@ def check_join_without_on(sql, lines):
     """检查 5: JOIN 未指定关联条件"""
     found = False
     for i, line in enumerate(lines, 1):
-        stripped = line.strip().lower()
-        if stripped.startswith('--'):
+        if RE_COMMENT.match(line):
             continue
-        if re.search(r'\b(left\s+join|right\s+join|inner\s+join|full\s+join|join)\b', stripped):
-            # 同一行有 on 则跳过
-            if ' on ' in stripped or stripped.startswith('on '):
+        if RE_JOIN.search(line):
+            if RE_ON.search(line):
                 continue
-            # 判断是否为子查询 JOIN (行尾有 `(`)
-            is_subquery = stripped.rstrip().endswith('(')
-
-            if is_subquery:
-                # 子查询: 找 ) 后面跟 on 的行
-                found_on = False
-                for j in range(i, min(i + 20, len(lines))):
-                    next_stripped = lines[j].strip().lower()
-                    # 匹配 ") alias" 格式的行
-                    if re.match(r'^\)\s*\w+', next_stripped):
-                        # 检查下一行是否是 on
-                        if j + 1 < len(lines):
-                            after_alias = lines[j + 1].strip().lower()
-                            if ' on ' in after_alias or after_alias.startswith('on '):
-                                found_on = True
-                        break
-                    # 如果看到另一个 JOIN，说明真的没有 ON
-                    if re.match(r'^(left|right|inner|full|cross)\s+join\b', next_stripped):
-                        break
-            else:
-                # 非子查询 JOIN: 简单向后查找 on
-                found_on = False
-                for j in range(i, min(i + 3, len(lines))):
-                    next_stripped = lines[j].strip().lower()
-                    if ' on ' in next_stripped or next_stripped.startswith('on '):
-                        found_on = True
-                        break
-
-            if found_on:
-                continue
-            warn(f"JOIN 语句缺少 ON 条件", i)
-            found = True
+            
+            # 向下搜索 ON 条件，直到遇到下一个 JOIN 或语句结束
+            found_on = False
+            for j in range(i, min(i + 10, len(lines))):
+                next_line = lines[j]
+                if RE_ON.search(next_line):
+                    found_on = True
+                    break
+                if RE_JOIN.search(next_line) and j > i: # 遇到下一个 JOIN 还没找到 ON
+                    break
+            
+            if not found_on:
+                warn(f"JOIN 语句缺少 ON 条件", i)
+                found = True
     return found
 
 
@@ -196,15 +175,10 @@ def check_nvl(sql, lines):
     """检查 6: 数值字段未做 NVL 处理"""
     found = False
     for i, line in enumerate(lines, 1):
-        stripped = line.strip()
-        if stripped.startswith('--'):
+        if RE_COMMENT.match(line):
             continue
-        # SUM(字段) 但没有 NVL 或 case 包裹
-        # SUM(case when...) 是允许的，因为 case 已经处理了空值
-        if re.search(r'\bSUM\s*\(\s*[a-zA-Z_]', stripped, re.IGNORECASE):
-            if re.search(r'\bSUM\s*\(\s*case', stripped, re.IGNORECASE):
-                continue  # SUM(case when...) 是允许的
-            if not re.search(r'\bSUM\s*\(\s*(nvl|coalesce)', stripped, re.IGNORECASE):
+        if RE_SUM_RAW.search(line):
+            if not RE_SUM_NVL.search(line):
                 warn("SUM 聚合未使用 NVL 处理空值", i)
                 found = True
     return found
@@ -215,24 +189,14 @@ def check_strict(sql, lines, strict=False):
     if not strict:
         return
 
-    found = False
-    # 检查子查询是否有别名
-    for i, line in enumerate(lines, 1):
-        stripped = line.strip()
-        if stripped.startswith('--'):
-            continue
-        if re.search(r'\)\s*$', stripped) and i > 1:
-            next_line = lines[i].strip() if i < len(lines) else ''
-            # 子查询结束后应该紧跟别名
-            if not re.search(r'^\s*[a-zA-Z_]', next_line) and not re.search(r'^\s*[a-zA-Z_]', stripped):
-                pass  # 复杂判断，跳过
-
-    # 检查是否有冗余的 LEFT JOIN（可以改为 INNER JOIN）
-    # 这个需要语义理解，跳过
-
     # 检查文件末尾是否有分号
-    last_line = lines[-1].strip() if lines else ''
-    if last_line and not last_line.endswith(';') and not last_line.startswith('--'):
+    last_content_line = None
+    for line in reversed(lines):
+        if line.strip() and not RE_COMMENT.match(line):
+            last_content_line = line.strip()
+            break
+    
+    if last_content_line and not last_content_line.endswith(';'):
         warn("文件末尾语句缺少分号")
 
 
@@ -265,8 +229,11 @@ def validate_file(filepath, strict=False):
     for name, check_fn in checks:
         result = check_fn()
         if result:
-            error_count += 1 if name.startswith("SELECT") else 0
-            warn_count += 1
+            # 只有 SELECT * 是 ERROR，其他是 WARN
+            if "SELECT *" in name:
+                error_count += 1
+            else:
+                warn_count += 1
 
     if strict:
         check_strict(content, lines, strict=True)

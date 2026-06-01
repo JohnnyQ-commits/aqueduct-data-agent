@@ -1,5 +1,10 @@
 # 数据开发 Agent
 
+[![Python Tests](https://github.com/JohnnyQ-commits/Data-agent/actions/workflows/python-tests.yml/badge.svg)](https://github.com/JohnnyQ-commits/Data-agent/actions)
+![Python Version](https://img.shields.io/badge/python-3.8%2B-blue)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Build](https://img.shields.io/badge/build-passing-brightgreen)
+
 数据仓库 SQL 开发自动化 Agent，覆盖从需求到上线的完整开发流程。
 
 ## 工作模式
