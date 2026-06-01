@@ -1,0 +1,91 @@
+{
+  "domain_id": "courier_compliance",
+  "name": "骑手工服合规检查",
+  "version": "1.1.0",
+  "description": "关注一线在职员工的排班、归属网点、资源池/资源标签等合规性检查",
+  "metadata": {
+    "owner": "Data Team",
+    "update_frequency": "Daily"
+  },
+  "entities": {
+    "Employee": {
+      "primary_key": "emp_code",
+      "source": "dw_demo.dim_emp_info",
+      "attributes": [
+        { "name": "emp_code", "type": "string", "description": "员工编码" },
+        { "name": "emp_name", "type": "string", "description": "员工姓名" },
+        { "name": "emp_source", "type": "string", "description": "员工来源系统" },
+        { "name": "position_attribute", "type": "string", "description": "岗位属性，如'一线'" },
+        { "name": "peak", "type": "string", "description": "是否高峰期用工" },
+        { "name": "employ_status", "type": "string", "description": "在职状态" }
+      ],
+      "filters": ["position_attribute = '一线'", "employ_status = '在职'"],
+      "description": "员工实体, 仅关注一线且在职的员工"
+    },
+    "CourierDeptAssignment": {
+      "source": "dw_demo.dim_rider_org_info",
+      "attributes": [
+        { "name": "login_id", "type": "string", "description": "登录ID" },
+        { "name": "org_dept_code", "type": "string", "description": "归属机构编码" }
+      ],
+      "description": "骑手与网点的归属关系表"
+    },
+    "Department": {
+      "primary_key": "dept_code",
+      "source": "dw_demo.dim_department_org_info",
+      "attributes": [
+        { "name": "dept_code", "type": "string", "description": "网点编码" },
+        { "name": "area_code", "type": "string", "description": "地区编码" }
+      ],
+      "description": "智域网点实体"
+    }
+  },
+  "derived_attributes": {
+    "ResourcePool": {
+      "logic": "CASE WHEN resource_flag IN ('自有全职', '自有非全') THEN '自有' ELSE resource_flag END",
+      "values": ["自有", "同城骑手", "乡镇合伙人", "城市合伙人"],
+      "description": "资源池是业务聚合概念"
+    },
+    "ResourceFlag": {
+      "logic": "根据 emp_source, peak, emp_group_txt 等字段组合派生",
+      "description": "资源标签细分"
+    }
+  },
+  "events": {
+    "ScheduleEvent": {
+      "source": "dw_demo.dm_schedule_record_dtl_di",
+      "key_fields": ["emp_code", "inc_day"],
+      "measure_fields": ["on_duty_status"],
+      "description": "排班事件，1为上班，0为轮休"
+    }
+  },
+  "relationships": [
+    {
+      "from": "Employee",
+      "to": "ScheduleEvent",
+      "join_type": "INNER JOIN",
+      "condition": "Employee.emp_code = ScheduleEvent.emp_code",
+      "description": "关联排班信息过滤上班员工"
+    },
+    {
+      "from": "Employee",
+      "to": "CourierDeptAssignment",
+      "join_type": "LEFT JOIN",
+      "condition": "lpad(Employee.emp_code, 8, '0') = lpad(CourierDeptAssignment.login_id, 8, '0')",
+      "description": "关联网点归属，需对齐工号长度"
+    }
+  ],
+  "metrics": {
+    "active_couriers": {
+      "name": "排班上班骑手数",
+      "expression": "COUNT(DISTINCT emp_code)",
+      "filter": "on_duty_status = '1'",
+      "unit": "人"
+    },
+    "coverage_count": {
+      "name": "合规检查覆盖人数",
+      "expression": "COUNT(DISTINCT emp_code)",
+      "unit": "人"
+    }
+  }
+}

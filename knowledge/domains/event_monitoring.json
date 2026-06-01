@@ -1,0 +1,31 @@
+{
+  "domain_id": "event_monitoring",
+  "name": "场景监控-重点事件",
+  "version": "1.0.0",
+  "description": "演唱会、短期出行、地区节假日等重点场景监控",
+  "entities": {
+    "Event": {
+      "primary_key": "id",
+      "attributes": [
+        { "name": "event_type", "type": "string", "description": "0:演唱会, 1:短期出行, 2:节假日" },
+        { "name": "event_name", "type": "string", "description": "事件名称" },
+        { "name": "event_level", "type": "string", "description": "S/A+/A/B" }
+      ]
+    },
+    "AOI": {
+      "primary_key": "aoi_id",
+      "source": "dw_demo.dim_area_zone_info",
+      "attributes": [
+        { "name": "aoi_id", "type": "string" },
+        { "name": "dept_code", "type": "string" }
+      ]
+    }
+  },
+  "metrics": {
+    "event_count": {
+      "name": "活跃事件数",
+      "expression": "COUNT(DISTINCT id)",
+      "filter": "event_status = '1'"
+    }
+  }
+}
