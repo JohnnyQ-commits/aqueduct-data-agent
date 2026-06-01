@@ -57,7 +57,8 @@
 
 ### Phase 6: 交付与沉淀 (Delivery & Knowledge Capture)
 1. **完善文档**：更新 [design.md](file:///e:/data-agent/templates/design.md) 并生成 [report.md](file:///e:/data-agent/templates/report.md) 交付总报告。
-2. **知识归档**：主动询问并更新 [semantic-model.json](file:///e:/data-agent/knowledge/semantic-model.json)（新业务域）及 [AGENT.md](file:///e:/data-agent/AGENT.md)（新约定）。
+2. **知识归档**：主动询问并更新 [semantic-model.json](file:///e:/data-agent/knowledge/semantic-model.json)。
+3. **文档同步**：更新 JSON 后必须运行 `python scripts/gen_semantic_doc.py` 同步生成 [semantic-model.md](file:///e:/data-agent/knowledge/semantic-model.md)，确保人工可审计。
 
 ---
 
