@@ -1,0 +1,235 @@
+[
+  {
+    "domain": "骑手工服合规检查",
+    "version": "1.1.0",
+    "description": "骑手工服合规检查业务域，关注一线在职员工的排班、归属网点、资源池/资源标签等",
+    "entities": {
+      "Employee": {
+        "primary_key": "emp_code",
+        "attributes": ["emp_name", "emp_source", "position_attribute", "peak", "emp_group_name", "employ_status"],
+        "description": "员工实体,仅关注一线且在职的员工"
+      },
+      "CourierDeptAssignment": {
+        "source": "dw_demo.dim_rider_org_info",
+        "attributes": ["login_id", "org_dept_code"],
+        "description": "骑手与网点的归属关系表,dept_code来源此表而非排班表"
+      },
+      "Department": {
+        "primary_key": "dept_code",
+        "source": "dw_demo.dim_department_org_info",
+        "attributes": ["area_code"],
+        "description": "智域网点,通过网点编码关联地区"
+      },
+      "ResourcePool": {
+        "type": "derived",
+        "values": ["自有", "同城骑手", "乡镇合伙人", "城市合伙人"],
+        "description": "资源池是业务聚合概念,由员工属性派生"
+      },
+      "ResourceFlag": {
+        "type": "derived",
+        "values": ["自有全职", "自有非全", "同城骑手", "乡镇合伙人", "城市合伙人"],
+        "description": "资源标签,由emp_source/peak/emp_group_txt等字段组合派生"
+      },
+      "Area": {
+        "primary_key": "area_code",
+        "description": "地区,本域仅关注35个目标地区"
+      }
+    },
+    "events": {
+      "schedule": {
+        "source": "dw_demo.dm_schedule_record_dtl_di",
+        "participants": ["Employee"],
+        "attributes": {
+          "on_duty_status": {
+            "1": "上班",
+            "0": "轮休"
+          }
+        },
+        "description": "排班事件,记录员工在某天的排班状态(上班/轮休),不提供网点信息"
+      },
+      "inspection": {
+        "trigger": "schedule.on_duty_status=1 AND 属于目标资源池 AND 属于目标地区",
+        "output": "dw_demo.dm_ads_emp_uniform_inspection_di",
+        "frequency": "T+1 daily",
+        "description": "工服合规检查事件,每天对排班上班的骑手进行快照"
+      }
+    },
+    "relationships": [
+      {
+        "name": "scheduled_to_work",
+        "from": "Employee",
+        "to": "ScheduleRecord",
+        "cardinality": "1:N",
+        "join": "e.emp_code = r.emp_code",
+        "type": "INNER JOIN",
+        "note": "排班表仅用于过滤上班骑手"
+      },
+      {
+        "name": "assigned_to_dept",
+        "from": "Employee",
+        "to": "CourierDeptAssignment",
+        "cardinality": "1:N",
+        "join": "lpad(emp_code,8,'0') = lpad(login_id,8,'0')",
+        "type": "LEFT JOIN",
+        "note": "需lpad补齐8位前补零,dept_code来自此表的org_dept_code"
+      },
+      {
+        "name": "dept_to_area",
+        "from": "Department",
+        "to": "Area",
+        "cardinality": "N:1",
+        "join": "c.dept_code = f.dept_code",
+        "type": "LEFT JOIN"
+      }
+    ],
+    "metrics": {
+      "atomic": {
+        "排班上班骑手数": "COUNT(DISTINCT emp_code WHERE on_duty_status=1)",
+        "合规检查覆盖人数": "COUNT(DISTINCT emp_code)",
+        "网点排班骑手数": "COUNT(DISTINCT emp_code) GROUP BY dept_code",
+        "地区排班骑手数": "COUNT(DISTINCT emp_code) GROUP BY area_code"
+      },
+      "derived": {
+        "各资源池骑手分布": "GROUP BY resource_pool_type",
+        "各资源标签骑手分布": "GROUP BY resource_flag",
+        "多网点骑手数": "COUNT(emp_code WHERE 不同网点归属数>1)",
+        "环比波动率": "(今日-昨日)/昨日"
+      }
+    },
+    "rules": {
+      "resource_flag": [
+        {"condition": "HR & peak=否 & 全日制用工", "result": "自有全职"},
+        {"condition": "HR & peak=否 & 非全日制用工", "result": "自有非全"},
+        {"condition": "OA & position_txt=delivery", "result": "同城骑手"},
+        {"condition": "OA & bus_mode=422-区域代理", "result": "乡镇合伙人"},
+        {"condition": "OA & bus_mode=414-标准收派", "result": "城市合伙人"}
+      ],
+      "resource_pool": [
+        {"condition": "自有全职 OR 自有非全", "result": "自有"},
+        {"condition": "同城骑手", "result": "同城骑手"},
+        {"condition": "乡镇合伙人", "result": "乡镇合伙人"},
+        {"condition": "城市合伙人", "result": "城市合伙人"}
+      ],
+      "filters": [
+        "position_attribute = '一线'",
+        "employ_status = '在职'",
+        "area_code IN (35个目标地区)",
+        "on_duty_status = 1"
+      ],
+      "emp_code_alignment": [
+        {"source": "员工表", "field": "emp_code", "transform": "lpad(emp_code,8,'0')"},
+        {"source": "骑手网点归属表", "field": "login_id", "transform": "lpad(login_id,8,'0')"},
+        {"source": "排班表", "field": "emp_code", "transform": "直接匹配(无需补齐)"}
+      ]
+    },
+    "uniqueness": {
+      "output_table": "emp_code + dept_code 唯一"
+    }
+  },
+  {
+    "domain": "场景监控-重点事件",
+    "version": "1.0.0",
+    "description": "演唱会/短期出行胜地/地区节假日场景监控业务域",
+    "entities": {
+      "Event": {
+        "primary_key": "id",
+        "attributes": ["event_type", "event_name", "event_level", "event_start_date", "event_end_date", "event_status"],
+        "description": "重点事件(演唱会/短期出行胜地/地区节假日)"
+      },
+      "Department": {
+        "primary_key": "dept_code",
+        "source": "dm_predict.dim_department_snap",
+        "attributes": ["dept_name", "dept_type_name", "dept_type_code", "city_code", "city_name", "area_code", "area_name"],
+        "description": "网点维度快照表,包含所有网点信息"
+      },
+      "AOI": {
+        "primary_key": "aoi_id",
+        "source": "dw_demo.dim_area_zone_info",
+        "attributes": ["aoi_name", "dept_code", "dept_name", "city_code", "city_name", "area_code", "area_name"],
+        "description": "AOI维度表,AOI与网点/城市/地区的映射关系"
+      },
+      "Area": {
+        "primary_key": "area_code",
+        "description": "地区维度"
+      }
+    },
+    "events": {},
+    "relationships": [
+      {
+        "name": "event_to_aoi",
+        "from": "Event",
+        "to": "AOI",
+        "cardinality": "1:N",
+        "join": "t.aoi_code = a.aoi_id",
+        "type": "LEFT JOIN",
+        "note": "演唱会和短期出行胜地通过AOI编码关联"
+      },
+      {
+        "name": "holiday_to_dept",
+        "from": "Event",
+        "to": "Department",
+        "cardinality": "1:N",
+        "join": "h.city_name = d.city_name",
+        "type": "INNER JOIN",
+        "note": "地区节假日通过城市名匹配该城市下所有WBD/DLD网点"
+      },
+      {
+        "name": "dept_to_area",
+        "from": "Department",
+        "to": "Area",
+        "cardinality": "N:1",
+        "join": "d.area_code = a.area_code",
+        "type": "LEFT JOIN",
+        "note": "通过地区编码关联地区信息"
+      }
+    ],
+    "metrics": {
+      "atomic": {
+        "事件数": "COUNT(DISTINCT event_id)",
+        "网点数": "COUNT(DISTINCT dept_code)",
+        "AOI数": "COUNT(DISTINCT aoi_code)"
+      },
+      "derived": {
+        "事件级别": "根据客诉同比计算:S(>200%且去年客诉>=5)/A+(150-200%)/A(100-150%)/B(其余)",
+        "事件状态": "根据当前时间与事件起止日期比较:待开始/进行中/已结束",
+        "数据量波动率": "(今日记录数-昨日记录数)/昨日记录数"
+      }
+    },
+    "rules": {
+      "event_type": [
+        {"value": "0", "label": "演唱会"},
+        {"value": "1", "label": "短期出行胜地"},
+        {"value": "2", "label": "地区节假日"}
+      ],
+      "event_level": [
+        {"label": "S", "condition": "同比客诉增幅>200% 且 去年同期客诉>=5"},
+        {"label": "A+", "condition": "同比客诉增幅150%-200%"},
+        {"label": "A", "condition": "同比客诉增幅100%-150%"},
+        {"label": "B", "condition": "其余情况"}
+      ],
+      "event_status": [
+        {"value": "0", "label": "待开始", "condition": "当前时间 < event_start_date"},
+        {"value": "1", "label": "进行中", "condition": "event_start_date <= 当前时间 <= event_end_date"},
+        {"value": "2", "label": "已结束", "condition": "当前时间 > event_end_date"}
+      ],
+      "issue_status": [
+        {"value": "0", "label": "待下发"},
+        {"value": "1", "label": "已下发"},
+        {"value": "2", "label": "已完成"}
+      ],
+      "dept_type": [
+        {"code": "DLD", "label": "代理点"},
+        {"code": "WBD", "label": "外包店"}
+      ],
+      "filters": [
+        "演唱会: is_deleted = '0'",
+        "短期出行/节假日: is_deleted = '0' 且 inc_day = '$[time(yyyyMMdd,-1d)]'"
+      ],
+      "complaint_yoy": "IF(NVL(去年客诉量, 0) = 0, 0, (今年客诉量 - 去年客诉量) / NVL(去年客诉量, 0) * 100)"
+    },
+    "uniqueness": {
+      "dws_short_travel_task_di": "scenic_原始id 唯一",
+      "dws_regional_holiday_task_di": "holiday_原始id_dept_code 唯一"
+    }
+  }
+]
