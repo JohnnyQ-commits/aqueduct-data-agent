@@ -9,27 +9,10 @@
 
 ## 工作模式
 
-<table>
-  <thead>
-    <tr>
-      <th width="100px" style="text-align:center">模式</th>
-      <th width="150px" style="text-align:left">适用场景</th>
-      <th style="text-align:left">流程</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td align="center"><b>开发模式</b></td>
-      <td>从零开发新需求</td>
-      <td>需求理解 → 设计方案 → 表结构设计 → SQL开发 → 代码审查(可选) → 数据质量测试 → 设计文档 + 知识沉淀</td>
-    </tr>
-    <tr>
-      <td align="center"><b>审查模式</b></td>
-      <td>已有的变更需要验证</td>
-      <td>代码审查（线上版本 vs 变更版本）→ 数据质量测试 → 设计文档 + 知识沉淀</td>
-    </tr>
-  </tbody>
-</table>
+| 模式 | 流程 |
+| --- | --- |
+| **开发模式**（从零开发新需求） | 需求理解 → 设计方案 → 表结构设计 → SQL开发 → 代码审查(可选) → 数据质量测试 → 设计文档 + 知识沉淀 |
+| **审查模式**（已有的变更需要验证） | 代码审查（线上版本 vs 变更版本）→ 数据质量测试 → 设计文档 + 知识沉淀 |
 
 ## 功能
 
