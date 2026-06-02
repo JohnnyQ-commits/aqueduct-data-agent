@@ -142,12 +142,52 @@
 
 ---
 
-## 语义模型规范 (Semantic Model)
+## 语义模型规范 (Semantic Model — Ontology-Compliant)
 
-- **存储格式**: `knowledge/domains/{domain_id}.json`，一个业务域一个 JSON 文件。
-- **聚合文档**: `knowledge/semantic-model.md` 由 `scripts/gen_semantic_doc.py` 自动从 `knowledge/domains/*.json` 聚合生成，**禁止手动编辑**。
-- **JSON 必需字段**: `domain_id`, `name`, `description`, `entities`, `relationships`, `metrics`。可选字段：`computation_chains`, `derived_attributes`, `business_rules`, `filter_rules`。
-- **新业务域创建步骤**:
-  1. 创建 `knowledge/domains/{domain_id}.json` 文件
-  2. 填充实体、关系、指标定义
-  3. 运行 `python scripts/gen_semantic_doc.py` 更新 `semantic-model.md`
+### 核心原则
+**所有业务域的 domain JSON 必须符合本体论结构**。禁止创建仅含"表名+字段"的扁平映射文件。每个 domain JSON 必须包含完整的本体论要素。
+
+### 本体论要素清单（必填）
+
+| 字段 | 类型 | 说明 | 示例 |
+|------|------|------|------|
+| `domain_id` | string | 业务域唯一标识 | `"rider_casual_operation"` |
+| `name` | string | 业务域中文名称 | `"同城-骑手散单运营"` |
+| `description` | string | 业务域描述 | |
+| `entities` | object | 实体集合，每个实体必须含 `primary_key`、`attributes`（含 type/constraints）、`source` | `Rider: {primary_key, attributes[], source}` |
+| `relationships` | array | 关系集合，每个关系必须含 `from`、`to`、`cardinality`（1:1/1:N/N:1）、`condition` | `[{from, to, cardinality, condition}]` |
+| `metrics` | object | 指标集合，每个指标必须含 `name`、`expression`、`unit` | `pure_casual_cnt: {name, expression, unit}` |
+
+### 本体论要素清单（按需）
+
+| 字段 | 何时必填 | 说明 |
+|------|---------|------|
+| `hierarchy` | 存在分类/子类时 | 类层级划分，含父类→子类关系及判别规则 |
+| `axioms` | 存在领域不变式时 | 声明式公理，含 `id`、`statement`、`formal`（形式化表达） |
+| `business_rules` | 存在业务约束时 | 业务规则，键值对形式 |
+| `computation_chains` | 指标由多步骤计算时 | 计算链路，含 steps 列表 |
+| `filter_rules` | 存在分区/过滤策略时 | 分区条件和过滤规则 |
+
+### 禁止事项
+- **禁止**创建不含 `attributes` 列表的实体（每个实体必须声明其属性）
+- **禁止**创建不含 `cardinality` 的关系（每个关系必须标注基数）
+- **禁止**将 SQL 实现细节（如 `concat_ws`、`row_number`）写入本体层，应放入 `filter_rules` 的 `dedup` 子字段或隔离到知识沉淀文档
+- **禁止**使用伪代码作为度量表达式（如 `SUM(匹配月结表)`），必须是可执行的 SQL 片段
+
+### 新业务域创建步骤
+1. 创建 `knowledge/domains/{domain_id}.json` 文件
+2. 填充**必填**本体要素：entities（含 attributes）、relationships（含 cardinality）、metrics
+3. 按需填充：hierarchy、axioms、business_rules、computation_chains、filter_rules
+4. 运行 `python scripts/gen_semantic_doc.py` 更新 `semantic-model.md`
+5. 在 `知识沉淀.md` 中按本体论结构展开：类体系→属性定义→关系拓扑→公理→业务规则→度量体系
+
+### JSON Schema 约束（验证用）
+```
+entities.*.attributes[].name     : string (required)
+entities.*.attributes[].type     : string (required)
+entities.*.attributes[].constraints : array of string (optional)
+relationships[].cardinality      : string, one of ["1:1", "1:N", "N:1", "M:N"] (required)
+metrics.*.expression             : string, must be valid SQL expression (required)
+axioms[].id                      : string, format "AX-NNN" (required)
+axioms[].formal                  : string, formal logic notation (required)
+```

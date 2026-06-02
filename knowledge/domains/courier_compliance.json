@@ -1,108 +1,250 @@
 {
   "domain_id": "courier_compliance",
   "name": "骑手工服合规检查",
-  "version": "1.1.0",
+  "version": "2.0.0",
   "description": "关注一线在职员工的排班、归属网点、资源池/资源标签等合规性检查",
   "metadata": {
     "owner": "Data Team",
     "update_frequency": "Daily"
   },
+
   "entities": {
     "Employee": {
       "primary_key": "emp_code",
-      "source": "dw_demo.dim_emp_info",
+      "description": "员工实体，仅关注一线且在职的员工",
       "attributes": [
-        { "name": "emp_code", "type": "string", "description": "员工编码" },
-        { "name": "emp_name", "type": "string", "description": "员工姓名" },
-        { "name": "emp_source", "type": "string", "description": "员工来源系统" },
-        { "name": "position_attribute", "type": "string", "description": "岗位属性，如'一线'" },
-        { "name": "peak", "type": "string", "description": "是否高峰期用工" },
-        { "name": "employ_status", "type": "string", "description": "在职状态" }
+        { "name": "emp_code", "type": "string", "description": "员工工号（业务主键）", "constraints": ["NOT NULL", "UNIQUE"] },
+        { "name": "emp_name", "type": "string", "description": "员工姓名", "constraints": ["NOT NULL"] },
+        { "name": "emp_source", "type": "string", "description": "员工来源系统", "enum_map": {"HR": "HR系统", "OA": "OA系统"} },
+        { "name": "position_attribute", "type": "string", "description": "岗位属性", "constraints": ["='一线'"] },
+        { "name": "peak", "type": "string", "description": "是否高峰期用工", "enum_map": {"是": "高峰期", "否": "非高峰期"} },
+        { "name": "employ_status", "type": "string", "description": "在职状态", "constraints": ["='在职'"] }
       ],
-      "filters": ["position_attribute = '一线'", "employ_status = '在职'"],
-      "description": "员工实体, 仅关注一线且在职的员工"
+      "source": "dw_demo.dim_emp_info"
     },
     "CourierDeptAssignment": {
-      "source": "dw_demo.dim_rider_org_info",
+      "primary_key": "login_id",
+      "description": "骑手与网点的归属关系表",
       "attributes": [
-        { "name": "login_id", "type": "string", "description": "登录ID" },
-        { "name": "org_dept_code", "type": "string", "description": "归属机构编码" }
+        { "name": "login_id", "type": "string", "description": "收派员工号（业务主键）", "constraints": ["NOT NULL"] },
+        { "name": "login_name", "type": "string", "description": "收派员姓名" },
+        { "name": "org_dept_code", "type": "string", "description": "组织网点编码" },
+        { "name": "service_dept", "type": "string", "description": "服务网点编码" },
+        { "name": "job_status", "type": "integer", "description": "在职状态", "enum_map": {"0": "非在职", "1": "在职"} },
+        { "name": "is_deleted", "type": "integer", "description": "删除标记", "enum_map": {"0": "正常", "1": "已删除"} },
+        { "name": "update_time", "type": "string", "description": "记录更新时间戳" },
+        { "name": "system_ownership", "type": "string", "description": "数据来源系统", "enum_map": {"HR": "HR", "OA": "OA", "CRM": "CRM"} }
       ],
-      "description": "骑手与网点的归属关系表"
+      "source": "dw_demo.dim_rider_org_info"
     },
     "Department": {
       "primary_key": "dept_code",
-      "source": "dw_demo.dim_department_org_info",
+      "description": "智域网点实体",
       "attributes": [
-        { "name": "dept_code", "type": "string", "description": "网点编码" },
-        { "name": "area_code", "type": "string", "description": "地区编码" }
+        { "name": "dept_code", "type": "string", "description": "网点编码（业务主键）", "constraints": ["NOT NULL", "UNIQUE"] },
+        { "name": "dept_name", "type": "string", "description": "网点名称" },
+        { "name": "area_code", "type": "string", "description": "地区编码" },
+        { "name": "area_name", "type": "string", "description": "地区名称" },
+        { "name": "hq_code", "type": "string", "description": "经营本部代码" },
+        { "name": "hq_name", "type": "string", "description": "经营本部名称" }
       ],
-      "description": "智域网点实体"
-    }
-  },
-  "derived_attributes": {
-    "ResourcePool": {
-      "logic": "CASE WHEN resource_flag IN ('自有全职', '自有非全') THEN '自有' ELSE resource_flag END",
-      "values": ["自有", "同城骑手", "乡镇合伙人", "城市合伙人"],
-      "description": "资源池是业务聚合概念"
+      "source": "dw_demo.dim_department_org_info"
     },
-    "ResourceFlag": {
-      "logic": "根据 emp_source, peak, emp_group_txt 等字段组合派生",
-      "description": "资源标签细分"
-    }
-  },
-  "events": {
     "ScheduleEvent": {
-      "source": "dw_demo.dm_schedule_record_dtl_di",
-      "key_fields": ["emp_code", "inc_day"],
-      "measure_fields": ["on_duty_status"],
-      "description": "排班事件，1为上班，0为轮休"
+      "primary_key": "id",
+      "description": "排班事件，记录每日骑手排班状态",
+      "attributes": [
+        { "name": "emp_code", "type": "string", "description": "骑手工号" },
+        { "name": "inc_day", "type": "string", "description": "排班日期分区" },
+        { "name": "on_duty_status", "type": "string", "description": "轮休状态", "enum_map": {"0": "休息", "1": "上班"} },
+        { "name": "dept_code", "type": "string", "description": "网点编码" },
+        { "name": "day", "type": "string", "description": "轮休日期" }
+      ],
+      "source": "dw_demo.dm_schedule_record_dtl_di"
+    },
+    "ComplianceResult": {
+      "primary_key": "emp_code",
+      "description": "合规检查结果聚合实体",
+      "attributes": [
+        { "name": "emp_code", "type": "string", "description": "员工工号", "constraints": ["NOT NULL", "UNIQUE"] },
+        { "name": "emp_name", "type": "string", "description": "员工姓名" },
+        { "name": "emp_source", "type": "string", "description": "员工来源" },
+        { "name": "position_attribute", "type": "string", "description": "岗位属性" },
+        { "name": "peak", "type": "string", "description": "是否高峰期" },
+        { "name": "emp_group_name", "type": "string", "description": "员工组名称" },
+        { "name": "employ_status", "type": "string", "description": "雇佣状态" },
+        { "name": "dept_code", "type": "string", "description": "网点编码" },
+        { "name": "area_code", "type": "string", "description": "地区编码" },
+        { "name": "resource_flag", "type": "string", "description": "资源标签" },
+        { "name": "resource_pool_type", "type": "string", "description": "资源池类型" },
+        { "name": "inc_day", "type": "string", "description": "数据分区日期" }
+      ],
+      "source": "tmp_dw_demo.dm_ads_emp_uniform_inspection_di"
     }
   },
+
+  "hierarchy": {
+    "ResourcePoolType": {
+      "SelfEmployed": {
+        "description": "自有资源池",
+        "rule": "resource_flag IN ('自有全职', '自有非全')",
+        "subtypes": ["FullTime", "PartTime"]
+      },
+      "FullTime": {
+        "description": "自有全职",
+        "rule": "emp_source='HR' AND employ_status='在职' AND position_attribute='一线' AND peak='否' AND emp_group_txt='全日制用工'"
+      },
+      "PartTime": {
+        "description": "自有非全",
+        "rule": "emp_source='HR' AND employ_status='在职' AND position_attribute='一线' AND peak='否' AND emp_group_txt='非全日制用工'"
+      },
+      "CityRider": {
+        "description": "同城骑手",
+        "rule": "emp_source='OA' AND employ_status='在职' AND position_attribute='一线' AND position_txt='delivery'"
+      },
+      "TownshipPartner": {
+        "description": "乡镇合伙人",
+        "rule": "emp_source='OA' AND employ_status='在职' AND position_attribute='一线' AND bus_mode='422-区域代理'"
+      },
+      "CityPartner": {
+        "description": "城市合伙人",
+        "rule": "emp_source='OA' AND employ_status='在职' AND position_attribute='一线' AND bus_mode='414-标准收派'"
+      }
+    },
+    "ScheduleStatus": {
+      "OnDuty": {
+        "description": "上班",
+        "rule": "on_duty_status = '1'"
+      },
+      "OffDuty": {
+        "description": "轮休",
+        "rule": "on_duty_status = '0'"
+      }
+    }
+  },
+
   "relationships": [
     {
       "from": "Employee",
       "to": "ScheduleEvent",
+      "cardinality": "1:N",
       "join_type": "INNER JOIN",
       "condition": "Employee.emp_code = ScheduleEvent.emp_code",
-      "description": "关联排班信息过滤上班员工"
+      "description": "员工关联排班信息，一个员工每日一条排班记录"
     },
     {
       "from": "Employee",
       "to": "CourierDeptAssignment",
+      "cardinality": "1:1",
       "join_type": "LEFT JOIN",
       "condition": "lpad(Employee.emp_code, 8, '0') = lpad(CourierDeptAssignment.login_id, 8, '0')",
-      "description": "关联网点归属，需对齐工号长度"
+      "description": "员工归属唯一网点，需工号补齐8位关联"
+    },
+    {
+      "from": "CourierDeptAssignment",
+      "to": "Department",
+      "cardinality": "N:1",
+      "join_type": "LEFT JOIN",
+      "condition": "CourierDeptAssignment.org_dept_code = Department.dept_code",
+      "description": "网点归属映射到智域网点实体"
+    },
+    {
+      "from": "ScheduleEvent",
+      "to": "ComplianceResult",
+      "cardinality": "1:1",
+      "join_type": "INNER JOIN",
+      "condition": "ScheduleEvent.emp_code = ComplianceResult.emp_code",
+      "description": "排班上班员工参与合规检查，结果一一对应"
     }
   ],
+
   "metrics": {
     "active_couriers": {
       "name": "排班上班骑手数",
+      "definition": "当日排班状态为上班的骑手总数",
       "expression": "COUNT(DISTINCT emp_code)",
       "filter": "on_duty_status = '1'",
       "unit": "人"
     },
     "coverage_count": {
-          "name": "合规检查覆盖人数",
-          "expression": "COUNT(DISTINCT emp_code)",
-          "unit": "人"
-        }
-      },
-      "computation_chains": {
-        "合规上班率": {
-          "definition": "实际参加合规检查的上班人数 / 应上班总人数",
-          "steps": [
-            { "metric": "active_couriers", "description": "获取排班上班人数" },
-            { "metric": "coverage_count", "description": "获取实际合规检查覆盖人数" },
-            { "operator": "DIVIDE", "formula": "coverage_count / active_couriers" }
-          ],
-          "unit": "%",
-          "risk_threshold": "低于 95% 需预警"
-        }
-      },
-      "business_rules": {
-        "上班合规性": "只有排班状态为'上班'的骑手才会有合规检查数据，轮休骑手不应出现。",
-        "工号补齐规则": "所有 emp_code 参与关联时必须使用 lpad 补齐至 8 位，防止关联丢失。",
-        "高峰期约束": "peak 字段为'1'时，对应的 resource_pool 必须包含'高峰用工'标签。"
-      }
+      "name": "合规检查覆盖人数",
+      "definition": "实际参加合规检查的骑手总数",
+      "expression": "COUNT(DISTINCT emp_code)",
+      "unit": "人"
+    },
+    "compliance_rate": {
+      "name": "合规上班率",
+      "definition": "实际参加合规检查的上班人数 / 应上班总人数",
+      "expression": "coverage_count * 100.0 / active_couriers",
+      "unit": "%",
+      "risk_threshold": "低于 95% 需预警"
+    },
+    "resource_pool_count": {
+      "name": "各资源池人数",
+      "definition": "按资源池类型分组的骑手数",
+      "expression": "COUNT(DISTINCT emp_code)",
+      "group_by": "resource_pool_type",
+      "unit": "人"
     }
+  },
+
+  "computation_chains": {
+    "合规上班率": {
+      "definition": "实际参加合规检查的上班人数 / 应上班总人数",
+      "steps": [
+        { "metric": "active_couriers", "operation": "COUNT", "description": "获取排班上班人数" },
+        { "metric": "coverage_count", "operation": "COUNT", "description": "获取实际合规检查覆盖人数" },
+        { "metric": "compliance_rate", "operation": "DIVIDE", "inputs": ["coverage_count", "active_couriers"], "description": "计算合规上班率" }
+      ],
+      "output": "ComplianceResult",
+      "risk_threshold": "低于 95% 需预警"
+    }
+  },
+
+  "business_rules": {
+    "上班合规性": "只有排班状态为'上班'的骑手才会有合规检查数据，轮休骑手不应出现在合规检查结果中",
+    "工号补齐规则": "所有 emp_code 参与关联时必须使用 lpad 补齐至 8 位，防止因工号长度不一致导致关联丢失",
+    "高峰期约束": "peak 字段为'是'时，对应的 resource_pool_type 必须包含'高峰用工'标签",
+    "资源池互斥": "一个骑手在同一日期只能属于一个资源池类型，resource_pool_type 取值互斥",
+    "在职约束": "合规检查仅针对 employ_status='在职' 且 is_deleted=0 的员工"
+  },
+
+  "axioms": [
+    {
+      "id": "AX-001",
+      "statement": "每个排班记录必然关联且仅关联一个员工",
+      "formal": "forall s in ScheduleEvent, exists! e in Employee: s.emp_code = e.emp_code"
+    },
+    {
+      "id": "AX-002",
+      "statement": "员工在同一分区中只属于一个网点",
+      "formal": "forall e in Employee, forall d1,d2 in CourierDeptAssignment: (e.emp_code=d1.login_id AND e.emp_code=d2.login_id) -> d1.org_dept_code = d2.org_dept_code"
+    },
+    {
+      "id": "AX-003",
+      "statement": "资源池类型互斥：一个员工在同一时刻只能属于一种资源池",
+      "formal": "forall e in Employee, forall r1,r2 in ResourcePoolType: ResourceOf(e)=r1 AND ResourceOf(e)=r2 -> r1 = r2"
+    },
+    {
+      "id": "AX-004",
+      "statement": "合规检查结果中的员工必然当天排班为上班",
+      "formal": "forall c in ComplianceResult, exists s in ScheduleEvent: c.emp_code = s.emp_code AND s.on_duty_status = '1'"
+    }
+  ],
+
+  "filter_rules": {
+    "employee_filter": {
+      "description": "员工基表过滤：仅一线在职员工",
+      "conditions": ["position_attribute = '一线'", "employ_status = '在职'"]
+    },
+    "schedule_partition": {
+      "description": "排班表取T-1分区",
+      "partition": "inc_day = '$[time(yyyyMMdd,-1d)]'"
+    },
+    "courier_dept_dedup": {
+      "description": "骑手维度表去重规则：按login_id分组取update_time最新",
+      "dedup": "row_number() over(partition by login_id order by update_time desc) = 1",
+      "conditions": ["job_status = 1", "is_deleted = 0"]
+    }
+  }
+}
