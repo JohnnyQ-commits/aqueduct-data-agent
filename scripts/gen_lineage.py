@@ -52,15 +52,27 @@ class LineageParser:
 
     def parse_field_lineage(self):
         """简单的字段血缘解析逻辑"""
-        # 1. 建立表别名映射
-        alias_map = {} # alias -> table
-        matches = RE_JOIN_ALIAS.findall(self.sql_content)
-        for tbl, alias in matches:
-            if '.' in tbl: # 确保是库.表
+        # 1. 建立表别名映射（仅匹配 库.表 模式后的别名）
+        alias_map = {}  # alias -> table
+        # 匹配: from 库.表 别名  或  join 库.表 别名
+        from_alias_pattern = re.compile(
+            r'(?:from|join)\s+([a-zA-Z_]\w*\.[a-zA-Z_]\w*)\s+([a-zA-Z_]\w*)\b',
+            re.IGNORECASE
+        )
+        for m in from_alias_pattern.finditer(self.sql_content):
+            tbl, alias = m.group(1), m.group(2)
+            # 过滤掉 CTE 名称（CTE 名称通常出现在 'with name as' 或 ', name as' 之后）
+            cte_prefix_pattern = re.compile(
+                r'(?:with|,)\s*' + re.escape(alias) + r'\s+as\s*\(',
+                re.IGNORECASE
+            )
+            if not cte_prefix_pattern.search(self.sql_content):
                 alias_map[alias] = tbl
 
-        # 2. 提取 SELECT 块
-        select_match = RE_SELECT_BLOCK.search(self.sql_content)
+        # 2. 提取 INSERT 语句后的 SELECT 块（主查询）
+        insert_match = RE_INSERT_OVERWRITE.search(self.sql_content)
+        search_start = insert_match.end() if insert_match else 0
+        select_match = RE_SELECT_BLOCK.search(self.sql_content[search_start:])
         if select_match:
             fields_str = select_match.group(1)
             # 解析 col as alias
@@ -72,8 +84,9 @@ class LineageParser:
                 # 尝试识别 alias.field 格式
                 if '.' in raw_col:
                     parts = raw_col.split('.')
-                    if parts[0] in alias_map:
-                        source_info["table"] = alias_map[parts[0]]
+                    prefix = parts[0]
+                    if prefix in alias_map:
+                        source_info["table"] = alias_map[prefix]
                         source_info["field"] = parts[1]
 
                 self.field_lineage.append({

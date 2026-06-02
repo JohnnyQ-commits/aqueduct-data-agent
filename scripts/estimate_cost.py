@@ -87,12 +87,18 @@ class CostEstimator:
         with open(design_path, encoding='utf-8') as f:
             content = f.read()
 
-        # 寻找“数据质量保障”或末尾插入
-        new_section = f"\n\n## 十、资源成本预估 (Cost Estimation)\n\n{report}\n"
+        # 使用明确的章节边界：从 “## 十、资源成本预估” 到 “## 十一” 或文件末尾
+        section_header = “## 十、资源成本预估”
+        next_section = “## 十一”
+        new_section = f”\n\n{section_header} (Cost Estimation)\n\n{report}\n”
 
-        if "## 十、资源成本预估" in content:
-            # 替换旧的
-            content = re.sub(r'## 十、资源成本预估.*?(?=##|$)', new_section, content, flags=re.DOTALL)
+        if section_header in content:
+            # 找到该章节起始和下一个章节起始
+            start = content.index(section_header)
+            end_marker = content.find(next_section, start + len(section_header))
+            if end_marker == -1:
+                end_marker = len(content)
+            content = content[:start] + new_section + content[end_marker:]
         else:
             content += new_section
 

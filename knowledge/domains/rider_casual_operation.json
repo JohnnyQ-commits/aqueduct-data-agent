@@ -1,0 +1,101 @@
+{
+    "name": "同城-骑手散单运营",
+    "domain_id": "rider_casual_operation",
+    "description": "同城骑手散单承接体量分析，用于骑手分层运营策略和收件权限管控",
+    "entities": {
+        "Rider": {
+            "primary_key": "emp_code",
+            "source": "dw_demo.dm_emp_rating_info_mi",
+            "description": "同城骑手实体，含分级标签、地区信息"
+        },
+        "CourierDeptAssignment": {
+            "primary_key": "login_id",
+            "source": "dw_demo.dim_rider_org_info",
+            "description": "骑手网点归属关系表，含在职状态"
+        },
+        "AOIAssignment": {
+            "primary_key": "emp_code",
+            "source": "dw_demo.dwd_area_group_info_partitioned",
+            "description": "骑手AOI服务区域配置"
+        },
+        "PickupWaybill": {
+            "primary_key": "waybill_no",
+            "source": "dw_demo.dwd_pickup_order_dtl_di",
+            "description": "收件运单打标明细"
+        },
+        "DeliverWaybill": {
+            "primary_key": "waybill_no",
+            "source": "dw_demo.dwd_deliver_order_dtl_di",
+            "description": "派件运单打标明细"
+        }
+    },
+    "relationships": [
+        {
+            "from": "Rider",
+            "to": "CourierDeptAssignment",
+            "name": "关联网点归属",
+            "join": "Rider.emp_code = CourierDeptAssignment.login_id"
+        },
+        {
+            "from": "Rider",
+            "to": "AOIAssignment",
+            "name": "关联AOI服务区域",
+            "join": "Rider.emp_code = AOIAssignment.emp_code"
+        },
+        {
+            "from": "Rider",
+            "to": "PickupWaybill",
+            "name": "关联收件运单(聚合)",
+            "join": "Rider.emp_code = PickupWaybill.emp_code"
+        },
+        {
+            "from": "Rider",
+            "to": "DeliverWaybill",
+            "name": "关联派件运单(聚合)",
+            "join": "Rider.emp_code = DeliverWaybill.emp_code"
+        }
+    ],
+    "metrics": {
+        "pure_casual_cnt": {
+            "name": "纯散件总数",
+            "expression": "SUM(layer_name IS NULL)",
+            "filter": "inc_day >= '20260401' AND inc_day <= '20260430'",
+            "unit": "件"
+        },
+        "monthly_casual_cnt": {
+            "name": "月结散件总数",
+            "expression": "SUM(匹配月结客户表)",
+            "filter": "cust_tier_label IN ('1.1','1.2','1.3','2.1','2.2')",
+            "unit": "件"
+        }
+    },
+    "computation_chains": {
+        "sand_total": {
+            "definition": "纯散件+月结散件收派合计",
+            "steps": [
+                {"metric": "pure_casual_pickup", "operator": "SUM"},
+                {"metric": "pure_casual_deliver", "operator": "SUM"},
+                {"operator": "+", "description": "pure_casual_cnt"},
+                {"metric": "monthly_casual_pickup", "operator": "SUM"},
+                {"metric": "monthly_casual_deliver", "operator": "SUM"},
+                {"operator": "+", "description": "monthly_casual_cnt"}
+            ],
+            "risk_threshold": "单一骑手散单总量>10000件需人工复核"
+        }
+    },
+    "derived_attributes": {
+        "SandType": {
+            "logic": "CASE WHEN layer_name IS NULL THEN '纯散' WHEN 匹配月结 THEN '月结散' ELSE '非散' END",
+            "values": ["纯散", "月结散", "非散"]
+        },
+        "RiderLevel": {
+            "logic": "dm_emp_rating_info_mi.rider_level",
+            "values": ["1见习", "2初级", "3中级", "4高级"]
+        }
+    },
+    "filter_rules": {
+        "monthly_customer_label": "cust_tier_label IN ('1.1','1.2','1.3','2.1','2.2')",
+        "courier_dept_dedup": "row_number() over(partition by login_id order by update_time desc) = 1 AND job_status=1 AND is_deleted=0",
+        "aoi_aggregation": "concat_ws(',', collect_set(aoi_area_id)) GROUP BY emp_code, status=1"
+    }
+}

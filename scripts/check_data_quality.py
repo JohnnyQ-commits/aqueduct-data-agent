@@ -139,21 +139,33 @@ class DQCExecuter:
 
     def update_delivery_report(self):
         if not self.report_file or not self.report_file.exists():
-            print("警告：未指定交付报告或文件不存在，仅输出至控制台。")
+            print(“警告：未指定交付报告或文件不存在，仅输出至控制台。”)
             return False
 
         dqc_md = self.generate_dqc_report_md()
         with open(self.report_file, encoding='utf-8') as f:
             content = f.read()
 
-        # 寻找“数据质量测试结果”章节或末尾插入
-        section_title = "## 五、数据质量测试结果"
-        new_section = f"\n{section_title}\n\n{dqc_md}\n"
+        # 使用明确的章节边界：从 “## 五、数据质量测试结果” 到下一个 “## “ 章节或末尾
+        section_title = “## 五、数据质量测试结果”
+        dqc_section = f”\n{section_title}\n\n{dqc_md}\n”
 
         if section_title in content:
-            content = re.sub(rf"{section_title}.*?(?=##|$)", new_section, content, flags=re.DOTALL)
+            # 找到已有章节的起始位置
+            start = content.index(section_title)
+            # 查找下一个同级章节（## 开头）
+            next_hash_idx = content.find(“\n## “, start + len(section_title))
+            # 也查找更高级别的章节（# 开头但不是##）
+            if next_hash_idx == -1:
+                next_hash_idx = len(content)
+            content = content[:start] + dqc_section + content[next_hash_idx:]
         else:
-            content += new_section
+            # 追加到”## 附录”之前或文件末尾
+            appendix_idx = content.find(“\n## 附录”)
+            if appendix_idx == -1:
+                content += dqc_section
+            else:
+                content = content[:appendix_idx] + dqc_section + content[appendix_idx:]
 
         with open(self.report_file, 'w', encoding='utf-8') as f:
             f.write(content)
