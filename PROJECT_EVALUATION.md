@@ -26,10 +26,15 @@
 
 本项目通过层次化的设计，实现了从规范定义到自动化执行的闭环：
 
-- **核心定义层**: 包含 [AGENT.md](file:///e:/data-agent/AGENT.md) (自动化规范)、[data-developer.md](file:///e:/data-agent/skills/data-developer.md) (工作流定义) 和 [semantic-model.json](file:///e:/data-agent/knowledge/semantic-model.json) (语义层模型)。
-- **执行工具层**: 包含 [validate_sql.py](file:///e:/data-agent/scripts/validate_sql.py) (SQL校验)、[batch_query_tables.py](file:///e:/data-agent/scripts/batch_query_tables.py) (批量查表) 和 [gen_design.py](file:///e:/data-agent/scripts/gen_design.py) (设计文档生成)。
+- **核心定义层**: 包含 [AGENT.md](file:///e:/data-agent/AGENT.md) (自动化规范)、[data-developer.md](file:///e:/data-agent/skills/data-developer.md) (工作流定义) 和 [knowledge/domains/](file:///e:/data-agent/knowledge/domains/) (分域语义模型)。
+- **执行工具层**: 
+    - [validate_sql.py](file:///e:/data-agent/scripts/validate_sql.py) (SQL校验与Smart Fix)
+    - [estimate_cost.py](file:///e:/data-agent/scripts/estimate_cost.py) (资源成本预估)
+    - [sync_design.py](file:///e:/data-agent/scripts/sync_design.py) (设计文档双向同步)
+    - [batch_query_tables.py](file:///e:/data-agent/scripts/batch_query_tables.py) (批量查表)
+    - [gen_design.py](file:///e:/data-agent/scripts/gen_design.py) (设计文档生成)
 - **自动化保障层**: 包含 [tests/](file:///e:/data-agent/tests/) (Pytest 测试套件) 和 [.github/workflows/](file:///e:/data-agent/.github/workflows/) (CI 持续集成流水线)。
-- **规范文档层**: [coding-style.md](file:///e:/data-agent/docs/coding-style.md) 确保了代码产出的一致性。
+- **可视化审计层**: [gen_semantic_doc.py](file:///e:/data-agent/scripts/gen_semantic_doc.py) 自动生成的 [semantic-model.md](file:///e:/data-agent/knowledge/semantic-model.md)。
 
 ---
 
@@ -39,47 +44,48 @@
 |---------|---------|------|
 | 需求理解 | ✅ 完整 | 支持需求模板、歧义识别、语义层对齐 |
 | 设计方案 | ✅ 完整 | 自动生成取数逻辑、字段映射、依赖关系 |
-| 表结构设计 | ✅ 完整 | DDL 模板 + 规范命名 |
-| SQL 开发 | ✅ 完整 | 代码风格规范 + 子查询/CTE 模式 |
-| SQL 自动校验 | ✅ 完整 | 6大类检查，已完成正则优化与性能提升 |
+| 双向同步 | ✅ 完整 | 支持从 `design.md` 反向更新 DDL 和知识库 |
+| SQL 开发 | ✅ 完整 | 代码风格规范 + CTE 模式 + 智能修复建议 |
+| SQL 自动校验 | ✅ 完整 | 6大类检查，支持 `--json` 输出与自动修复协议 |
+| 资源成本预估 | ✅ 完整 | 自动识别笛卡尔积、缺失分区风险，预估扫描量 |
 | 代码审查 | ✅ 完整 | 差异比对、需求覆盖、下游影响、潜在问题 |
 | 数据质量测试 | ✅ 完整 | 7大类测试用例模板 |
-| 设计文档生成 | ✅ 完整 | 自动化填充80%内容，已修复边界解析 Bug |
-| 知识沉淀 | ✅ 完整 | 语义层、编码约定、命名规范 |
-| 交付报告 | ✅ 完整 | 全阶段成果汇总 |
+| 知识沉淀 | ✅ 完整 | 支持计算链路 (Computation Chains) 自动推导 |
 
 ---
 
 ## 四、代码质量评估
 
-### 4.1 SQL 校验工具 ([validate_sql.py](file:///e:/data-agent/scripts/validate_sql.py))
-- **亮点**: 采用预编译正则优化，支持复杂 JOIN/ON 跨行识别，除法判空逻辑严密。
-- **状态**: ✅ 已完成第一阶段性能优化与边界 Bug 修复。
+### 4.1 SQL 校验与智能修复 (Smart Fix)
+- **亮点**: 不仅能发现问题，还能通过 `--json` 接口为 Agent 提供结构化修复指令，实现代码自愈。
+- **状态**: ✅ 已完成修复协议集成。
 
-### 4.2 自动化测试 ([tests/](file:///e:/data-agent/tests/))
-- **亮点**: 基于 `pytest` 搭建，覆盖了所有核心解析与校验逻辑（11个核心用例全通过）。
-- **状态**: ✅ 已建立完整的回归测试机制。
+### 4.2 资源成本预估 (Cost Estimation)
+- **亮点**: 能够对 SQL 进行静态扫描，提前预警大查询风险（🔴 高风险强制拦截）。
+- **状态**: ✅ 工具已上线并集成至工作流。
 
-### 4.3 持续集成 (CI)
-- **亮点**: 配置了 GitHub Actions，实现了“代码提交即测试”，并集成了状态徽章（Badges）。
-- **状态**: ✅ 已上线。
+### 4.3 设计文档双向同步 (Bi-directional Sync)
+- **亮点**: 解决了“设计与代码两张皮”的行业难题，确保 `design.md` 的修改能实时反映到 DDL 中。
+- **状态**: ✅ 已实现字段级同步。
+
+### 4.4 语义层可视化与分域管理
+- **亮点**: 采用分文件存储，支持 Mermaid ER 图自动生成，兼顾了 AI 处理性能与人类审计直观性。
+- **状态**: ✅ 已落地最佳实践。
 
 ---
 
 ## 五、架构设计亮点 ⭐
 
-- **多业务域分治架构**: 语义层采用 `knowledge/domains/` 分域存储模式，支持无限横向扩展，解决了单文件维护难题。
-- **双向同步机制**: 通过 `gen_semantic_doc.py` 实现“机器可读(JSON) -> 人工可审(MD+Mermaid)”的自动转换。
-- **工程化程度高**: 拥有完善的测试单元和 CI 流程，具备工业级工具的鲁棒性。
-- **语义层驱动**: 通过 JSON 维护业务口径，实现了 AI 开发的“有法可依”。
-- **标准化流程**: Phase 1-6 的严格划分极大降低了需求理解偏差。
+- **闭环自愈能力**: Smart Fix 机制让 Agent 具备了初级的“编程纠错”能力。
+- **多业务域分治**: 解决了单文件语义模型无法横向扩展的瓶颈。
+- **计算链路语义化**: 引入 `computation_chains`，使 Agent 能理解指标间的推导逻辑。
 
 ---
 
 ## 六、潜在问题与改进建议
 
-1. **多数据库解析支持**: 目前 DDL 生成和校验逻辑偏向 Hive/Spark，未来可扩展至 MySQL/PostgreSQL 等。
-2. **文档注释深度**: 随着脚本功能增强，建议补充更详细的 API 级文档字符串。
+1. **向量化演进**: 当业务域超过 100+ 时，建议引入 ChromaDB 实现 RAG 检索（已列入远期规划）。
+2. **多引擎适配**: 目前成本预估逻辑较通用，未来可针对 Spark/Hive 引擎特性做精细化权重调整。
 
 ---
 
@@ -88,18 +94,22 @@
 ### 1. 第一阶段 (已完成): 稳固基础与工程化
 - ✅ **Bug 修复**: 解决脚本中的边界解析问题，优化正则性能。
 - ✅ **测试框架**: 搭建基于 `pytest` 的自动化测试套件。
-- ✅ **工具链增强**: 优化 `batch_query_tables.py`，支持 MySQL/MongoDB 多源。
 - ✅ **CI/CD 初步集成**: 上线 GitHub Actions 自动化测试流水线。
 
-### 2. 中期规划 (3-6个月): 流程集成与智能辅助
-- **资源成本预估**: 增加 SQL 运行资源消耗（如扫描行数、计算量）的预估功能。
-- **智能一键修复**: 利用 LLM 为校验失败的 SQL 提供自动修正建议。
-- **文档自动化增强**: 实现从设计文档到 DDL 的双向同步。
+### 2. 第二阶段 (已完成): 智能增强与双向闭环
+- ✅ **智能一键修复**: 利用校验输出引导 AI 自动修正违规 SQL。
+- ✅ **资源成本预估**: 增加 SQL 扫描量风险预警。
+- ✅ **设计与 DDL 同步**: 实现文档驱动的代码自动更新。
+- ✅ **计算链路定义**: 支持复杂复合指标的语义化描述。
 
-### 3. 远期规划 (6个月以上): 生态化与知识驱动
-- **血缘联动**: 自动更新元数据血缘图谱。
+### 3. 中期规划 (3-6个月): 流程深度集成
+- **自动化血缘联动**: 自动更新元数据血缘图谱。
+- **数据质量闭环**: DQC 测试结果自动反馈至设计文档。
+- **Agent 性能监控**: 统计 Agent 自动修复率与提效比。
+
+### 4. 远期规划 (6个月以上): 生态化与知识驱动
+- **向量化语义层**: 引入向量数据库处理超大规模业务域。
 - **自动性能调优**: 基于历史运行数据自动优化 SQL 结构。
-- **Agent 看板**: 建立量化评估看板，统计 Agent 带来的开发提效比。
 
 ---
 
@@ -107,9 +117,9 @@
 
 - **功能完整性**: ⭐⭐⭐⭐⭐
 - **架构设计**: ⭐⭐⭐⭐⭐
-- **代码质量**: ⭐⭐⭐⭐⭐ (从4.5提升至5)
+- **代码质量**: ⭐⭐⭐⭐⭐
 - **规范文档**: ⭐⭐⭐⭐⭐
-- **可维护性**: ⭐⭐⭐⭐⭐ (从4提升至5)
+- **可维护性**: ⭐⭐⭐⭐⭐
 
 **综合评分**: ⭐⭐⭐⭐⭐ **(5.0/5)**
 
@@ -117,7 +127,6 @@
 
 ## 九、适用场景
 
-- ✅ Hive/Spark SQL 数仓离线开发
-- ✅ 存量代码逻辑变更审查
-- ✅ 数据质量监控巡检
-- ✅ 快速生成标准化设计文档与报告
+- ✅ 高频迭代的 Hive/Spark SQL 数仓开发
+- ✅ 复杂业务指标的自动化推导与口径对齐
+- ✅ 严苛生产环境下的代码合规性与性能准入
