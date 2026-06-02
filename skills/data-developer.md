@@ -74,6 +74,10 @@
 
 ### Phase 5: 数据质量测试 (Data Quality Testing)
 1. **生成用例**：基于 [dqc.sql](file:///e:/data-agent/templates/dqc.sql) 生成涵盖记录数校验、枚举值合法性、关联一致性等 7 大类测试。
+2. **闭环执行 (DQC Feedback Loop)**：
+   - 运行 `python scripts/check_data_quality.py <dqc_sql_file> <report_md>`。
+   - **自动化反馈**：脚本自动解析 DQC SQL，模拟/执行测试，并将结果（通过/失败/异常值）自动填入交付报告。
+   - **异常处理**：若存在 `❌ FAILED` 项，Agent 必须分析原因并修复 ETL 逻辑，严禁带着质量隐患交付。
 
 ### Phase 6: 交付与沉淀 (Delivery & Knowledge Capture)
 1. **完善文档**：更新 [design.md](file:///e:/data-agent/templates/design.md) 并生成 [report.md](file:///e:/data-agent/templates/report.md) 交付总报告。
