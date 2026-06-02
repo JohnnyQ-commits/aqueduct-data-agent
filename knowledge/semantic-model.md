@@ -1,6 +1,6 @@
 # Data Agent 可视化知识库
 
-> **自动生成时间**: 2026-06-02 20:01:12
+> **自动生成时间**: 2026-06-02 20:17:13
 > **说明**: 本文档由脚本自动从 `knowledge/domains/*.json` 聚合生成。**JSON 用于 AI 执行，本 MD 用于人工审计。**
 
 ---
@@ -87,7 +87,7 @@ erDiagram
 
 ## 业务域：同城-骑手散单运营
 - **ID**: `rider_casual_operation`
-- **描述**: 同城骑手散单承接体量分析，用于骑手分层运营策略和收件权限管控
+- **描述**: 同城骑手散单承接体量分析领域，用于骑手分层运营策略和收件权限管控
 
 ### 1. 关系拓扑图 (Relationship Map)
 ```mermaid
@@ -95,48 +95,49 @@ erDiagram
     Rider {
         string emp_code PK
     }
-    CourierDeptAssignment {
+    Department {
         string login_id PK
     }
     AOIAssignment {
+        string id PK
+    }
+    Waybill {
+        string waybill_no PK
+    }
+    MonthlyCustomer {
+        string customer_code PK
+    }
+    SandStat {
         string emp_code PK
     }
-    PickupWaybill {
-        string waybill_no PK
-    }
-    DeliverWaybill {
-        string waybill_no PK
-    }
-    Rider ||--o{ CourierDeptAssignment : "关联网点归属"
-    Rider ||--o{ AOIAssignment : "关联AOI服务区域"
-    Rider ||--o{ PickupWaybill : "关联收件运单(聚合)"
-    Rider ||--o{ DeliverWaybill : "关联派件运单(聚合)"
+    Rider ||--o{ Department : "骑手归属唯一网点（去重取最新记录）"
+    Rider ||--o{ AOIAssignment : "骑手可配置多个AOI服务区域"
+    Rider ||--o{ PickupWaybill : "骑手在4月可有多条收件运单"
+    Rider ||--o{ DeliverWaybill : "骑手在4月可有多条派件运单"
+    Waybill ||--o{ MonthlyCustomer : "运单通过月结卡号关联月结客户标签"
+    Rider ||--o{ SandStat : "统计结果与骑手一一对应"
 ```
 
 ### 2. 核心实体 (Entities)
 | 实体名 | 主键 | 物理来源 | 描述 |
 | :--- | :--- | :--- | :--- |
-| Rider | `emp_code` | `[TABLE_REMOVED]` | 同城骑手实体，含分级标签、地区信息 |
-| CourierDeptAssignment | `login_id` | `[TABLE_REMOVED]` | 骑手网点归属关系表，含在职状态 |
-| AOIAssignment | `emp_code` | `[TABLE_REMOVED]` | 骑手AOI服务区域配置 |
-| PickupWaybill | `waybill_no` | `[TABLE_REMOVED]` | 收件运单打标明细 |
-| DeliverWaybill | `waybill_no` | `[TABLE_REMOVED]` | 派件运单打标明细 |
+| Rider | `emp_code` | `[TABLE_REMOVED]` | 同城骑手实体，代表参与同城配送的收派员 |
+| Department | `login_id` | `[TABLE_REMOVED]` | 骑手网点归属关系，记录骑手与组织网点的映射 |
+| AOIAssignment | `id` | `[TABLE_REMOVED]` | 骑手AOI服务区域配置，记录骑手常驻的配送区域 |
+| Waybill | `waybill_no` | `[TABLE_REMOVED] | [TABLE_REMOVED]` | 运单实体，收件或派件的完整运单信息 |
+| MonthlyCustomer | `customer_code` | `dm_crm.dm_customer_allcust_info_df` | 月结客户实体，记录月结客群的标签分层 |
+| SandStat | `emp_code` | `tmp_[TABLE_REMOVED]` | 骑手散单统计聚合实体，为业务分析结果表 |
 
 ### 3. 指标口径 (Metrics)
 | 指标名称 | 计算表达式 | 过滤条件 | 单位 |
 | :--- | :--- | :--- | :--- |
-| 纯散件总数 | `SUM(layer_name IS NULL)` | `inc_day >= '20260401' AND inc_day <= '20260430'` | 件 |
-| 月结散件总数 | `SUM(匹配月结客户表)` | `cust_tier_label IN ('1.1','1.2','1.3','2.1','2.2')` | 件 |
+| 纯散件总数 | `COUNT(CASE WHEN layer_name IS NULL THEN 1 END)` | `inc_day BETWEEN '20260401' AND '20260430'` | 件 |
+| 月结散件总数 | `COUNT(CASE WHEN monthly_customer.customer_code IS NOT NULL THEN 1 END)` | `inc_day BETWEEN '20260401' AND '20260430'` | 件 |
+| 散单骑手占比 | `COUNT(CASE WHEN pure_casual_cnt + monthly_casual_cnt > 0 THEN 1 END) * 100.0 / COUNT(DISTINCT emp_code)` | `-` | % |
 
 ### 4. 计算链路 (Computation Chains)
 | 复合指标 | 业务定义 | 计算步骤 | 预警阈值 |
 | :--- | :--- | :--- | :--- |
-| sand_total | 纯散件+月结散件收派合计 | `pure_casual_pickup -> pure_casual_deliver -> + -> monthly_casual_pickup -> monthly_casual_deliver -> +` | 单一骑手散单总量>10000件需人工复核 |
-
-### 5. 派生属性/转换规则
-| 属性名 | 逻辑说明 | 枚举值 |
-| :--- | :--- | :--- |
-| SandType | CASE WHEN layer_name IS NULL THEN '纯散' WHEN 匹配月结 THEN '月结散' ELSE '非散' END | 纯散, 月结散, 非散 |
-| RiderLevel | dm_emp_rating_info_mi.rider_level | 1见习, 2初级, 3中级, 4高级 |
+| total_casual_stat | 骑手散单总量计算链路 | `pure_casual_pickup -> pure_casual_deliver -> pure_casual_cnt -> monthly_casual_pickup -> monthly_casual_deliver -> monthly_casual_cnt` | - |
 
 ---
