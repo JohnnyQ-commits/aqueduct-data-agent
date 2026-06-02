@@ -72,20 +72,18 @@
 2. **影响分析**：评估变更对下游表/任务的潜在影响。
 3. **输出报告**：以表格形式呈现“需求项 | 是否满足 | 说明”，列出问题及修复建议。
 
-### Phase 5: 数据质量测试 (Data Quality Testing)
-1. **业务规则提取**：
-   - 重新审阅 Phase 1 的需求文档及 `knowledge/domains/` 中的 `business_rules`。
-   - 识别所有潜在的业务逻辑冲突点（如：逻辑互斥、时间交叉、数值合理区间）。
-2. **生成定制化用例**：
-   - 基于 [dqc.sql](file:///e:/data-agent/templates/dqc.sql) 提供的模板和**方法论**，生成针对该需求的专属测试用例。
-   - **必选类别**：
-     - **[唯一性]**：验证表维度和主键唯一性。
-     - **[业务边界]**：根据需求中提到的规则，编写针对性的逻辑边界测试。
-     - **[计算准确性]**：验证聚合结果是否在业务可接受范围内。
-3. **闭环执行 (DQC Feedback Loop)**：
-   - 运行 `python scripts/check_data_quality.py <dqc_sql_file> <report_md>`。
-   - **自动化反馈**：脚本自动解析 DQC SQL，模拟/执行测试，并将结果（通过/失败/异常值）自动填入交付报告。
-   - **异常处理**：若存在 `❌ FAILED` 项，Agent 必须分析原因并修复 ETL 逻辑，严禁带着质量隐患交付。
+### Phase 5: 数据质量保障 (DQC)
+ 1. **业务规则提取 (Metadata Analysis)**:
+    - 重新审阅 Phase 1 需求及 `knowledge/domains/` 中的 `business_rules`。
+    - 识别所有潜在的业务逻辑冲突点（如：逻辑互斥、时间交叉、数值合理区间）。
+ 2. **DQC 套件设计 (Suite Design)**:
+    - **普适性校验**: 必须包含 唯一性 (Uniqueness)、时效性 (Timeliness)、引用一致性 (Referential Integrity) 和 波动监控 (Volatility)。
+    - **权重配置**: 在 SQL 注释中使用 `-- 权重: High/Medium/Low` 定义项的重要程度。
+    - **业务定制反证**: 根据提取的规则编写 **Negative Testing** 用例，验证不该出现的数据确实没出现（如离职人员、非目标人群）。
+ 3. **自动化执行与闭环自愈 (DQC Loop)**:
+    - 运行 `python scripts/check_data_quality.py <dqc_sql_file> <report_md>`。
+    - **强制闭环**: 若报告中存在 `❌ FAILED` 项或健康得分低于 100，Agent **严禁直接交付**。
+    - **故障自愈**: Agent 必须根据脚本输出的“修复建议”反查 ETL 代码，修复逻辑漏洞，并重复执行测试直到全绿通过。
 
 ### Phase 6: 交付与沉淀 (Delivery & Knowledge Capture)
 1. **完善文档**：更新 [design.md](file:///e:/data-agent/templates/design.md) 并生成 [report.md](file:///e:/data-agent/templates/report.md) 交付总报告。

@@ -1,15 +1,16 @@
 -- ==========================================
--- 数据质量测试模板 (DQC Enhanced Template)
+-- 数据质量测试模板 (DQC Professional Template)
 -- ==========================================
 -- 使用说明：
 -- 1. 将 $[time(yyyyMMdd,-1d)] 替换为实际日期。
--- 2. 必须包含 [唯一性] 和 [边界测试] 类别。
+-- 2. 必须结合业务逻辑编写 [业务反证] 和 [跨表一致性] 用例。
 
 -- ==========================================
--- 1. 唯一性测试 (Uniqueness & Primary Key)
+-- 1. 唯一性与核心约束 (Uniqueness & Constraints)
 -- ==========================================
 
 -- [唯一性-主键] 检查结果表主键或业务唯一键是否存在重复
+-- 权重: High
 select {主键或组合键}, count(*) as cnt
 from {结果表}
 where inc_day = '$[time(yyyyMMdd,-1d)]'
@@ -17,85 +18,111 @@ group by {主键或组合键}
 having cnt > 1;
 -- 预期: 0 条
 
--- [唯一性-多维度] 检查同一实体在特定维度下是否唯一 (如同一骑手同一天只能有一条排班)
-select emp_code, inc_day, count(*) as cnt
-from {结果表}
-where inc_day = '$[time(yyyyMMdd,-1d)]'
-group by emp_code, inc_day
-having cnt > 1;
--- 预期: 0 条
-
--- ==========================================
--- 2. 业务边界与逻辑测试 (Business Logic & Boundary)
--- ==========================================
--- 说明：此类测试必须根据 [Requirement] 和 [business_rules] 进行定制化编写。
-
--- [业务边界-逻辑互斥] 检查是否存在违反业务逻辑的记录
--- 示例：轮休骑手不应有合规检查数据
-select *
-from {结果表}
-where inc_day = '$[time(yyyyMMdd,-1d)]'
-  and work_status = '轮休'
-  and compliance_check_flag = '1';
--- 预期: 0 条
-
--- [边界-数值范围] 检查百分比、评分、金额等是否在合理闭区间内 (如 0-100, >0)
-select *
-from {结果表}
-where inc_day = '$[time(yyyyMMdd,-1d)]'
-  and ({比例字段} < 0 or {比例字段} > 100 or {金额字段} < 0);
--- 预期: 0 条
-
--- [边界-极端值] 检查是否存在异常的大值或小值 (如年龄 > 150)
-select *
-from {结果表}
-where inc_day = '$[time(yyyyMMdd,-1d)]'
-  and {关键字段} > {阈值};
--- 预期: 0 条
-
--- ==========================================
--- 3. 逻辑一致性测试 (Consistency)
--- ==========================================
-
--- [一致性-状态依赖] 若状态为'已完成'，则完成时间不能为空
-select *
-from {结果表}
-where inc_day = '$[time(yyyyMMdd,-1d)]'
-  and {状态字段} = '已完成'
-  and {完成时间} is null;
--- 预期: 0 条
-
--- [一致性-父子关系] 子项的归属父项编码必须存在
-select a.*
-from {结果表} a
-left join {维度表} b on a.{父项编码} = b.{主键}
-where a.inc_day = '$[time(yyyyMMdd,-1d)]'
-  and b.{主键} is null;
--- 预期: 0 条
-
--- ==========================================
--- 4. 字段非空与格式校验 (Null & Format)
--- ==========================================
-
--- [非空-核心字段] 检查非空约束字段
-select count(*)
+-- [非空-核心字段] 核心业务字段不允许出现 Null (左关联补全字段除外)
+-- 权重: High
+select count(*) as null_cnt
 from {结果表}
 where inc_day = '$[time(yyyyMMdd,-1d)]'
   and ({核心字段1} is null or {核心字段2} is null);
 -- 预期: 0 条
 
--- [格式-正则校验] 检查手机号、身份证、邮箱等格式
-select *
+-- ==========================================
+-- 2. 引用一致性与关联覆盖 (Referential Integrity)
+-- ==========================================
+-- 说明：验证事实表与维表的关联质量
+
+-- [一致性-维表覆盖率] 检查事实表中的外键在维表中是否存在
+-- 权重: Medium
+select 
+    count(a.{外键}) as total_cnt,
+    sum(case when b.{主键} is null then 1 else 0 end) as miss_cnt,
+    round(sum(case when b.{主键} is null then 1 else 0 end) * 100.0 / count(a.{外键}), 2) as miss_rate
+from {事实表} a
+left join {维表} b on a.{外键} = b.{主键}
+where a.inc_day = '$[time(yyyyMMdd,-1d)]';
+-- 预期: miss_rate < 0.1%
+
+-- ==========================================
+-- 3. 数据时效性 (Timeliness)
+-- ==========================================
+
+-- [时效性-最新数据日期] 检查表内最大日期是否符合预期
+-- 权重: High
+select max(inc_day) as max_day
+from {结果表};
+-- 预期: max_day = '$[time(yyyyMMdd,-1d)]'
+
+-- ==========================================
+-- 4. 业务逻辑反证 (Negative Testing / Anti-Cases)
+-- ==========================================
+-- 说明：验证“不该出现的数据确实没出现”
+
+-- [业务反证-逻辑互斥] 场景：轮休人员不应有合规检查记录
+-- 预期: 0 条
+select a.*
+from {结果表} a
+join {排班表} b on a.emp_code = b.emp_code
+where a.inc_day = '$[time(yyyyMMdd,-1d)]'
+  and b.inc_day = '$[time(yyyyMMdd,-1d)]'
+  and b.work_status = '轮休';
+
+-- [业务反证-状态闭环] 场景：已离职人员不应出现在活跃统计中
+-- 预期: 0 条
+select a.*
+from {结果表} a
+join {员工主表} b on a.emp_code = b.emp_code
+where a.inc_day = '$[time(yyyyMMdd,-1d)]'
+  and b.employ_status = '离职';
+
+-- [业务反证-过滤有效性] 验证 SQL 中的 WHERE 条件是否生效
+-- 场景：检查是否存在超出业务范围的记录 (如：非一线岗位)
+select count(*)
 from {结果表}
 where inc_day = '$[time(yyyyMMdd,-1d)]'
-  and {手机号字段} not rlike '^1[3-9]\\d{9}$';
+  and not ({业务过滤逻辑，如 position_attribute = '一线'});
 -- 预期: 0 条
 
 -- ==========================================
--- 5. 波动与总量监控 (Volume & Fluctuation)
+-- 3. 跨表一致性校验 (Cross-Table Consistency)
 -- ==========================================
 
--- [波动-记录数环比] 检查记录数是否存在断崖式下跌或暴增
+-- [一致性-维度对齐] 检查结果表中的维度属性是否与主维表一致
+-- 重点：检查工号补齐 (lpad) 是否一致
+select a.{主键}, a.emp_code as result_val, b.emp_code as dim_val
+from {结果表} a
+join {维度表} b on lpad(a.emp_code, 8, '0') = lpad(b.emp_code, 8, '0')
+where a.inc_day = '$[time(yyyyMMdd,-1d)]'
+  and a.emp_code != b.emp_code;
+-- 预期: 0 条
+
+-- [一致性-总量对比] 结果表去重人数应小于等于源表活跃人数
+-- SQL 1 (源表): select count(distinct emp_code) from {源表} where status='上班'
+-- SQL 2 (结果表): select count(distinct emp_code) from {结果表}
+-- 预期: 结果表人数 <= 源表人数 (偏差率应在 1% 以内)
+
+-- ==========================================
+-- 4. 边界值与格式校验 (Boundary & Format)
+-- ==========================================
+
+-- [边界-数值合理性] 检查比例、金额等是否在正常区间
+select *
+from {结果表}
+where inc_day = '$[time(yyyyMMdd,-1d)]'
+  and ({比例字段} < 0 or {比例字段} > 1 or {金额字段} < 0);
+-- 预期: 0 条
+
+-- [格式-正则匹配] 校验手机号、编码等格式规范
+select *
+from {结果表}
+where inc_day = '$[time(yyyyMMdd,-1d)]'
+  and {编码字段} not rlike '^[A-Z0-9]{10}$';
+-- 预期: 0 条
+
+-- ==========================================
+-- 5. 波动监控 (Volatility)
+-- ==========================================
+
+-- [波动-总量环比] 检查记录数是否存在异常跌涨
 select
     inc_day, count(*) as cnt,
     lag(count(*)) over(order by inc_day) as prev_cnt,
@@ -103,4 +130,4 @@ select
 from {结果表}
 where inc_day >= '$[time(yyyyMMdd,-7d)]'
 group by inc_day;
--- 预期: pct_change 在 ±30% 以内
+-- 预期: pct_change 在 ±20% 以内
