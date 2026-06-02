@@ -61,6 +61,11 @@
    - 运行 `python scripts/estimate_cost.py <sql_file> <design_file>`。
    - 分析扫描量风险，自动在设计文档中生成预警报告。
    - 若风险等级为“🔴 高”，必须在交付前告知用户并寻求优化方案。
+5. **自动化血缘联动 (Auto Lineage)**：
+   - 运行 `python scripts/gen_lineage.py <sql_file> <design_file>`。
+   - **表级血缘**：自动生成源表到目标表的 Mermaid 关系图。
+   - **字段级血缘**：解析核心字段的映射关系，生成字段级 Mermaid 拓扑图。
+   - 将可视化血缘信息自动插入设计文档的第十一章。
 
 ### Phase 4.5: 代码审查 (Code Review)
 1. **差异比对**：逐行对比线上 vs 变更版本，识别所有逻辑变化。
