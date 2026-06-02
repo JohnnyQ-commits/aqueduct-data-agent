@@ -37,26 +37,34 @@
 ## 项目结构
 
 ```
-数据开发agent/
-├── README.md              # 本文件
-├── AGENT.md               # 全局约定（代码风格/命名规范/空值处理/SQL红线等）
-├── WORKFLOW.md            # 流程图与交付物对照表
+Data-agent/
+├── README.md               # 本文件
+├── PROJECT_EVALUATION.md   # 项目全面评估报告与后续规划
+├── AGENT.md                # 自动化规范 (Data Development Automation Guidelines)
+├── WORKFLOW.md             # 流程图与交付物对照表
+├── requirements.txt        # 项目依赖清单
+├── .gitignore              # Git 忽略配置
+├── .github/
+│   └── workflows/
+│       └── python-tests.yml # GitHub Actions 自动化测试流水线
 ├── skills/
-│   └── data-developer.md  # 数据开发技能定义（TRIGGER/SKIP/Phase工作流）
-├── templates/
-│   ├── requirement.md     # 需求填写模板（填空式）
-│   ├── ddl.sql            # 表结构 DDL 模板
-│   ├── dqc.sql            # 数据质量测试模板
-│   ├── design.md          # 设计文档模板
-│   └── report.md          # 项目交付总报告模板
+│   └── data-developer.md   # 数据开发技能定义 (Trigger/Skip/Workflow)
 ├── scripts/
-│   ├── batch_query_tables.py  # 批量查表结构工具
-│   ├── validate_sql.py        # SQL 自动校验工具
-│   └── gen_design.py          # 设计文档自动生成
+│   ├── validate_sql.py     # SQL 自动校验工具 (正则优化版)
+│   ├── gen_design.py       # 设计文档自动生成工具
+│   ├── batch_query_tables.py # 批量查表结构工具 (支持多数据源)
+│   └── gen_semantic_doc.py # 语义层文档转换工具 (JSON -> MD+Mermaid)
 ├── knowledge/
-│   └── semantic-model.json    # 业务域语义层模型（实体/关系/指标/规则）
+│   ├── semantic-model.md   # 可视化语义层知识库 (人工审计用)
+│   └── domains/            # 业务域分域存储目录 (机器执行用)
+│       ├── courier_compliance.json
+│       └── event_monitoring.json
+├── tests/                  # 自动化测试套件 (Pytest)
+│   ├── test_validate_sql.py
+│   └── test_gen_design.py
+├── templates/              # 需求、设计、DQC、报告等标准化模板
 └── docs/
-    └── coding-style.md        # SQL 代码风格规范
+    └── coding-style.md     # SQL 代码风格规范
 ```
 
 ## 适用场景
