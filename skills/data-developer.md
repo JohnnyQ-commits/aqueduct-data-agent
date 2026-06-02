@@ -74,6 +74,7 @@
 
 ### Phase 5: 数据质量测试 (Data Quality Testing)
 1. **生成用例**：基于 [dqc.sql](file:///e:/data-agent/templates/dqc.sql) 生成涵盖记录数校验、枚举值合法性、关联一致性等 7 大类测试。
+   - **必选类别**：必须包含 **[唯一性]**（主键及多维度）和 **[边界测试]**（时间逻辑、数值范围）。
 2. **闭环执行 (DQC Feedback Loop)**：
    - 运行 `python scripts/check_data_quality.py <dqc_sql_file> <report_md>`。
    - **自动化反馈**：脚本自动解析 DQC SQL，模拟/执行测试，并将结果（通过/失败/异常值）自动填入交付报告。

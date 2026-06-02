@@ -30,12 +30,17 @@ class DQCExecuter:
         with open(self.dqc_sql_file, 'r', encoding='utf-8') as f:
             content = f.read()
         
-        # 简单解析：通过注释提取测试目标
-        # 寻找格式如：-- [测试项名称] 描述
+        # 优化解析逻辑：支持带分类的测试项，如 -- [唯一性-主键] 描述
         matches = re.findall(r'--\s*\[(.*?)\]\s*(.*)', content)
         for name, desc in matches:
+            category = "General"
+            test_name = name
+            if '-' in name:
+                category, test_name = name.split('-', 1)
+            
             self.test_cases.append({
-                "name": name.strip(),
+                "category": category.strip(),
+                "name": test_name.strip(),
                 "description": desc.strip(),
                 "status": "PENDING"
             })
@@ -58,12 +63,12 @@ class DQCExecuter:
             f"- **执行时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
             f"- **测试脚本**: `{self.dqc_sql_file.name}`",
             "",
-            "| 测试项 | 描述 | 状态 | 异常值 | 执行时间 |",
+            "| 分类 | 测试项 | 描述 | 状态 | 异常值 |",
             "| :--- | :--- | :--- | :--- | :--- |"
         ]
         for r in self.results:
             status_icon = "✅" if r["status"] == "PASSED" else "❌"
-            lines.append(f"| {r['name']} | {r['description']} | {status_icon} {r['status']} | {r['value']} | {r['exec_time']} |")
+            lines.append(f"| {r['category']} | {r['name']} | {r['description']} | {status_icon} {r['status']} | {r['value']} |")
         
         return "\n".join(lines)
 
