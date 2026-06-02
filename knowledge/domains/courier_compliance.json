@@ -83,9 +83,21 @@
       "unit": "人"
     },
     "coverage_count": {
-      "name": "合规检查覆盖人数",
-      "expression": "COUNT(DISTINCT emp_code)",
-      "unit": "人"
+          "name": "合规检查覆盖人数",
+          "expression": "COUNT(DISTINCT emp_code)",
+          "unit": "人"
+        }
+      },
+      "computation_chains": {
+        "合规上班率": {
+          "definition": "实际参加合规检查的上班人数 / 应上班总人数",
+          "steps": [
+            { "metric": "active_couriers", "description": "获取排班上班人数" },
+            { "metric": "coverage_count", "description": "获取实际合规检查覆盖人数" },
+            { "operator": "DIVIDE", "formula": "coverage_count / active_couriers" }
+          ],
+          "unit": "%",
+          "risk_threshold": "低于 95% 需预警"
+        }
+      }
     }
-  }
-}

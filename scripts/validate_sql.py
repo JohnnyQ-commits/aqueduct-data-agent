@@ -5,6 +5,7 @@ SQL 自动校验工具
 用法:
   python validate_sql.py <sql_file>
   python validate_sql.py <sql_file> --strict   (更严格的检查)
+  python validate_sql.py <sql_file> --json     (输出 JSON 格式，供 AI 自动修复使用)
 
 检查项:
   1. SELECT * 禁止
@@ -18,6 +19,7 @@ SQL 自动校验工具
 
 import sys
 import re
+import json
 from pathlib import Path
 
 # 颜色输出
@@ -50,209 +52,160 @@ PARTITION_PATTERNS = [
     re.compile(r'\bdata_day\s*(=|in|between)', re.IGNORECASE),
 ]
 
-def error(msg, line_num=None):
-    prefix = f"  Line {line_num}: " if line_num else "  "
-    print(f"  {Colors.RED}[ERROR]{Colors.RESET}{prefix}{msg}")
+class Validator:
+    def __init__(self, filepath, strict=False):
+        self.filepath = Path(filepath)
+        self.strict = strict
+        self.results = []
+        self.lines = []
+        self.content = ""
 
-def warn(msg, line_num=None):
-    prefix = f"  Line {line_num}: " if line_num else "  "
-    print(f"  {Colors.YELLOW}[WARN]{Colors.RESET}{prefix}{msg}")
+    def log(self, level, message, line_num=None):
+        self.results.append({
+            "level": level,
+            "message": message,
+            "line": line_num
+        })
 
-def ok(msg):
-    print(f"  {Colors.GREEN}[OK]{Colors.RESET} {msg}")
-
-
-def check_select_star(sql, lines):
-    """检查 1: 禁止 SELECT * (UNION ALL 合并场景除外)"""
-    found = False
-    for i, line in enumerate(lines, 1):
-        if RE_COMMENT.match(line):
-            continue
-        if RE_SELECT_STAR.search(line):
-            # 检查上下文是否有 union
-            context_start = max(0, i - 3)
-            context_end = min(len(lines), i + 2)
-            context = ' '.join(lines[context_start:context_end])
-            if RE_UNION.search(context):
+    def check_select_star(self):
+        """检查 1: 禁止 SELECT * (UNION ALL 合并场景除外)"""
+        for i, line in enumerate(self.lines, 1):
+            if RE_COMMENT.match(line):
                 continue
-            error("使用了 SELECT *，必须显式列出字段", i)
-            found = True
-    return found
+            if RE_SELECT_STAR.search(line):
+                context_start = max(0, i - 3)
+                context_end = min(len(self.lines), i + 2)
+                context = ' '.join(self.lines[context_start:context_end])
+                if RE_UNION.search(context):
+                    continue
+                self.log("ERROR", "使用了 SELECT *，必须显式列出字段", i)
 
+    def check_partition_filter(self):
+        """检查 2: 分区过滤"""
+        has_where = False
+        has_partition = False
+        for i, line in enumerate(self.lines, 1):
+            if RE_COMMENT.match(line):
+                continue
+            if RE_WHERE.search(line):
+                has_where = True
+            for pat in PARTITION_PATTERNS:
+                if pat.search(line):
+                    has_partition = True
+                    break
+        if has_where and not has_partition:
+            self.log("WARN", "WHERE 条件中未找到分区字段过滤 (inc_day/day/data_day)")
 
-def check_partition_filter(sql, lines):
-    """检查 2: 分区过滤"""
-    has_where = False
-    has_partition = False
+    def check_keyword_case(self):
+        """检查 3: 关键字大写警告"""
+        line_start_keywords = [
+            'select', 'from', 'where', 'group by', 'having', 'order by',
+            'left join', 'right join', 'inner join', 'full join', 'join',
+            'union all', 'union', 'insert', 'insert overwrite',
+            'create table', 'drop table', 'with',
+        ]
+        for i, line in enumerate(self.lines, 1):
+            stripped = line.strip()
+            if not stripped or RE_COMMENT.match(line):
+                continue
+            line_lower = stripped.lower()
+            for kw in line_start_keywords:
+                if line_lower.startswith(kw):
+                    actual_kw = stripped[:len(kw)]
+                    if actual_kw != actual_kw.lower():
+                        self.log("WARN", f"关键字应全小写：{actual_kw}", i)
+                        break
 
-    for i, line in enumerate(lines, 1):
-        if RE_COMMENT.match(line):
-            continue
-        if RE_WHERE.search(line):
-            has_where = True
-        
-        for pat in PARTITION_PATTERNS:
-            if pat.search(line):
-                has_partition = True
+    def check_division(self):
+        """检查 4: 除法未判空判零"""
+        for i, line in enumerate(self.lines, 1):
+            if RE_COMMENT.match(line):
+                continue
+            if RE_DIVISION.search(line):
+                if RE_DIV_PROTECT.search(line):
+                    continue
+                if i > 1 and RE_WHEN_ZERO.search(self.lines[i-2]):
+                    continue
+                self.log("WARN", "除法未做判空判零处理", i)
+
+    def check_join_without_on(self):
+        """检查 5: JOIN 未指定关联条件"""
+        for i, line in enumerate(self.lines, 1):
+            if RE_COMMENT.match(line):
+                continue
+            if RE_JOIN.search(line):
+                if RE_ON.search(line):
+                    continue
+                found_on = False
+                for j in range(i, min(i + 10, len(self.lines))):
+                    next_line = self.lines[j]
+                    if RE_ON.search(next_line):
+                        found_on = True
+                        break
+                    if RE_JOIN.search(next_line) and j > i:
+                        break
+                if not found_on:
+                    self.log("WARN", "JOIN 语句缺少 ON 条件", i)
+
+    def check_nvl(self):
+        """检查 6: 数值字段未做 NVL 处理"""
+        for i, line in enumerate(self.lines, 1):
+            if RE_COMMENT.match(line):
+                continue
+            if RE_SUM_RAW.search(line):
+                if not RE_SUM_NVL.search(line):
+                    self.log("WARN", "SUM 聚合未使用 NVL 处理空值", i)
+
+    def check_strict(self):
+        if not self.strict:
+            return
+        last_content_line = None
+        for line in reversed(self.lines):
+            if line.strip() and not RE_COMMENT.match(line):
+                last_content_line = line.strip()
                 break
+        if last_content_line and not last_content_line.endswith(';'):
+            self.log("WARN", "文件末尾语句缺少分号")
 
-    if has_where and not has_partition:
-        warn("WHERE 条件中未找到分区字段过滤 (inc_day/day/data_day)")
-        return True
-    return False
+    def run(self):
+        if not self.filepath.exists():
+            return {"error": f"文件不存在: {self.filepath}"}
+        
+        with open(self.filepath, 'r', encoding='utf-8') as f:
+            self.content = f.read()
+        self.lines = self.content.split('\n')
 
+        self.check_select_star()
+        self.check_partition_filter()
+        self.check_keyword_case()
+        self.check_division()
+        self.check_join_without_on()
+        self.check_nvl()
+        self.check_strict()
 
-def check_keyword_case(sql, lines):
-    """检查 3: 关键字大写警告"""
-    found = False
-    line_start_keywords = [
-        'select', 'from', 'where', 'group by', 'having', 'order by',
-        'left join', 'right join', 'inner join', 'full join', 'join',
-        'union all', 'union', 'insert', 'insert overwrite',
-        'create table', 'drop table', 'with',
-    ]
+        return {
+            "filename": self.filepath.name,
+            "error_count": len([r for r in self.results if r["level"] == "ERROR"]),
+            "warn_count": len([r for r in self.results if r["level"] == "WARN"]),
+            "issues": self.results
+        }
 
-    for i, line in enumerate(lines, 1):
-        stripped = line.strip()
-        if not stripped or RE_COMMENT.match(line):
-            continue
-
-        line_lower = stripped.lower()
-        for kw in line_start_keywords:
-            if line_lower.startswith(kw):
-                # 检查实际内容是否包含大写
-                actual_kw = stripped[:len(kw)]
-                if actual_kw != actual_kw.lower():
-                    warn(f"关键字应全小写：{actual_kw}", i)
-                    found = True
-                    break
-    return found
-
-
-def check_division(sql, lines):
-    """检查 4: 除法未判空判零"""
-    found = False
-    for i, line in enumerate(lines, 1):
-        if RE_COMMENT.match(line):
-            continue
-        if RE_DIVISION.search(line):
-            if RE_DIV_PROTECT.search(line):
-                continue
-            if i > 1 and RE_WHEN_ZERO.search(lines[i-2]):
-                continue
-            warn("除法未做判空判零处理", i)
-            found = True
-    return found
-
-
-def check_join_without_on(sql, lines):
-    """检查 5: JOIN 未指定关联条件"""
-    found = False
-    for i, line in enumerate(lines, 1):
-        if RE_COMMENT.match(line):
-            continue
-        if RE_JOIN.search(line):
-            if RE_ON.search(line):
-                continue
-            
-            # 向下搜索 ON 条件，直到遇到下一个 JOIN 或语句结束
-            found_on = False
-            for j in range(i, min(i + 10, len(lines))):
-                next_line = lines[j]
-                if RE_ON.search(next_line):
-                    found_on = True
-                    break
-                if RE_JOIN.search(next_line) and j > i: # 遇到下一个 JOIN 还没找到 ON
-                    break
-            
-            if not found_on:
-                warn(f"JOIN 语句缺少 ON 条件", i)
-                found = True
-    return found
-
-
-def check_nvl(sql, lines):
-    """检查 6: 数值字段未做 NVL 处理"""
-    found = False
-    for i, line in enumerate(lines, 1):
-        if RE_COMMENT.match(line):
-            continue
-        if RE_SUM_RAW.search(line):
-            if not RE_SUM_NVL.search(line):
-                warn("SUM 聚合未使用 NVL 处理空值", i)
-                found = True
-    return found
-
-
-def check_strict(sql, lines, strict=False):
-    """严格模式下的额外检查"""
-    if not strict:
-        return
-
-    # 检查文件末尾是否有分号
-    last_content_line = None
-    for line in reversed(lines):
-        if line.strip() and not RE_COMMENT.match(line):
-            last_content_line = line.strip()
-            break
+def print_text_report(report):
+    print(f"\n{Colors.BOLD}=== SQL 校验: {report['filename']} ==={Colors.RESET}\n")
+    for issue in report["issues"]:
+        color = Colors.RED if issue["level"] == "ERROR" else Colors.YELLOW
+        line_info = f"Line {issue['line']}: " if issue["line"] else ""
+        print(f"  {color}[{issue['level']}]{Colors.RESET} {line_info}{issue['message']}")
     
-    if last_content_line and not last_content_line.endswith(';'):
-        warn("文件末尾语句缺少分号")
-
-
-def validate_file(filepath, strict=False):
-    """主验证函数"""
-    path = Path(filepath)
-    if not path.exists():
-        print(f"{Colors.RED}文件不存在: {filepath}{Colors.RESET}")
-        return 1
-
-    with open(path, 'r', encoding='utf-8') as f:
-        content = f.read()
-
-    lines = content.split('\n')
-
-    print(f"\n{Colors.BOLD}=== SQL 校验: {path.name} ==={Colors.RESET}\n")
-
-    checks = [
-        ("SELECT * 检查", lambda: check_select_star(content, lines)),
-        ("分区过滤检查", lambda: check_partition_filter(content, lines)),
-        ("关键字大小写检查", lambda: check_keyword_case(content, lines)),
-        ("除法判空检查", lambda: check_division(content, lines)),
-        ("JOIN 条件检查", lambda: check_join_without_on(content, lines)),
-        ("NVL 聚合检查", lambda: check_nvl(content, lines)),
-    ]
-
-    error_count = 0
-    warn_count = 0
-
-    for name, check_fn in checks:
-        result = check_fn()
-        if result:
-            # 只有 SELECT * 是 ERROR，其他是 WARN
-            if "SELECT *" in name:
-                error_count += 1
-            else:
-                warn_count += 1
-
-    if strict:
-        check_strict(content, lines, strict=True)
-
     print(f"\n{Colors.BOLD}=== 校验完成 ==={Colors.RESET}")
-    print(f"  文件: {path.name}")
-    print(f"  行数: {len(lines)}")
-    print(f"  问题: {error_count} 个 ERROR, {warn_count} 个 WARN")
-
-    if error_count == 0 and warn_count == 0:
-        ok("所有检查通过")
-        return 0
-    elif error_count > 0:
+    print(f"  问题: {report['error_count']} 个 ERROR, {report['warn_count']} 个 WARN")
+    
+    if report['error_count'] == 0 and report['warn_count'] == 0:
+        print(f"  {Colors.GREEN}[OK]{Colors.RESET} 所有检查通过")
+    elif report['error_count'] > 0:
         print(f"\n{Colors.RED}{Colors.BOLD}存在 ERROR，建议修复后使用{Colors.RESET}")
-        return 1
     else:
         print(f"\n{Colors.YELLOW}{Colors.BOLD}存在 WARN，请确认后使用{Colors.RESET}")
-        return 0
-
 
 def main():
     if len(sys.argv) < 2:
@@ -261,8 +214,17 @@ def main():
 
     filepath = sys.argv[1]
     strict = '--strict' in sys.argv
-    return validate_file(filepath, strict)
+    as_json = '--json' in sys.argv
 
+    validator = Validator(filepath, strict)
+    report = validator.run()
+
+    if as_json:
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        print_text_report(report)
+
+    return 1 if report.get("error_count", 0) > 0 else 0
 
 if __name__ == '__main__':
     sys.exit(main())

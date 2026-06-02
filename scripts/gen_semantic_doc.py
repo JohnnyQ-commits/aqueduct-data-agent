@@ -89,8 +89,17 @@ def domains_to_markdown(domains):
             lines.append(f"| {m_info.get('name')} | `{m_info.get('expression')}` | `{m_info.get('filter', '-')}` | {m_info.get('unit', '-')} |")
         lines.append("")
 
+        if domain.get('computation_chains'):
+            lines.append("### 4. 计算链路 (Computation Chains)")
+            lines.append("| 复合指标 | 业务定义 | 计算步骤 | 预警阈值 |")
+            lines.append("| :--- | :--- | :--- | :--- |")
+            for chain_name, chain_info in domain.get('computation_chains', {}).items():
+                steps = " -> ".join([s.get('metric', s.get('operator', 'step')) for s in chain_info.get('steps', [])])
+                lines.append(f"| {chain_name} | {chain_info.get('definition')} | `{steps}` | {chain_info.get('risk_threshold', '-')} |")
+            lines.append("")
+
         if domain.get('derived_attributes'):
-            lines.append("### 4. 派生属性/转换规则")
+            lines.append("### 5. 派生属性/转换规则")
             lines.append("| 属性名 | 逻辑说明 | 枚举值 |")
             lines.append("| :--- | :--- | :--- |")
             for attr_name, attr_info in domain.get('derived_attributes', {}).items():

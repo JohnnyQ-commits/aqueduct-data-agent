@@ -1,6 +1,6 @@
 # Data Agent 可视化知识库
 
-> **自动生成时间**: 2026-06-01 19:57:10
+> **自动生成时间**: 2026-06-02 11:06:54
 > **说明**: 本文档由脚本自动从 `knowledge/domains/*.json` 聚合生成。**JSON 用于 AI 执行，本 MD 用于人工审计。**
 
 ---
@@ -43,7 +43,12 @@ erDiagram
 | 排班上班骑手数 | `COUNT(DISTINCT emp_code)` | `on_duty_status = '1'` | 人 |
 | 合规检查覆盖人数 | `COUNT(DISTINCT emp_code)` | `-` | 人 |
 
-### 4. 派生属性/转换规则
+### 4. 计算链路 (Computation Chains)
+| 复合指标 | 业务定义 | 计算步骤 | 预警阈值 |
+| :--- | :--- | :--- | :--- |
+| 合规上班率 | 实际参加合规检查的上班人数 / 应上班总人数 | `active_couriers -> coverage_count -> DIVIDE` | 低于 95% 需预警 |
+
+### 5. 派生属性/转换规则
 | 属性名 | 逻辑说明 | 枚举值 |
 | :--- | :--- | :--- |
 | ResourcePool | CASE WHEN resource_flag IN ('自有全职', '自有非全') THEN '自有' ELSE resource_flag END | 自有, 同城骑手, 乡镇合伙人, 城市合伙人 |

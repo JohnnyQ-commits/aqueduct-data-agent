@@ -36,7 +36,11 @@
 
 ### Phase 2: 设计方案 (Design Specification)
 1. **产出方案草稿**：包含取数逻辑说明、源到目标的字段映射、上下游依赖关系。
-2. **用户对齐**：输出方案，确认无误后方可进行 DDL 编写。
+2. **用户对齐与双向同步**：
+   - 输出方案，若用户在 `design.md` 中直接修改了字段或关联关系。
+   - **触发同步**：运行 `python scripts/sync_design.py <design_file> <ddl_file> <domain_json>`。
+   - 自动更新 DDL 和知识库定义，确保设计与代码始终同步。
+3. **用户最终确认**：确认无误后方可进入下一阶段。
 
 ### Phase 3: 表结构设计 (Schema Design)
 1. **生成 DDL**：基于 [ddl.sql](file:///e:/data-agent/templates/ddl.sql) 模板生成 `CREATE TABLE` 语句。
@@ -45,7 +49,18 @@
 ### Phase 4: SQL 开发 (SQL Development)
 1. **编码实现**：遵循 [coding-style.md](file:///e:/data-agent/docs/coding-style.md)。关键字全小写，字段竖排。
 2. **架构选择**：简单场景用子查询，复杂场景使用 CTE (With 语法)。
-3. **自动校验**：运行 `python scripts/validate_sql.py <sql_file>`，确保无 SELECT *、无分区缺失、除法已判空。
+3. **自动校验与智能修复 (Smart Fix)**：
+   - 运行 `python scripts/validate_sql.py <sql_file> --json` 获取结构化问题列表。
+   - **自动修复逻辑**：
+     - 若存在 `SELECT *`：解析上游 DDL，自动替换为完整字段列表。
+     - 若缺少分区过滤：根据 `semantic-model.json` 中的分区定义，自动添加默认分区过滤（如 `inc_day = '${bdp.system.bizdate}'`）。
+     - 若关键字大写：一键转换为全小写。
+     - 若除法未判空：自动包裹 `nvl(..., 0)` 或 `CASE WHEN` 逻辑。
+   - **用户确认**：将修复前后的差异（Diff）展示给用户，获得显式确认后方可应用修复。
+4. **资源成本预估 (Cost Estimation)**：
+   - 运行 `python scripts/estimate_cost.py <sql_file> <design_file>`。
+   - 分析扫描量风险，自动在设计文档中生成预警报告。
+   - 若风险等级为“🔴 高”，必须在交付前告知用户并寻求优化方案。
 
 ### Phase 4.5: 代码审查 (Code Review)
 1. **差异比对**：逐行对比线上 vs 变更版本，识别所有逻辑变化。
