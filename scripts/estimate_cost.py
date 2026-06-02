@@ -87,10 +87,10 @@ class CostEstimator:
         with open(design_path, encoding='utf-8') as f:
             content = f.read()
 
-        # 使用明确的章节边界：从 “## 十、资源成本预估” 到 “## 十一” 或文件末尾
-        section_header = “## 十、资源成本预估”
-        next_section = “## 十一”
-        new_section = f”\n\n{section_header} (Cost Estimation)\n\n{report}\n”
+        # Use explicit section boundaries: from "## 十、" to "## 十一" or EOF
+        section_header = "## 十、资源成本预估"
+        next_section = "## 十一"
+        new_section = f"\n\n{section_header} (Cost Estimation)\n\n{report}\n"
 
         if section_header in content:
             # 找到该章节起始和下一个章节起始

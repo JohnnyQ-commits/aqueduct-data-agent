@@ -58,7 +58,7 @@ def generate_mermaid_er(domain):
     for rel in domain.get('relationships', []):
         from_ent = rel.get('from')
         to_ent = rel.get('to')
-        card = rel.get('cardinality', '1:1')
+        card = rel.get('cardinality', '1:N')
         symbol = cardinality_map.get(card, "||--o{")
         desc = rel.get('description', rel.get('name', ''))
         mermaid.append(f"    {from_ent} {symbol} {to_ent} : \"{desc}\"")
@@ -153,27 +153,37 @@ def domains_to_markdown(domains):
                 lines.append(f"| {chain_name} | {chain_info.get('definition')} | `{steps}` | {chain_info.get('risk_threshold', '-')} |")
             lines.append("")
 
-        # 6. 公理
+        # 6. 派生属性/转换规则
+        if domain.get('derived_attributes'):
+            lines.append("### 6. 派生属性/转换规则 (Derived Attributes)")
+            lines.append("| 属性名 | 逻辑说明 | 枚举值 |")
+            lines.append("| :--- | :--- | :--- |")
+            for attr_name, attr_info in domain.get('derived_attributes', {}).items():
+                values = ", ".join(attr_info.get('values', []))
+                lines.append(f"| {attr_name} | {attr_info.get('logic', '')} | {values} |")
+            lines.append("")
+
+        # 7. 公理
         if domain.get('axioms'):
-            lines.append("### 6. 领域公理 (Axioms)")
+            lines.append("### 7. 领域公理 (Axioms)")
             lines.append("| 编号 | 公理描述 | 形式化表达 |")
             lines.append("| :--- | :--- | :--- |")
             for ax in domain.get('axioms', []):
                 lines.append(f"| {ax['id']} | {ax['statement']} | `{ax['formal']}` |")
             lines.append("")
 
-        # 7. 业务规则
+        # 8. 业务规则
         if domain.get('business_rules'):
-            lines.append("### 7. 业务规则 (Business Rules)")
+            lines.append("### 8. 业务规则 (Business Rules)")
             lines.append("| 规则名 | 内容 |")
             lines.append("| :--- | :--- |")
             for rule_name, rule_desc in domain.get('business_rules', {}).items():
                 lines.append(f"| {rule_name} | {rule_desc} |")
             lines.append("")
 
-        # 8. 过滤规则
+        # 9. 过滤规则
         if domain.get('filter_rules'):
-            lines.append("### 8. 分区与过滤规则 (Filter Rules)")
+            lines.append("### 9. 分区与过滤规则 (Filter Rules)")
             lines.append("| 规则名 | 说明 | 条件 |")
             lines.append("| :--- | :--- | :--- |")
             for rule_name, rule_info in domain.get('filter_rules', {}).items():
