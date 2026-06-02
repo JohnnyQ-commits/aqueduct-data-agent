@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 批量查表结构工具 — 数据开发agent 专用
 
@@ -15,14 +14,12 @@
   支持数据源：Hive, MySQL, MongoDB
 """
 
-import sys
 import json
-import re
-from pathlib import Path
+import sys
 from datetime import datetime
 
-# 预编译正则
-RE_TABLE_NAME = re.compile(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b')
+from scripts.utils import RE_TABLE_NAME
+
 
 def extract_tables(text):
     """从文本中提取 库名.表名 格式的表名"""
@@ -53,20 +50,20 @@ def generate_task_list(tables):
     for i, table in enumerate(tables, 1):
         db, tbl = table.split('.', 1)
         lines.append(f"-- [{i}/{len(tables)}] {table}")
-        
+
         # 根据库名猜测类型（常见数仓库名通常有后缀或前缀）
         if 'mysql' in db.lower() or 'rds' in db.lower():
-            lines.append(f"-- Type: MySQL")
+            lines.append("-- Type: MySQL")
             lines.append(f"-- MCP: bdp_mysql_search keywords='{tbl}' dbName='{db}'")
-            lines.append(f"-- → 获取 id 后，再调用 bdp_mysql_get_detail id='<id>'")
+            lines.append("-- → 获取 id 后，再调用 bdp_mysql_get_detail id='<id>'")
         elif 'mongo' in db.lower():
-            lines.append(f"-- Type: MongoDB")
+            lines.append("-- Type: MongoDB")
             lines.append(f"-- MCP: bdp_mongodb_search keywords='{tbl}' dbName='{db}'")
-            lines.append(f"-- → 获取 id 后，再调用 bdp_mongodb_get_detail id='<id>'")
+            lines.append("-- → 获取 id 后，再调用 bdp_mongodb_get_detail id='<id>'")
         else:
-            lines.append(f"-- Type: Hive")
+            lines.append("-- Type: Hive")
             lines.append(f"-- MCP: bdp_hive_table_search keywords='{tbl}' dbName='{db}'")
-            lines.append(f"-- → 获取 tblId 后，再调用 bdp_hive_table_get_detail id='<tblId>'")
+            lines.append("-- → 获取 tblId 后，再调用 bdp_hive_table_get_detail id='<tblId>'")
         lines.append("")
     return '\n'.join(lines)
 
@@ -77,10 +74,10 @@ def build_ddl_from_mcp_result(data):
     db_name = data.get('dbName') or data.get('database') or 'unknown'
     tbl_name = data.get('tblName') or data.get('tableName') or data.get('collectionName') or 'unknown'
     comment = data.get('comment') or data.get('remarks') or ''
-    
+
     # 获取列信息（不同源字段名不同）
     column_list = data.get('columnList') or data.get('columns') or data.get('fields') or []
-    
+
     # 构建字段定义
     columns = []
     for col in column_list:
@@ -109,14 +106,14 @@ def build_ddl_from_mcp_result(data):
         store_type = data.get('storeType', 'parquet').lower()
         store_map = {'parquet': 'STORED AS PARQUET', 'orc': 'STORED AS ORC', 'textfile': 'STORED AS TEXTFILE'}
         ddl_lines.append(store_map.get(store_type, f"STORED AS {store_type.upper()}"))
-    
+
     ddl_lines.append(";")
     return '\n'.join(ddl_lines)
 
 
 def build_from_json(json_path, output_path):
     """从 JSON 文件读取结果并生成 DDL"""
-    with open(json_path, 'r', encoding='utf-8') as f:
+    with open(json_path, encoding='utf-8') as f:
         data = json.load(f)
 
     tables = data.get('tables', [])
@@ -125,11 +122,11 @@ def build_from_json(json_path, output_path):
         return 1
 
     with open(output_path, 'w', encoding='utf-8') as f:
-        f.write(f"-- ==========================================\n")
-        f.write(f"-- 表结构 DDL（批量生成）\n")
+        f.write("-- ==========================================\n")
+        f.write("-- 表结构 DDL（批量生成）\n")
         f.write(f"-- 生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write(f"-- 共 {len(tables)} 张表\n")
-        f.write(f"-- ==========================================\n\n")
+        f.write("-- ==========================================\n\n")
 
         success_count = 0
         failed_count = 0
@@ -149,7 +146,7 @@ def build_from_json(json_path, output_path):
                 success_count += 1
                 print(f"  [OK] {table_name}")
             except Exception as e:
-                f.write(f"-- TODO: {table_name} - DDL 生成失败：{str(e)}\n\n")
+                f.write(f"-- TODO: {table_name} - DDL 生成失败：{e!s}\n\n")
                 failed_count += 1
 
     print(f"\nDDL 已生成到：{output_path}")
@@ -172,7 +169,7 @@ def main():
         if len(sys.argv) < 4:
             print("用法: python3 batch_query_tables.py --file <tables.txt> <output.sql>")
             return 1
-        with open(sys.argv[2], 'r', encoding='utf-8') as f:
+        with open(sys.argv[2], encoding='utf-8') as f:
             content = f.read()
         tables = extract_tables(content)
         output_path = sys.argv[3]
@@ -187,7 +184,7 @@ def main():
     task_list = generate_task_list(tables)
     with open(output_path, 'w', encoding='utf-8') as f:
         f.write(task_list)
-    
+
     print(f"\n任务清单已生成：{output_path}")
     return 0
 

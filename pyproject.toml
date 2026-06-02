@@ -1,0 +1,79 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "data-copilot"
+version = "0.2.0"
+description = "Data Engineering Automation Agent — 从需求到交付的完整数据仓库开发流水线"
+readme = "README.md"
+requires-python = ">=3.8"
+license = {text = "MIT"}
+authors = [
+    {name = "JohnnyQ", email = "johnnyq@example.com"},
+]
+keywords = ["data-warehouse", "etl", "sql", "data-quality", "lineage"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.0",
+    "pytest-cov>=5.0",
+    "ruff>=0.4.0",
+]
+
+[project.scripts]
+validate-sql = "scripts.validate_sql:main"
+gen-design = "scripts.gen_design:main"
+gen-lineage = "scripts.gen_lineage:main"
+sync-design = "scripts.sync_design:main"
+estimate-cost = "scripts.estimate_cost:main"
+check-dqc = "scripts.check_data_quality:main"
+analyze-productivity = "scripts.analyze_productivity:main"
+gen-semantic-doc = "scripts.gen_semantic_doc:main"
+batch-query-tables = "scripts.batch_query_tables:main"
+data-copilot = "scripts.main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_classes = "Test"
+python_functions = "test_*"
+
+[tool.ruff]
+target-version = "py38"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # Pyflakes
+    "I",      # isort (import sorting)
+    "UP",     # pyupgrade
+    "B",      # flake8-bugbear
+    "SIM",    # flake8-simplify
+    "RUF",    # ruff-specific rules
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B006",   # mutable default argument (common pattern)
+    "RUF001", # ambiguous unicode in string (project uses Chinese)
+    "RUF002", # ambiguous unicode in docstring (project uses Chinese)
+    "RUF003", # ambiguous unicode in comment (project uses Chinese)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["scripts"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

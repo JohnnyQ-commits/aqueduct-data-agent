@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 设计文档自动生成工具
 
@@ -16,45 +15,26 @@
   剩余需手动确认的部分：需求概述、取数逻辑、数据质量保障细节
 """
 
-import sys
 import re
-from pathlib import Path
+import sys
 from datetime import datetime
+from pathlib import Path
 
-# 预编译正则表达式以优化性能
-RE_TABLE_NAME = re.compile(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b')
-RE_INSERT_OVERWRITE = re.compile(r'insert\s+overwrite\s+table\s+(\w+\.\w+)', re.IGNORECASE)
-RE_INSERT_INTO = re.compile(r'insert\s+into\s+(\w+\.\w+)', re.IGNORECASE)
-RE_CREATE_TABLE = re.compile(r'create\s+table\s+(?:if\s+not\s+exists\s+)?(\w+\.\w+)', re.IGNORECASE)
-RE_JOIN_KEYWORD = re.compile(r'\b(left\s+join|right\s+join|inner\s+join|full\s+join|join)\b', re.IGNORECASE)
-# 简化别名提取正则，依靠后续关键字过滤
-RE_ALIAS_AS = re.compile(r'\bas\s+([a-zA-Z_]\w*)\b', re.IGNORECASE)
-RE_INC_DAY_FILTER = re.compile(r'\binc_day\s*=\s*[\'"]([^\'"]*)[\'"]', re.IGNORECASE)
+from scripts.utils import (
+    RE_ALIAS_AS,
+    RE_INC_DAY_FILTER,
+    RE_JOIN_KEYWORD,
+    extract_tables,
+    parse_target_table,
+)
 
 # 排除的关键字（在解析字段别名时使用）
 EXCLUDED_KEYWORDS = {'select', 'from', 'where', 'group', 'order', 'having', 'end', 'case', 'when', 'then', 'else', 'as', 'join', 'on', 'limit'}
 
+
 def extract_tables_from_sql(sql):
-    """从 SQL 中提取所有 库.表 格式的表名"""
-    matches = RE_TABLE_NAME.findall(sql)
-    tables = []
-    seen = set()
-    for db, tbl in matches:
-        if len(db) > 1: 
-            full = f'{db}.{tbl}'
-            if full not in seen:
-                tables.append(full)
-                seen.add(full)
-    return tables
-
-
-def parse_target_table(sql):
-    """解析目标表名（从 INSERT OVERWRITE 或 CREATE TABLE）"""
-    for reg in [RE_INSERT_OVERWRITE, RE_INSERT_INTO, RE_CREATE_TABLE]:
-        m = reg.search(sql)
-        if m:
-            return m.group(1)
-    return None
+    """从 SQL 中提取所有 库.表 格式的表名（别名，供测试导入）"""
+    return extract_tables(sql)
 
 
 def parse_source_tables(sql):
@@ -62,7 +42,7 @@ def parse_source_tables(sql):
     sources = []
     tables = extract_tables_from_sql(sql)
     target = parse_target_table(sql)
-    
+
     # 排除目标表
     if target:
         tables = [t for t in tables if t != target]
@@ -107,7 +87,7 @@ def parse_join_logic(sql):
 
         # 尝试解析普通 JOIN: join table alias on ...
         # 处理可能的换行情况
-        current_context = ' '.join([l.strip() for l in lines[i:i+3]])
+        current_context = ' '.join([line.strip() for line in lines[i:i+3]])
         match = re.search(
             r'\b(?:left\s+join|inner\s+join|right\s+join|full\s+join|join)\s+(\w+\.\w+|\w+)\s+(\w+)\s+on\s+(.+?)(?:\s+(?:left|inner|right|full|join|where|group|order|limit)|$)',
             current_context,
@@ -137,10 +117,9 @@ def parse_field_list_from_sql(sql):
 
     for m in RE_ALIAS_AS.finditer(sql):
         field_name = m.group(1)
-        if field_name.lower() not in EXCLUDED_KEYWORDS:
-            if field_name not in seen:
-                fields.append(field_name)
-                seen.add(field_name)
+        if field_name.lower() not in EXCLUDED_KEYWORDS and field_name not in seen:
+            fields.append(field_name)
+            seen.add(field_name)
     return fields
 
 
@@ -151,7 +130,7 @@ def generate_design(sql_file, requirement_name=None, output_path=None):
         print(f"文件不存在: {sql_file}")
         return 1
 
-    with open(path, 'r', encoding='utf-8') as f:
+    with open(path, encoding='utf-8') as f:
         sql = f.read()
 
     if not requirement_name:
@@ -210,7 +189,7 @@ def generate_design(sql_file, requirement_name=None, output_path=None):
     lines.append('')
     for i, src in enumerate(source_tables, 1):
         lines.append(f'{i}. **{src["table"]}**')
-        lines.append(f'   - [请补充说明]')
+        lines.append('   - [请补充说明]')
         lines.append(f'   - 分区: `{src["partition"]}`')
         lines.append('')
 

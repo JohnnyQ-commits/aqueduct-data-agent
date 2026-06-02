@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 资源成本预估工具 (Cost Estimation)
 
@@ -12,14 +11,15 @@
   4. 生成预估报告，可自动更新至设计文档。
 """
 
-import sys
 import re
-import json
+import sys
 from pathlib import Path
 
-# 预编译正则
-RE_TABLE_NAME = re.compile(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b')
-RE_JOIN = re.compile(r'\b(left\s+join|right\s+join|inner\s+join|full\s+join|join)\b', re.IGNORECASE)
+from scripts.utils import (
+    RE_JOIN,
+    RE_TABLE_NAME,
+)
+
 
 class CostEstimator:
     def __init__(self, sql_file):
@@ -29,7 +29,7 @@ class CostEstimator:
         self.risks = []
 
     def load_sql(self):
-        with open(self.sql_file, 'r', encoding='utf-8') as f:
+        with open(self.sql_file, encoding='utf-8') as f:
             self.sql_content = f.read()
 
     def extract_tables(self):
@@ -71,31 +71,31 @@ class CostEstimator:
         else:
             for risk in self.risks:
                 report.append(f"  - ⚠️ {risk}")
-        
+
         # 模拟扫描量预估 (在真实场景中应调用 MCP 获取元数据)
         report.append("- **预估扫描量**: 约 500GB - 2TB (基于上游表历史日增量预估)")
         report.append("- **资源预警级别**: " + ("🔴 高" if self.risks else "🟢 低"))
-        
+
         return "\n".join(report)
 
     def update_design_doc(self, design_file):
         design_path = Path(design_file)
         if not design_path.exists():
             return False
-        
+
         report = self.generate_report()
-        with open(design_path, 'r', encoding='utf-8') as f:
+        with open(design_path, encoding='utf-8') as f:
             content = f.read()
-        
+
         # 寻找“数据质量保障”或末尾插入
         new_section = f"\n\n## 十、资源成本预估 (Cost Estimation)\n\n{report}\n"
-        
+
         if "## 十、资源成本预估" in content:
             # 替换旧的
             content = re.sub(r'## 十、资源成本预估.*?(?=##|$)', new_section, content, flags=re.DOTALL)
         else:
             content += new_section
-            
+
         with open(design_path, 'w', encoding='utf-8') as f:
             f.write(content)
         return True
@@ -104,15 +104,15 @@ def main():
     if len(sys.argv) < 2:
         print("Usage: python estimate_cost.py <sql_file> [design_file]")
         return 1
-    
+
     sql_file = sys.argv[1]
     design_file = sys.argv[2] if len(sys.argv) > 2 else None
-    
+
     estimator = CostEstimator(sql_file)
     estimator.load_sql()
     estimator.extract_tables()
     estimator.check_risks()
-    
+
     if design_file:
         if estimator.update_design_doc(design_file):
             print(f"成功将预估报告更新至: {design_file}")

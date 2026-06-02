@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 数据质量自动测试与闭环反馈工具 (DQC Feedback Loop)
 
@@ -9,11 +8,11 @@
   4. 识别严重质量问题并触发预警。
 """
 
-import sys
 import re
-import json
-from pathlib import Path
+import sys
 from datetime import datetime
+from pathlib import Path
+
 
 class DQCExecuter:
     def __init__(self, dqc_sql_file, report_file=None):
@@ -26,10 +25,10 @@ class DQCExecuter:
         """解析 DQC SQL 中的测试项及涉及的表"""
         if not self.dqc_sql_file.exists():
             return
-        
-        with open(self.dqc_sql_file, 'r', encoding='utf-8') as f:
+
+        with open(self.dqc_sql_file, encoding='utf-8') as f:
             content = f.read()
-        
+
         # 提取涉及的表 (库.表 格式)
         table_matches = re.findall(r'\b([a-zA-Z_]\w*\.[a-zA-Z_]\w*)\b', content)
         self.involved_tables = sorted(list(set(table_matches)))
@@ -42,22 +41,22 @@ class DQCExecuter:
             if header_match:
                 full_name = header_match.group(1).strip()
                 desc = header_match.group(2).strip()
-                
+
                 category = "General"
                 test_name = full_name
                 if '-' in full_name:
                     category, test_name = full_name.split('-', 1)
-                
+
                 # 提取预期结果
                 expect_match = re.search(r'--\s*预期:\s*(.*)', block)
                 expectation = expect_match.group(1).strip() if expect_match else "符合业务逻辑"
-                
+
                 # 提取权重
                 weight_match = re.search(r'--\s*权重:\s*(.*)', block)
                 weight_str = weight_match.group(1).strip() if weight_match else "Medium"
                 weight_map = {"High": 30, "Medium": 15, "Low": 5}
                 weight_val = weight_map.get(weight_str, 15)
-                
+
                 self.test_cases.append({
                     "category": category,
                     "name": test_name,
@@ -77,7 +76,7 @@ class DQCExecuter:
             case["status"] = "PASSED" if is_success else "FAILED"
             case["value"] = "0" if is_success else str(random.randint(1, 100))
             case["exec_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            
+
             # 增加修复建议 (Smart Fix Logic)
             if case["status"] == "FAILED":
                 full_test_id = f"{case['category']}-{case['name']}"
@@ -93,19 +92,18 @@ class DQCExecuter:
                     case["fix_suggestion"] = "请人工介入分析业务规则。"
             else:
                 case["fix_suggestion"] = "-"
-            
+
             self.results.append(case)
 
     def generate_dqc_report_md(self):
         passed_cnt = sum(1 for r in self.results if r["status"] == "PASSED")
-        failed_cnt = len(self.results) - passed_cnt
-        
+
         # 计算健康得分：起始 100 分，根据失败项权重扣分
         deduction = sum(r["weight"] for r in self.results if r["status"] == "FAILED")
         health_score = max(0, 100 - deduction)
-        
+
         status_color = "🟢" if health_score >= 90 else "🟡" if health_score >= 70 else "🔴"
-        
+
         lines = [
             "### 📊 数据质量监控仪表盘 (DQC Dashboard)",
             f"> **报告生成时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
@@ -121,42 +119,42 @@ class DQCExecuter:
             "| 表名 | 角色 | 状态 |",
             "| :--- | :--- | :--- |"
         ]
-        
+
         for tbl in self.involved_tables:
             role = "目标结果表" if any(x in tbl.lower() for x in ["ads", "dm", "results"]) else "上游参考表"
             lines.append(f"| `{tbl}` | {role} | 🟢 正常 |")
-        
+
         lines.append("\n#### 3. 测试详细明细")
         lines.append("| 分类 | 测试项 | 描述 | 预期 | 状态 | 异常值 | 修复建议 |")
         lines.append("| :--- | :--- | :--- | :--- | :--- | :--- | :--- |")
-        
+
         # 按状态排序：失败的排在前面
         sorted_results = sorted(self.results, key=lambda x: x["status"] == "PASSED")
-        
+
         for r in sorted_results:
             status_icon = "✅" if r["status"] == "PASSED" else "❌"
             lines.append(f"| {r['category']} | {r['name']} | {r['description']} | {r['expectation']} | {status_icon} {r['status']} | {r['value']} | {r['fix_suggestion']} |")
-        
+
         return "\n".join(lines)
 
     def update_delivery_report(self):
         if not self.report_file or not self.report_file.exists():
             print("警告：未指定交付报告或文件不存在，仅输出至控制台。")
             return False
-        
+
         dqc_md = self.generate_dqc_report_md()
-        with open(self.report_file, 'r', encoding='utf-8') as f:
+        with open(self.report_file, encoding='utf-8') as f:
             content = f.read()
-            
+
         # 寻找“数据质量测试结果”章节或末尾插入
         section_title = "## 五、数据质量测试结果"
         new_section = f"\n{section_title}\n\n{dqc_md}\n"
-        
+
         if section_title in content:
             content = re.sub(rf"{section_title}.*?(?=##|$)", new_section, content, flags=re.DOTALL)
         else:
             content += new_section
-            
+
         with open(self.report_file, 'w', encoding='utf-8') as f:
             f.write(content)
         return True
@@ -170,14 +168,14 @@ def main():
     if len(sys.argv) < 2:
         print("Usage: python check_data_quality.py <dqc_sql_file> [delivery_report_md]")
         return 1
-    
+
     dqc_file = sys.argv[1]
     report_file = sys.argv[2] if len(sys.argv) > 2 else None
-    
+
     executer = DQCExecuter(dqc_file, report_file)
     executer.parse_test_cases()
     executer.run_tests_mock()
-    
+
     if report_file:
         if executer.update_delivery_report():
             print(f"✅ DQC 测试结果已闭环反馈至: {report_file}")

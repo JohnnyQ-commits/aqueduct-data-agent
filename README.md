@@ -5,7 +5,7 @@
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Build](https://img.shields.io/badge/build-passing-brightgreen)
 
-`Data-Copilot` 是一款工业级数据仓库开发自动化 Agent，覆盖从需求到上线的完整开发流程。
+`Data-Copilot` 是一款数据仓库开发自动化 Agent，覆盖从需求到上线的完整开发流程。
 
 ## 🚀 工作模式
 
@@ -20,10 +20,10 @@
 - **设计方案输出**：自动生成取数逻辑、字段映射与上下游依赖。
 - **表结构 DDL 生成**：支持分区设计与规范化字段定义。
 - **核心 SQL 编写**：支持 CTE (With...as) 模式、子查询及数仓分层设计。
-- **[今日增强] 自动化血缘 (Auto Lineage)**：深度解析 SQL，生成字段级可视化血缘拓扑。
-- **[今日增强] 资源成本预估 (Cost Estimation)**：静态扫描 SQL 逻辑，拦截高危笛卡尔积与大查询。
+- **自动化血缘 (Auto Lineage)**：深度解析 SQL，生成字段级可视化血缘拓扑。
+- **资源成本预估 (Cost Estimation)**：静态扫描 SQL 逻辑，拦截高危笛卡尔积与大查询。
 - **SQL 自动校验 (Smart Fix)**：内置 6 大红线检查，支持 AI 引导的代码自愈修复。
-- **[今日增强] 数据质量闭环 (DQC)**：生成普适性测试用例，支持量化评分与健康仪表盘。
+- **数据质量闭环 (DQC)**：生成普适性测试用例，支持量化评分与健康仪表盘。
 - **代码审查 (Code Review)**：支持迭代变更验证，确保 PRD 变更点在代码中 100% 落地。
 - **提效量化看板**：实时统计 Agent 节省的工时、代码行数，量化数字化身价值。
 

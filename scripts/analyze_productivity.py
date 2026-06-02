@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Agent 提效看板生成工具 (Agent Productivity Metrics)
 
@@ -9,11 +8,10 @@ Agent 提效看板生成工具 (Agent Productivity Metrics)
   4. 生成美观的提效周报/月报看板。
 """
 
-import os
 import sys
-import re
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
+
 
 class ProductivityAnalyzer:
     def __init__(self, root_dir):
@@ -32,8 +30,9 @@ class ProductivityAnalyzer:
         """扫描代码库统计基础指标"""
         # 1. 统计 SQL 和 DDL
         for sql_file in self.root_dir.glob("**/*.sql"):
-            if "templates" in str(sql_file): continue
-            with open(sql_file, 'r', encoding='utf-8', errors='ignore') as f:
+            if "templates" in str(sql_file):
+                continue
+            with open(sql_file, encoding='utf-8', errors='ignore') as f:
                 lines = f.readlines()
                 self.metrics["sql_lines"] += len(lines)
                 if "CREATE TABLE" in "".join(lines).upper():
@@ -41,9 +40,10 @@ class ProductivityAnalyzer:
 
         # 2. 统计文档
         for md_file in self.root_dir.glob("**/*.md"):
-            if "README" in md_file.name or "AGENT" in md_file.name: continue
+            if "README" in md_file.name or "AGENT" in md_file.name:
+                continue
             self.metrics["doc_count"] += 1
-            with open(md_file, 'r', encoding='utf-8', errors='ignore') as f:
+            with open(md_file, encoding='utf-8', errors='ignore') as f:
                 content = f.read()
                 # 统计 Mermaid 图表
                 self.metrics["lineage_graphs"] += content.count("graph TD")
@@ -54,19 +54,19 @@ class ProductivityAnalyzer:
         # 目前我们通过模拟数据来展示逻辑
         self.metrics["dqc_tests_run"] = 24  # 假设已运行 24 次测试
         self.metrics["dqc_auto_fixes"] = 18 # 假设其中 18 次是通过 Agent 自动修复成功的
-        
+
         # 计算节省工时：每行 SQL 1分钟，每个文档 30分钟，每个血缘图 20分钟，每个修复 15分钟
         saved_mins = (
-            self.metrics["sql_lines"] * 0.5 + 
-            self.metrics["doc_count"] * 20 + 
-            self.metrics["lineage_graphs"] * 15 + 
+            self.metrics["sql_lines"] * 0.5 +
+            self.metrics["doc_count"] * 20 +
+            self.metrics["lineage_graphs"] * 15 +
             self.metrics["dqc_auto_fixes"] * 20
         )
         self.metrics["estimated_hours_saved"] = round(saved_mins / 60, 1)
 
     def generate_report(self):
         score = min(100, int(self.metrics["estimated_hours_saved"] / 2)) # 简单评分逻辑
-        
+
         report = [
             "# 🚀 Data Agent 提效看板 (Productivity Dashboard)",
             f"> 数据截止日期: {datetime.now().strftime('%Y-%m-%d')}",
@@ -76,7 +76,7 @@ class ProductivityAnalyzer:
             "| :--- | :--- | :--- |",
             f"| **累计节省工时** | `{self.metrics['estimated_hours_saved']} 小时` | 相当于节省了约 {round(self.metrics['estimated_hours_saved']/8, 1)} 个开发人天 |",
             f"| **自动修复成功率** | `{int(self.metrics['dqc_auto_fixes']/self.metrics['dqc_tests_run']*100) if self.metrics['dqc_tests_run'] else 0}%` | DQC 闭环自愈能力表现 |",
-            f"| **交付件自动化率** | `100%` | 所有 DDL/DQC/文档均由 Agent 自动生成 |",
+            "| **交付件自动化率** | `100%` | 所有 DDL/DQC/文档均由 Agent 自动生成 |",
             "",
             "## 2. 产出物明细",
             "| 分类 | 数量 | 详细指标 |",
@@ -98,14 +98,14 @@ def main():
     analyzer = ProductivityAnalyzer(".")
     analyzer.scan_codebase()
     analyzer.parse_logs()
-    
+
     report_md = analyzer.generate_report()
-    
+
     # 写入报告文件
     report_path = Path("PRODUCTIVITY_REPORT.md")
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report_md)
-    
+
     print(f"✅ 提效看板已生成: {report_path}")
     print("-" * 30)
     print(report_md)
