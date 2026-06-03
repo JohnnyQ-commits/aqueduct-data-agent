@@ -111,6 +111,17 @@ knowledge/domains/*.json
      └── 血缘图更新 ──▶ Agent 自动同步 gen_lineage.py 输出
 ```
 
+### 可视化平台设计草案
+
+knowledge/domains/*.json
+         │
+    [解析引擎: Python/FastAPI]
+         │
+         ├──▶ 指标目录 (React + Ant Design)
+         ├──▶ 血缘图谱 (Mermaid 静态 + D3.js 交互)
+         └──▶ 健康监控 (DQC 通过率趋势 + 告警)
+
+
 ### 反哺路径
 
 | 反馈源 | Agent 受益 | 实现方式 |

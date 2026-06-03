@@ -4,26 +4,12 @@
 -- 使用说明：
 -- 1. 将 $[time(yyyyMMdd,-1d)] 替换为实际日期。
 -- 2. 必须结合业务逻辑编写 [业务反证] 和 [跨表一致性] 用例。
---
--- ⚠️ 格式规范（check_data_quality.py 解析依赖此格式）：
---   每个测试用例必须包含以下三行注释：
---     -- [分类-名称] 描述说明
---     -- 权重: High/Medium/Low
---     -- 预期: 预期结果描述
---   分类可选值：唯一性, 非空, 一致性, 边界, 业务反证, 波动, 记录数
---   权重映射：High=30分, Medium=15分, Low=5分（用于健康得分计算）
--- 示例：
---     -- [唯一性-主键] 检查结果表主键是否存在重复
---     -- 权重: High
---     select emp_code, count(*) as cnt from result_table ...
---     -- 预期: 0 条
 
 -- ==========================================
 -- 1. 唯一性与核心约束 (Uniqueness & Constraints)
 -- ==========================================
 
 -- [唯一性-主键] 检查结果表主键或业务唯一键是否存在重复
--- 权重: High
 select {主键或组合键}, count(*) as cnt
 from {结果表}
 where inc_day = '$[time(yyyyMMdd,-1d)]'
@@ -32,7 +18,6 @@ having cnt > 1;
 -- 预期: 0 条
 
 -- [非空-核心字段] 核心业务字段不允许出现 Null (左关联补全字段除外)
--- 权重: High
 select count(*) as null_cnt
 from {结果表}
 where inc_day = '$[time(yyyyMMdd,-1d)]'
@@ -40,35 +25,9 @@ where inc_day = '$[time(yyyyMMdd,-1d)]'
 -- 预期: 0 条
 
 -- ==========================================
--- 2. 引用一致性与关联覆盖 (Referential Integrity)
+-- 2. 业务逻辑反证 (Negative Testing / Anti-Cases)
 -- ==========================================
--- 说明：验证事实表与维表的关联质量
-
--- [一致性-维表覆盖率] 检查事实表中的外键在维表中是否存在
--- 权重: Medium
-select
-    count(a.{外键}) as total_cnt,
-    sum(case when b.{主键} is null then 1 else 0 end) as miss_cnt,
-    round(sum(case when b.{主键} is null then 1 else 0 end) * 100.0 / count(a.{外键}), 2) as miss_rate
-from {事实表} a
-left join {维表} b on a.{外键} = b.{主键}
-where a.inc_day = '$[time(yyyyMMdd,-1d)]';
--- 预期: miss_rate < 0.1%
-
--- ==========================================
--- 3. 数据时效性 (Timeliness)
--- ==========================================
-
--- [时效性-最新数据日期] 检查表内最大日期是否符合预期
--- 权重: High
-select max(inc_day) as max_day
-from {结果表};
--- 预期: max_day = '$[time(yyyyMMdd,-1d)]'
-
--- ==========================================
--- 4. 业务逻辑反证 (Negative Testing / Anti-Cases)
--- ==========================================
--- 说明：验证"不该出现的数据确实没出现"
+-- 说明：验证“不该出现的数据确实没出现”
 
 -- [业务反证-逻辑互斥] 场景：轮休人员不应有合规检查记录
 -- 预期: 0 条
@@ -89,7 +48,6 @@ where a.inc_day = '$[time(yyyyMMdd,-1d)]'
 
 -- [业务反证-过滤有效性] 验证 SQL 中的 WHERE 条件是否生效
 -- 场景：检查是否存在超出业务范围的记录 (如：非一线岗位)
--- 权重: Medium
 select count(*)
 from {结果表}
 where inc_day = '$[time(yyyyMMdd,-1d)]'
@@ -97,12 +55,11 @@ where inc_day = '$[time(yyyyMMdd,-1d)]'
 -- 预期: 0 条
 
 -- ==========================================
--- 5. 跨表一致性校验 (Cross-Table Consistency)
+-- 3. 跨表一致性校验 (Cross-Table Consistency)
 -- ==========================================
 
 -- [一致性-维度对齐] 检查结果表中的维度属性是否与主维表一致
 -- 重点：检查工号补齐 (lpad) 是否一致
--- 权重: Medium
 select a.{主键}, a.emp_code as result_val, b.emp_code as dim_val
 from {结果表} a
 join {维度表} b on lpad(a.emp_code, 8, '0') = lpad(b.emp_code, 8, '0')
@@ -116,11 +73,10 @@ where a.inc_day = '$[time(yyyyMMdd,-1d)]'
 -- 预期: 结果表人数 <= 源表人数 (偏差率应在 1% 以内)
 
 -- ==========================================
--- 6. 边界值与格式校验 (Boundary & Format)
+-- 4. 边界值与格式校验 (Boundary & Format)
 -- ==========================================
 
 -- [边界-数值合理性] 检查比例、金额等是否在正常区间
--- 权重: Medium
 select *
 from {结果表}
 where inc_day = '$[time(yyyyMMdd,-1d)]'
@@ -135,11 +91,10 @@ where inc_day = '$[time(yyyyMMdd,-1d)]'
 -- 预期: 0 条
 
 -- ==========================================
--- 7. 波动监控 (Volatility)
+-- 5. 波动监控 (Volatility)
 -- ==========================================
 
 -- [波动-总量环比] 检查记录数是否存在异常跌涨
--- 权重: Low
 select
     inc_day, count(*) as cnt,
     lag(count(*)) over(order by inc_day) as prev_cnt,
