@@ -1,0 +1,15 @@
+# Include prompt templates
+recursive-include src/aqueduct/skills/prompt *.md
+
+# Include output templates
+graft templates
+
+# Include knowledge base
+graft knowledge
+
+# Exclude tests and caches from sdist
+prune tests
+global-exclude *.pyc
+global-exclude __pycache__
+global-exclude .coverage
+global-exclude *.egg-info

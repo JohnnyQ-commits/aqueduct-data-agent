@@ -1,0 +1,29 @@
+{
+  "mcpServers": {
+    "数据资产平台": {
+      "command": "npx",
+      "args": ["-y", "@your-company/mcp-server"],
+      "env": {
+        "DATA_PLATFORM_URL": "https://你的数据平台地址",
+        "API_TOKEN": "你的认证Token"
+      }
+    },
+    "Presto/Trino 数据库": {
+      "command": "python",
+      "args": ["-m", "mcp_presto"],
+      "env": {
+        "PRESTO_HOST": "presto.your-company.com",
+        "PRESTO_PORT": "8080",
+        "PRESTO_USER": "your-username",
+        "PRESTO_CATALOG": "hive"
+      }
+    },
+    "Hive Metastore": {
+      "command": "python",
+      "args": ["-m", "mcp_hive"],
+      "env": {
+        "HIVE_METASTORE_URI": "thrift://metastore.your-company.com:9083"
+      }
+    }
+  }
+}

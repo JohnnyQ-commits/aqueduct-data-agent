@@ -1,0 +1,166 @@
+{
+  "domain_id": "supply_chain_inventory",
+  "name": "供应链库存分析",
+  "version": "1.0.0",
+  "description": "示例业务域：供应链库存周转与补货分析，覆盖库存水位、周转天数、缺货预警等核心场景",
+  "metadata": {
+    "owner": "Data Team",
+    "update_frequency": "Daily",
+    "note": "This is a demo domain for open-source showcase"
+  },
+  "entities": {
+    "Warehouse": {
+      "primary_key": "warehouse_id",
+      "source": "dw_demo.dim_warehouse_info_df",
+      "attributes": [
+        { "name": "warehouse_id", "type": "string", "description": "仓库编码" },
+        { "name": "warehouse_name", "type": "string", "description": "仓库名称" },
+        { "name": "warehouse_type", "type": "string", "description": "仓库类型", "enum_map": {"central": "中央仓", "regional": "区域仓", "front": "前置仓"} },
+        { "name": "city_code", "type": "string", "description": "所在城市编码" },
+        { "name": "capacity", "type": "integer", "description": "仓库容量上限（件）" }
+      ],
+      "description": "仓库实体"
+    },
+    "SKU": {
+      "primary_key": "sku_id",
+      "source": "dw_demo.dim_sku_info_df",
+      "attributes": [
+        { "name": "sku_id", "type": "string", "description": "SKU 编码" },
+        { "name": "sku_name", "type": "string", "description": "SKU 名称" },
+        { "name": "category_code", "type": "string", "description": "品类编码" },
+        { "name": "unit_cost", "type": "decimal", "description": "单位成本（元）" },
+        { "name": "reorder_point", "type": "integer", "description": "补货触发点（件）：库存低于此值需发起补货" },
+        { "name": "safety_stock", "type": "integer", "description": "安全库存（件）" }
+      ],
+      "description": "SKU 维度实体"
+    },
+    "InventorySnapshot": {
+      "primary_key": "id",
+      "source": "dw_demo.dwd_inventory_snapshot_di",
+      "attributes": [
+        { "name": "id", "type": "string", "description": "快照记录ID" },
+        { "name": "warehouse_id", "type": "string", "description": "仓库编码" },
+        { "name": "sku_id", "type": "string", "description": "SKU 编码" },
+        { "name": "stock_quantity", "type": "integer", "description": "当前库存数量（件）" },
+        { "name": "locked_quantity", "type": "integer", "description": "锁定数量（已下单未出库）" },
+        { "name": "available_quantity", "type": "integer", "description": "可用库存 = stock_quantity - locked_quantity" },
+        { "name": "inc_day", "type": "string", "description": "快照日期 yyyyMMdd" }
+      ],
+      "description": "每日库存快照，每个仓库+SKU组合每日一条"
+    },
+    "StockMovement": {
+      "primary_key": "movement_id",
+      "source": "dw_demo.dwd_stock_movement_di",
+      "attributes": [
+        { "name": "movement_id", "type": "string", "description": "流水ID" },
+        { "name": "warehouse_id", "type": "string", "description": "仓库编码" },
+        { "name": "sku_id", "type": "string", "description": "SKU 编码" },
+        { "name": "movement_type", "type": "string", "description": "移动类型", "enum_map": {"inbound": "入库", "outbound": "出库", "transfer": "调拨", "adjustment": "盘点调整"}},
+        { "name": "quantity", "type": "integer", "description": "变动数量（正数增加，负数减少）" },
+        { "name": "reference_no", "type": "string", "description": "关联单据号（采购单/出库单/调拨单）" },
+        { "name": "movement_time", "type": "timestamp", "description": "变动时间" },
+        { "name": "inc_day", "type": "string", "description": "数据分区日期 yyyyMMdd" }
+      ],
+      "description": "库存变动流水，记录每一次库存增减"
+    }
+  },
+  "relationships": [
+    {
+      "from": "Warehouse",
+      "to": "InventorySnapshot",
+      "cardinality": "1:N",
+      "join_type": "INNER JOIN",
+      "condition": "Warehouse.warehouse_id = InventorySnapshot.warehouse_id",
+      "description": "一个仓库每日有多条 SKU 库存快照"
+    },
+    {
+      "from": "SKU",
+      "to": "InventorySnapshot",
+      "cardinality": "1:N",
+      "join_type": "INNER JOIN",
+      "condition": "SKU.sku_id = InventorySnapshot.sku_id",
+      "description": "一个 SKU 在多个仓库有库存快照"
+    },
+    {
+      "from": "Warehouse",
+      "to": "StockMovement",
+      "cardinality": "1:N",
+      "join_type": "LEFT JOIN",
+      "condition": "Warehouse.warehouse_id = StockMovement.warehouse_id",
+      "description": "一个仓库有多条库存变动流水"
+    },
+    {
+      "from": "SKU",
+      "to": "StockMovement",
+      "cardinality": "1:N",
+      "join_type": "LEFT JOIN",
+      "condition": "SKU.sku_id = StockMovement.sku_id",
+      "description": "一个 SKU 有多条库存变动流水"
+    }
+  ],
+  "metrics": {
+    "total_stock_value": {
+      "name": "库存总价值",
+      "definition": "所有仓库所有 SKU 的库存数量乘以单位成本之和",
+      "expression": "SUM(stock_quantity * unit_cost)",
+      "unit": "元"
+    },
+    "stockout_count": {
+      "name": "缺货 SKU 数",
+      "definition": "可用库存低于安全库存的 SKU 数量",
+      "expression": "COUNT(DISTINCT CASE WHEN available_quantity < safety_stock THEN sku_id END)",
+      "unit": "个",
+      "risk_threshold": "超过 50 个需紧急补货"
+    },
+    "inventory_turnover_days": {
+      "name": "库存周转天数",
+      "definition": "平均库存数量 / 日均出库数量",
+      "expression": "AVG(stock_quantity) / NULLIF(AVG(CASE WHEN movement_type = 'outbound' THEN ABS(quantity) END), 0)",
+      "unit": "天",
+      "risk_threshold": "超过 60 天为滞销"
+    },
+    "reorder_alert_count": {
+      "name": "补货预警 SKU 数",
+      "definition": "可用库存低于补货触发点的 SKU 数量",
+      "expression": "COUNT(DISTINCT CASE WHEN available_quantity < reorder_point THEN sku_id END)",
+      "unit": "个"
+    }
+  },
+  "business_rules": {
+    "可用库存计算": "available_quantity = stock_quantity - locked_quantity，不可为负数",
+    "缺货判定": "available_quantity < safety_stock 即为缺货，需触发补货预警",
+    "周转天数异常": "库存周转天数超过 60 天视为滞销，需推动促销或下架",
+    "盘点调整约束": "adjustment 类型的变动需有审批单号，否则视为异常流水"
+  },
+  "axioms": [
+    {
+      "id": "AX-001",
+      "statement": "每个仓库+SKU组合每日有且仅有一条库存快照",
+      "formal": "forall w in Warehouse, s in SKU, d: exists! snap in InventorySnapshot: snap.warehouse_id=w AND snap.sku_id=s AND snap.inc_day=d"
+    },
+    {
+      "id": "AX-002",
+      "statement": "可用库存等于库存数量减去锁定数量",
+      "formal": "forall snap in InventorySnapshot: snap.available_quantity = snap.stock_quantity - snap.locked_quantity"
+    },
+    {
+      "id": "AX-003",
+      "statement": "库存数量非负",
+      "formal": "forall snap in InventorySnapshot: snap.stock_quantity >= 0 AND snap.locked_quantity >= 0"
+    }
+  ],
+  "filter_rules": {
+    "snapshot_partition": {
+      "description": "库存快照取 T-1 日分区（最新快照）",
+      "partition": "inc_day = '$[time(yyyyMMdd,-1d)]'"
+    },
+    "movement_partition": {
+      "description": "库存流水取 T-1 日分区",
+      "partition": "inc_day = '$[time(yyyyMMdd,-1d)]'"
+    },
+    "active_sku": {
+      "description": "只分析在售 SKU（排除已下架）",
+      "conditions": ["status = 'active'"]
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/ -q --tb=short)",
+      "Bash(python -m src.aqueduct.cli.main status)"
+    ]
+  }
+}

@@ -1,0 +1,153 @@
+{
+  "domain_id": "saas_user_activity",
+  "name": "SaaS 用户活跃分析",
+  "version": "1.0.0",
+  "description": "示例业务域：SaaS 产品用户活跃度分析，覆盖 DAU/MAU、留存率、功能渗透率等核心指标",
+  "metadata": {
+    "owner": "Data Team",
+    "update_frequency": "Daily",
+    "note": "This is a demo domain for open-source showcase"
+  },
+  "entities": {
+    "User": {
+      "primary_key": "user_id",
+      "source": "dw_demo.dim_user_info_df",
+      "attributes": [
+        { "name": "user_id", "type": "string", "description": "用户唯一标识" },
+        { "name": "user_name", "type": "string", "description": "用户名" },
+        { "name": "org_id", "type": "string", "description": "所属组织ID" },
+        { "name": "plan_type", "type": "string", "description": "订阅计划", "enum_map": {"free": "免费版", "pro": "专业版", "enterprise": "企业版"} },
+        { "name": "register_date", "type": "string", "description": "注册日期 yyyyMMdd" },
+        { "name": "status", "type": "string", "description": "账号状态", "enum_map": {"active": "正常", "suspended": "已停用", "churned": "已流失"}}
+      ],
+      "description": "用户实体，包含订阅计划和账号状态"
+    },
+    "Session": {
+      "primary_key": "session_id",
+      "source": "dw_demo.dwd_user_session_di",
+      "attributes": [
+        { "name": "session_id", "type": "string", "description": "会话ID" },
+        { "name": "user_id", "type": "string", "description": "用户ID" },
+        { "name": "login_time", "type": "timestamp", "description": "登录时间" },
+        { "name": "logout_time", "type": "timestamp", "description": "登出时间（可为空，表示在线中）" },
+        { "name": "duration_seconds", "type": "integer", "description": "会话时长（秒）" },
+        { "name": "device_type", "type": "string", "description": "设备类型", "enum_map": {"web": "网页端", "mobile": "移动端", "desktop": "桌面客户端"} },
+        { "name": "inc_day", "type": "string", "description": "数据分区日期 yyyyMMdd" }
+      ],
+      "description": "用户登录会话实体，一次登录产生一条记录"
+    },
+    "FeatureUsage": {
+      "primary_key": "event_id",
+      "source": "dw_demo.dwd_feature_usage_di",
+      "attributes": [
+        { "name": "event_id", "type": "string", "description": "事件ID" },
+        { "name": "session_id", "type": "string", "description": "关联会话ID" },
+        { "name": "user_id", "type": "string", "description": "用户ID" },
+        { "name": "feature_name", "type": "string", "description": "功能模块名称", "enum_map": {"dashboard": "数据看板", "report": "报告生成", "export": "数据导出", "api": "API 调用", "collaboration": "团队协作"}},
+        { "name": "action_type", "type": "string", "description": "操作类型", "enum_map": {"view": "查看", "create": "创建", "edit": "编辑", "delete": "删除"}},
+        { "name": "event_time", "type": "timestamp", "description": "事件发生时间" },
+        { "name": "inc_day", "type": "string", "description": "数据分区日期 yyyyMMdd" }
+      ],
+      "description": "功能使用事件，记录用户在产品内的每一次操作"
+    },
+    "Org": {
+      "primary_key": "org_id",
+      "source": "dw_demo.dim_org_info_df",
+      "attributes": [
+        { "name": "org_id", "type": "string", "description": "组织ID" },
+        { "name": "org_name", "type": "string", "description": "组织名称" },
+        { "name": "industry", "type": "string", "description": "所属行业" },
+        { "name": "team_size", "type": "integer", "description": "团队规模" }
+      ],
+      "description": "组织实体，SaaS 以组织为订阅单位"
+    }
+  },
+  "relationships": [
+    {
+      "from": "User",
+      "to": "Session",
+      "cardinality": "1:N",
+      "join_type": "LEFT JOIN",
+      "condition": "User.user_id = Session.user_id",
+      "description": "一个用户可有多次登录会话"
+    },
+    {
+      "from": "Session",
+      "to": "FeatureUsage",
+      "cardinality": "1:N",
+      "join_type": "LEFT JOIN",
+      "condition": "Session.session_id = FeatureUsage.session_id",
+      "description": "一个会话中可产生多次功能使用事件"
+    },
+    {
+      "from": "User",
+      "to": "Org",
+      "cardinality": "N:1",
+      "join_type": "LEFT JOIN",
+      "condition": "User.org_id = Org.org_id",
+      "description": "多个用户属于同一个组织"
+    }
+  ],
+  "metrics": {
+    "dau": {
+      "name": "日活跃用户数 (DAU)",
+      "definition": "当日有登录会话的去重用户数",
+      "expression": "COUNT(DISTINCT user_id)",
+      "filter": "inc_day = '$[time(yyyyMMdd,-1d)]'",
+      "unit": "人"
+    },
+    "mau": {
+      "name": "月活跃用户数 (MAU)",
+      "definition": "近 30 天内有登录会话的去重用户数",
+      "expression": "COUNT(DISTINCT user_id)",
+      "filter": "inc_day BETWEEN '$[time(yyyyMMdd,-30d)]' AND '$[time(yyyyMMdd,-1d)]'",
+      "unit": "人"
+    },
+    "avg_session_duration": {
+      "name": "平均会话时长",
+      "definition": "当日登录会话的平均时长",
+      "expression": "AVG(duration_seconds)",
+      "filter": "inc_day = '$[time(yyyyMMdd,-1d)]' AND duration_seconds > 0",
+      "unit": "秒"
+    },
+    "feature_penetration_rate": {
+      "name": "功能渗透率",
+      "definition": "使用过指定功能的用户数 / DAU",
+      "expression": "COUNT(DISTINCT CASE WHEN feature_name = '${target}' THEN user_id END) * 100.0 / NULLIF(COUNT(DISTINCT user_id), 0)",
+      "unit": "%",
+      "risk_threshold": "核心功能低于 30% 需关注"
+    }
+  },
+  "business_rules": {
+    "活跃定义": "用户当日至少有一条 Session 记录即视为活跃，不论是否产生功能使用事件",
+    "流失定义": "连续 30 天无 Session 记录的用户标记为 churned",
+    "会话时长上限": "duration_seconds 超过 86400（24小时）视为异常，需截断处理"
+  },
+  "axioms": [
+    {
+      "id": "AX-001",
+      "statement": "每个功能使用事件必然关联且仅关联一个会话",
+      "formal": "forall f in FeatureUsage, exists! s in Session: f.session_id = s.session_id"
+    },
+    {
+      "id": "AX-002",
+      "statement": "会话时长非负",
+      "formal": "forall s in Session: s.duration_seconds >= 0"
+    },
+    {
+      "id": "AX-003",
+      "statement": "DAU 是 MAU 的子集：日活跃用户必然属于当月活跃用户",
+      "formal": "forall u: DAU(u, day) -> MAU(u, month_of(day))"
+    }
+  ],
+  "filter_rules": {
+    "session_partition": {
+      "description": "会话表取 T-1 日分区",
+      "partition": "inc_day = '$[time(yyyyMMdd,-1d)]'"
+    },
+    "active_user": {
+      "description": "有效用户：排除已停用和已流失",
+      "conditions": ["status = 'active'"]
+    }
+  }
+}

@@ -1,0 +1,176 @@
+{
+  "domain_id": "ecommerce_order",
+  "name": "电商订单分析",
+  "version": "1.0.0",
+  "description": "示例业务域：电商平台订单全链路分析，覆盖下单、支付、发货、签收等核心环节",
+  "metadata": {
+    "owner": "Data Team",
+    "update_frequency": "Daily",
+    "note": "This is a demo domain for open-source showcase"
+  },
+  "entities": {
+    "Customer": {
+      "primary_key": "customer_id",
+      "source": "dw_demo.dim_customer_info_df",
+      "attributes": [
+        { "name": "customer_id", "type": "string", "description": "客户唯一标识" },
+        { "name": "customer_name", "type": "string", "description": "客户姓名" },
+        { "name": "register_date", "type": "string", "description": "注册日期" },
+        { "name": "customer_level", "type": "string", "description": "客户等级", "enum_map": {"1": "普通会员", "2": "银卡会员", "3": "金卡会员", "4": "钻石会员"} },
+        { "name": "city_code", "type": "string", "description": "所在城市编码" }
+      ],
+      "description": "客户实体，包含基本信息和会员等级"
+    },
+    "Order": {
+      "primary_key": "order_id",
+      "source": "dw_demo.dwd_order_info_di",
+      "attributes": [
+        { "name": "order_id", "type": "string", "description": "订单号（业务主键）" },
+        { "name": "customer_id", "type": "string", "description": "下单客户ID" },
+        { "name": "order_status", "type": "string", "description": "订单状态", "enum_map": {"10": "待支付", "20": "已支付", "30": "已发货", "40": "已签收", "50": "已取消"} },
+        { "name": "total_amount", "type": "decimal", "description": "订单总金额（元）" },
+        { "name": "discount_amount", "type": "decimal", "description": "优惠金额（元）" },
+        { "name": "pay_amount", "type": "decimal", "description": "实付金额（元）" },
+        { "name": "order_time", "type": "timestamp", "description": "下单时间" },
+        { "name": "pay_time", "type": "timestamp", "description": "支付时间" },
+        { "name": "inc_day", "type": "string", "description": "数据分区日期 yyyyMMdd" }
+      ],
+      "description": "订单主实体，记录订单全生命周期状态"
+    },
+    "OrderItem": {
+      "primary_key": "item_id",
+      "source": "dw_demo.dwd_order_item_di",
+      "attributes": [
+        { "name": "item_id", "type": "string", "description": "明细行ID" },
+        { "name": "order_id", "type": "string", "description": "关联订单号" },
+        { "name": "product_id", "type": "string", "description": "商品ID" },
+        { "name": "quantity", "type": "integer", "description": "购买数量" },
+        { "name": "unit_price", "type": "decimal", "description": "单价（元）" },
+        { "name": "item_amount", "type": "decimal", "description": "明细金额 = quantity * unit_price" }
+      ],
+      "description": "订单明细行，一个订单可包含多个商品明细"
+    },
+    "Product": {
+      "primary_key": "product_id",
+      "source": "dw_demo.dim_product_info_df",
+      "attributes": [
+        { "name": "product_id", "type": "string", "description": "商品ID" },
+        { "name": "product_name", "type": "string", "description": "商品名称" },
+        { "name": "category_code", "type": "string", "description": "品类编码" },
+        { "name": "category_name", "type": "string", "description": "品类名称" },
+        { "name": "brand_name", "type": "string", "description": "品牌名称" }
+      ],
+      "description": "商品维度实体"
+    }
+  },
+  "hierarchy": {
+    "OrderStatus": {
+      "PendingPayment": {
+        "description": "待支付：订单已创建但尚未支付",
+        "rule": "order_status = '10'"
+      },
+      "Paid": {
+        "description": "已支付：支付成功，等待发货",
+        "rule": "order_status = '20'"
+      },
+      "Shipped": {
+        "description": "已发货：仓库已出库",
+        "rule": "order_status = '30'"
+      },
+      "Completed": {
+        "description": "已签收：客户确认收货",
+        "rule": "order_status = '40'"
+      },
+      "Cancelled": {
+        "description": "已取消：客户主动取消或超时未支付",
+        "rule": "order_status = '50'"
+      }
+    }
+  },
+  "relationships": [
+    {
+      "from": "Customer",
+      "to": "Order",
+      "cardinality": "1:N",
+      "join_type": "LEFT JOIN",
+      "condition": "Customer.customer_id = Order.customer_id",
+      "description": "一个客户可以下多个订单"
+    },
+    {
+      "from": "Order",
+      "to": "OrderItem",
+      "cardinality": "1:N",
+      "join_type": "INNER JOIN",
+      "condition": "Order.order_id = OrderItem.order_id",
+      "description": "一个订单包含一个或多个商品明细"
+    },
+    {
+      "from": "OrderItem",
+      "to": "Product",
+      "cardinality": "N:1",
+      "join_type": "LEFT JOIN",
+      "condition": "OrderItem.product_id = Product.product_id",
+      "description": "明细行关联商品信息"
+    }
+  ],
+  "metrics": {
+    "gmv": {
+      "name": "成交总额 (GMV)",
+      "definition": "已支付订单的实付金额总和",
+      "expression": "SUM(pay_amount)",
+      "filter": "order_status IN ('20','30','40')",
+      "unit": "元"
+    },
+    "order_count": {
+      "name": "订单数",
+      "definition": "当日创建的订单总数",
+      "expression": "COUNT(DISTINCT order_id)",
+      "unit": "单"
+    },
+    "pay_rate": {
+      "name": "支付转化率",
+      "definition": "已支付订单数 / 总下单数",
+      "expression": "COUNT(CASE WHEN order_status >= '20' THEN 1 END) * 100.0 / COUNT(DISTINCT order_id)",
+      "unit": "%",
+      "risk_threshold": "低于 70% 需预警"
+    },
+    "avg_order_value": {
+      "name": "客单价",
+      "definition": "GMV / 已支付订单数",
+      "expression": "SUM(pay_amount) / NULLIF(COUNT(CASE WHEN order_status >= '20' THEN 1 END), 0)",
+      "unit": "元/单"
+    }
+  },
+  "business_rules": {
+    "GMV口径": "仅统计已支付及以上状态（order_status >= '20'）的订单，待支付和已取消不计入",
+    "金额校验": "pay_amount = total_amount - discount_amount，误差超过 0.01 元需标记异常",
+    "明细金额校验": "item_amount = quantity * unit_price，不一致则标记为数据质量问题"
+  },
+  "axioms": [
+    {
+      "id": "AX-001",
+      "statement": "每个订单明细必然关联且仅关联一个订单",
+      "formal": "forall i in OrderItem, exists! o in Order: i.order_id = o.order_id"
+    },
+    {
+      "id": "AX-002",
+      "statement": "订单金额守恒：订单总金额等于明细金额之和",
+      "formal": "forall o in Order: o.total_amount = SUM(i.item_amount for i in OrderItem where i.order_id = o.order_id)"
+    },
+    {
+      "id": "AX-003",
+      "statement": "实付金额非负",
+      "formal": "forall o in Order: o.pay_amount >= 0"
+    }
+  ],
+  "filter_rules": {
+    "order_partition": {
+      "description": "订单表取 T-1 日分区",
+      "partition": "inc_day = '$[time(yyyyMMdd,-1d)]'"
+    },
+    "valid_order": {
+      "description": "有效订单：排除已取消",
+      "conditions": ["order_status != '50'"]
+    }
+  }
+}

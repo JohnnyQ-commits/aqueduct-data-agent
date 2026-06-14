@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# 环境变量（包含 API Key，绝不可提交）
+.env
+.env.local
+
+# 本地私有配置
+.mcp.json
+.claude/settings.local.json
+
+# IDE
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 运行时目录
+logs/
+workspace/
+output/
+
+# 测试 &  lint 缓存
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/
+.claude_tmp/
+
+# 内部文档（不提交到远程）
+internal/
+docs/
+
+# 废弃文件（迁移残留）
+.deprecated/
