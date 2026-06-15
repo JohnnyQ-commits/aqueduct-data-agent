@@ -216,7 +216,7 @@ def _change_mode(args: argparse.Namespace) -> int:
     if result.success:
         cr_number = result.state.get("cr_number", "")
         cr_dir = result.state.get("cr_dir", "")
-        print(f"\n[OK] Change management workflow completed", flush=True)
+        print("\n[OK] Change management workflow completed", flush=True)
         print(f"  [CR] CR-{cr_number}", flush=True)
         if cr_dir:
             print(f"  [DIR] {cr_dir}", flush=True)

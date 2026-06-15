@@ -50,11 +50,9 @@ class ClaudeLLM(BaseLLM):
             **kwargs: 传递给 Anthropic API 的额外参数。
         """
         # 在实例初始化时读取环境变量，确保 .env 已加载后能正确获取值
-        default_haiku = os.environ.get("ANTHROPIC_DEFAULT_HAIKU_MODEL", "claude-haiku-4-5-20251001")
         default_sonnet = os.environ.get(
             "ANTHROPIC_DEFAULT_SONNET_MODEL", "claude-sonnet-4-6-20250514"
         )
-        default_opus = os.environ.get("ANTHROPIC_DEFAULT_OPUS_MODEL", "claude-opus-4-7-20250514")
 
         self._model_id = model_id or default_sonnet
         self._api_key = api_key or os.environ.get("ANTHROPIC_AUTH_TOKEN", "")
@@ -285,7 +283,7 @@ class ClaudeLLM(BaseLLM):
             claude_cmd = self._claude_cli_path or "claude"
 
             with (
-                open(prompt_path, "r", encoding="utf-8") as stdin_file,
+                open(prompt_path, encoding="utf-8") as stdin_file,
                 open(stdout_path, "w", encoding="utf-8") as stdout_file,
                 open(stderr_path, "w", encoding="utf-8") as stderr_file,
             ):

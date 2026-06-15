@@ -33,7 +33,6 @@ from .engine.nodes import (
     node_sql,
 )
 from .engine.state import WorkflowState
-from .exceptions import AqueductError
 
 logger = logging.getLogger(__name__)
 
@@ -112,10 +111,15 @@ def _run_pipeline(
             break
 
         # 交互确认：在指定阶段完成后暂停等待用户确认
-        if interactive and confirm_after and phase_name == confirm_after:
-            if on_confirm and not on_confirm(state):
-                logger.info("用户确认停止工作流")
-                break
+        if (
+            interactive
+            and confirm_after
+            and phase_name == confirm_after
+            and on_confirm
+            and not on_confirm(state)
+        ):
+            logger.info("用户确认停止工作流")
+            break
 
     return AqueductResult(state, halted=halted)
 

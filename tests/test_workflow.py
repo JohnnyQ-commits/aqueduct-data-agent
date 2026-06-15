@@ -52,7 +52,7 @@ class TestStateGraph:
         graph.add_node("a", lambda s: s)
         try:
             graph.compile()
-            assert False, "Should have raised WorkflowError"
+            raise AssertionError("Should have raised WorkflowError")
         except WorkflowError:
             pass
 
@@ -151,8 +151,7 @@ class TestCompiledWorkflowExecution:
 
         compiled = graph.compile()
         # 不应无限循环
-        final = compiled.invoke(self._make_state())
-        # 两个节点都应被访问（入度都不为 0 但 a 是入口）
+        compiled.invoke(self._make_state())
         # 关键是测试不 hang
 
 

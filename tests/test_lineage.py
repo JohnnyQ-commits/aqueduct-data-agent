@@ -8,17 +8,13 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
-import pytest
-
 from src.aqueduct.tools.lineage import LineageParser
 from src.aqueduct.tools.registry import get_tool
 
 
 def _write_sql(content: str) -> Path:
     """将 SQL 内容写入临时文件，返回路径。"""
-    tmp = tempfile.NamedTemporaryFile(
-        mode="w", suffix=".sql", delete=False, encoding="utf-8"
-    )
+    tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".sql", delete=False, encoding="utf-8")
     tmp.write(content)
     tmp.close()
     return Path(tmp.name)
