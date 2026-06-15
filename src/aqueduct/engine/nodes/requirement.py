@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import logging
 
+from ...config.settings import get_settings
+from ...memory.recall import KnowledgeRecall
+from ...memory.store import MemoryStore
 from ...skills.base import SkillContext
 from ...skills.registry import get_skill
 from ..state import WorkflowState
@@ -12,11 +15,48 @@ from .helpers import call_llm, save_artifact
 logger = logging.getLogger(__name__)
 
 
+def _recall_domain_knowledge(state: WorkflowState) -> None:
+    """从本体知识库中召回与需求匹配的业务域上下文。
+
+    在需求理解阶段调用，将结果写入 state["domain_id"] 和 state["domain_context"]，
+    供后续所有节点复用。全局仅执行一次。
+
+    无匹配领域时写入空字符串，工作流正常继续。
+    """
+    try:
+        settings = get_settings()
+        store = MemoryStore(domains_dir=settings.knowledge_dir)
+        recall = KnowledgeRecall(store=store)
+        result = recall.recall(state.get("requirement", ""))
+
+        domain_id = result.get("domain_id", "")
+        domain_context = result.get("domain_context", "")
+
+        state["domain_id"] = domain_id
+        state["domain_context"] = domain_context
+
+        logger.info(
+            "领域知识召回完成: domain=%s, context_length=%d",
+            domain_id or "(无匹配)",
+            len(domain_context),
+        )
+        if domain_context:
+            logger.debug("召回领域内容片段预览: %s", domain_context[:200])
+    except Exception:
+        # 召回失败不中断工作流，写入空值继续
+        state["domain_id"] = ""
+        state["domain_context"] = ""
+        logger.warning("领域知识召回异常，跳过", exc_info=True)
+
+
 def node_requirement(state: WorkflowState) -> WorkflowState:
     """Phase 1: 需求理解节点。
 
     调用 RequirementClarifySkill 生成 prompt -> LLM 解析需求。
     """
+    # 自动召回领域知识，填充 domain_context 供全流程使用
+    _recall_domain_knowledge(state)
+
     try:
         skill = get_skill("requirement_clarify")
         context = SkillContext(

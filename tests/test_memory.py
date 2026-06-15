@@ -101,3 +101,74 @@ class TestDomainModel:
         )
         results = domain.search_entities("")
         assert isinstance(results, list)
+
+
+class TestNodeRequirementKnowledgeRecall:
+    """node_requirement 知识召回集成测试。
+
+    验证 node_requirement 节点执行后：
+    - state["domain_context"] 被正确填充
+    - 无匹配时 domain_context 为空字符串，不报错
+    - 下游节点可正常读取 domain_context
+    """
+
+    def _make_state(self, requirement: str) -> dict:
+        """构造最小可用的 WorkflowState。"""
+        return {
+            "requirement": requirement,
+            "mode": "dev",
+            "metadata": {"requirement_name": "test"},
+            "errors": [],
+            "artifacts": [],
+        }
+
+    def test_recall_populates_domain_context(self):
+        """匹配到领域知识时，domain_context 非空。"""
+        from src.aqueduct.engine.nodes.requirement import _recall_domain_knowledge
+
+        state = self._make_state(
+            "电商平台需要统计每日订单数和成交金额，"
+            "基于 dw_demo.dwd_order_info_di 订单表和 dw_demo.dim_customer_info_df 客户表"
+        )
+        _recall_domain_knowledge(state)
+
+        # 电商需求应匹配到 ecommerce_order 领域
+        assert state.get("domain_id") == "ecommerce_order"
+        assert state.get("domain_context") != ""
+        assert len(state["domain_context"]) > 50
+
+    def test_recall_no_match_returns_empty(self):
+        """无匹配领域时，domain_context 为空字符串，不抛异常。"""
+        from src.aqueduct.engine.nodes.requirement import _recall_domain_knowledge
+
+        state = self._make_state("完全无关的随机内容 xyzabc123")
+        _recall_domain_knowledge(state)
+
+        # 无匹配时 domain_id 和 domain_context 应为空
+        assert state.get("domain_id") == ""
+        assert state.get("domain_context") == ""
+
+    def test_recall_empty_requirement_no_crash(self):
+        """需求为空时不崩溃。"""
+        from src.aqueduct.engine.nodes.requirement import _recall_domain_knowledge
+
+        state = self._make_state("")
+        _recall_domain_knowledge(state)
+
+        assert state.get("domain_id") == ""
+        assert state.get("domain_context") == ""
+
+    def test_domain_context_available_to_downstream(self):
+        """验证召回结果可被下游节点读取。"""
+        from src.aqueduct.engine.nodes.requirement import _recall_domain_knowledge
+
+        state = self._make_state(
+            "统计每日订单GMV和客户数，数据来源 dw_demo.dwd_order_info_di"
+        )
+        _recall_domain_knowledge(state)
+
+        # 模拟下游节点的读取方式（和 sql.py / ddl.py 等一致）
+        domain_ctx = state.get("domain_context", "")
+        assert isinstance(domain_ctx, str)
+        if state.get("domain_id"):
+            assert len(domain_ctx) > 0
