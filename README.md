@@ -344,7 +344,6 @@ aqueduct/
 |   +-- utils/                 # Logging + regex utilities
 |-- knowledge/domains/         # Ontology knowledge base (JSON)
 |-- tests/                     # Unit + integration tests
-|-- templates/                 # SQL/DQC/Report output templates
 +-- examples/                  # Example requirement documents
 ```
 

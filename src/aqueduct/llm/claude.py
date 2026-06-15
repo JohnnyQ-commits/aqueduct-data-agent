@@ -27,11 +27,6 @@ class ClaudeLLM(BaseLLM):
     - Opus 档：重度生成（SQL 生成、SQL 质检、CodeReview）
     """
 
-    # 默认模型映射（可通过环境变量覆盖）
-    DEFAULT_HAIKU = os.environ.get("ANTHROPIC_DEFAULT_HAIKU_MODEL", "claude-haiku-4-5-20251001")
-    DEFAULT_SONNET = os.environ.get("ANTHROPIC_DEFAULT_SONNET_MODEL", "claude-sonnet-4-6-20250514")
-    DEFAULT_OPUS = os.environ.get("ANTHROPIC_DEFAULT_OPUS_MODEL", "claude-opus-4-7-20250514")
-
     # 各档模型的上下文窗口大小（Token 数）
     CONTEXT_WINDOWS = {
         "haiku": 200_000,
@@ -54,7 +49,14 @@ class ClaudeLLM(BaseLLM):
             base_url: API 基础 URL。未指定时读取 ANTHROPIC_BASE_URL。
             **kwargs: 传递给 Anthropic API 的额外参数。
         """
-        self._model_id = model_id or self.DEFAULT_SONNET
+        # 在实例初始化时读取环境变量，确保 .env 已加载后能正确获取值
+        default_haiku = os.environ.get("ANTHROPIC_DEFAULT_HAIKU_MODEL", "claude-haiku-4-5-20251001")
+        default_sonnet = os.environ.get(
+            "ANTHROPIC_DEFAULT_SONNET_MODEL", "claude-sonnet-4-6-20250514"
+        )
+        default_opus = os.environ.get("ANTHROPIC_DEFAULT_OPUS_MODEL", "claude-opus-4-7-20250514")
+
+        self._model_id = model_id or default_sonnet
         self._api_key = api_key or os.environ.get("ANTHROPIC_AUTH_TOKEN", "")
         self._base_url = base_url or os.environ.get("ANTHROPIC_BASE_URL", "")
         self._default_kwargs = kwargs
@@ -67,6 +69,9 @@ class ClaudeLLM(BaseLLM):
             self._tier = "opus"
         else:
             self._tier = "sonnet"
+
+        # CLI 路径（_detect_backend 可能设置）
+        self._claude_cli_path: str | None = None
 
         # 检测后端能力
         self._backend = self._detect_backend()
@@ -217,8 +222,7 @@ class ClaudeLLM(BaseLLM):
         在 Claude Code 环境内，SDK 的 API Key（工号）无法直接用于 SDK 调用。
         此方法通过 `claude -p` 直接获取响应。
 
-        Windows 兼容：claude 子进程在 stdout 为 pipe 时会挂起，
-        因此改用 shell 重定向 + stdin 传递 prompt，避免 pipe 问题。
+        使用列表形式的 subprocess 调用 + 文件重定向，避免 shell 注入风险。
         """
         # 拼接所有消息为单个 prompt（system 消息作为前缀）
         parts = []
@@ -235,11 +239,11 @@ class ClaudeLLM(BaseLLM):
             "不要以对话者的身份回复，直接完成任务即可。\n\n" + raw_prompt
         )
 
-        # Windows 兼容：
-        # 1. claude 子进程在 stdout 为 pipe 时挂起，改用 shell 重定向 > file 捕获
-        # 2. @file 在 --bare 模式下被当作"分析文件"而非 prompt 内容，改用 < stdin 传递
-        # 3. --bare 跳过 hooks/权限检查，避免等待用户确认
-        # 4. 使用 < prompt_file 通过文件重定向传递 prompt（比 @file 快 3x）
+        # 安全调用方式：
+        # 1. 使用列表形式的 subprocess.run，不经过 shell，杜绝命令注入
+        # 2. prompt 通过 stdin 文件重定向传递（避免 @file 被当作"分析文件"）
+        # 3. stdout/stderr 通过文件句柄重定向（避免 pipe 挂起问题）
+        # 4. --bare 跳过 hooks/权限检查，避免等待用户确认
 
         # 将 prompt 和输出放到项目临时目录（路径短且安全）
         tmp_dir = Path(__file__).resolve().parent.parent.parent.parent / ".claude_tmp"
@@ -276,19 +280,23 @@ class ClaudeLLM(BaseLLM):
             prompt_path = prompt_tmp.name
 
         try:
-            # Windows 下用 cmd /c + < 文件重定向 stdin
-            # stdout/stderr 重定向到临时文件（避免 pipe 问题）
-            cmd = (
-                f'cmd /c "claude -p --bare < "{prompt_path}" > "{stdout_path}" 2> "{stderr_path}""'
-            )
+            # 使用列表形式的 subprocess 调用，避免 shell 注入风险
+            # stdin 从 prompt 文件读取，stdout/stderr 重定向到临时文件
+            claude_cmd = self._claude_cli_path or "claude"
 
-            subprocess.run(
-                cmd,
-                shell=True,
-                stdin=subprocess.DEVNULL,  # stdin 已由 type 提供
-                timeout=600,
-                cwd=Path(__file__).resolve().parent.parent.parent.parent,
-            )
+            with (
+                open(prompt_path, "r", encoding="utf-8") as stdin_file,
+                open(stdout_path, "w", encoding="utf-8") as stdout_file,
+                open(stderr_path, "w", encoding="utf-8") as stderr_file,
+            ):
+                subprocess.run(
+                    [claude_cmd, "-p", "--bare"],
+                    stdin=stdin_file,
+                    stdout=stdout_file,
+                    stderr=stderr_file,
+                    timeout=600,
+                    cwd=Path(__file__).resolve().parent.parent.parent.parent,
+                )
 
             # 从临时文件读取输出（UTF-8 编码）
             content = Path(stdout_path).read_text(encoding="utf-8").strip()

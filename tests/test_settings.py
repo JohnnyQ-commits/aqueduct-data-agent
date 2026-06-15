@@ -21,7 +21,7 @@ class TestSettings:
     def test_paths_resolved_to_absolute(self):
         settings = Settings()
         assert settings.knowledge_dir.is_absolute()
-        assert settings.templates_dir.is_absolute()
+        assert settings.prompt_dir.is_absolute()
         assert settings.output_dir.is_absolute()
 
     def test_knowledge_dir_points_to_correct_location(self):

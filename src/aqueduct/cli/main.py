@@ -35,11 +35,86 @@ from .. import (
     skills,  # noqa: F401
     tools,  # noqa: F401
 )
+from ..config.settings import get_settings
+from ..core import Aqueduct, AqueductResult
 from ..engine.state import WorkflowState
 from ..engine.workflow import build_review_workflow
 from ..exceptions import AqueductError
 
 logger = logging.getLogger(__name__)
+
+
+def _make_progress_callback() -> callable:
+    """创建进度回调函数，用于实时打印阶段信息。"""
+
+    def on_progress(phase_name: str, idx: int, total: int, state: WorkflowState) -> None:
+        print(f"  [RUNNING] Phase {idx}/{total}: {phase_name}", flush=True)
+
+    return on_progress
+
+
+def _make_confirm_callback() -> callable:
+    """创建确认回调函数，用于 Phase 1 后的用户交互确认。"""
+
+    def on_confirm(state: WorkflowState) -> bool:
+        summary = state.get("requirement_summary", "")
+        if not summary:
+            return True
+
+        print(f"\n{'=' * 60}", flush=True)
+        print("[Phase 1 Complete] 需求理解摘要:", flush=True)
+        print(f"{'=' * 60}", flush=True)
+        print(summary, flush=True)
+        print(f"{'=' * 60}", flush=True)
+        print("\n请确认以上内容是否正确？", flush=True)
+        print("  [Y] 确认，继续后续阶段", flush=True)
+        print("  [N] 停止，需要修改需求文档", flush=True)
+        print("  [Q] 退出", flush=True)
+        try:
+            choice = input("\nYour choice (Y/n/q): ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            choice = "y"  # 非交互环境默认继续
+
+        if choice in ("n",):
+            print(
+                "\n[INFO] Stopping workflow. Please update requirement doc.",
+                flush=True,
+            )
+            return False
+        elif choice in ("q",):
+            print("\n[INFO] Exit.", flush=True)
+            return False
+        return True
+
+    return on_confirm
+
+
+def _print_result(result: AqueductResult) -> None:
+    """打印工作流执行结果。"""
+    if result.success:
+        print(
+            f"\n[OK] Workflow completed, {len(result.artifacts)} artifact(s):",
+            flush=True,
+        )
+        for artifact in result.artifacts:
+            print(f"  [FILE] {artifact}", flush=True)
+    elif result.halted:
+        print("\n[WARN] Workflow halted.", flush=True)
+        _print_partial_result(result)
+    else:
+        _print_partial_result(result)
+
+
+def _print_partial_result(result: AqueductResult) -> None:
+    """打印中途终止/失败时的部分产出物和错误。"""
+    if result.artifacts:
+        print(f"\n已生成 {len(result.artifacts)} 个产出物:", flush=True)
+        for a in result.artifacts:
+            print(f"  [FILE] {a}", flush=True)
+    if result.errors:
+        print(f"\n错误记录 ({len(result.errors)}):", flush=True)
+        for e in result.errors:
+            print(f"  - {e}", flush=True)
 
 
 def _dev_mode(args: argparse.Namespace) -> int:
@@ -50,116 +125,19 @@ def _dev_mode(args: argparse.Namespace) -> int:
         return 1
 
     print(f"[INFO] Reading requirement: {args.requirement}", flush=True)
-    requirement_text = req_path.read_text(encoding="utf-8")
-
-    # 构建工作流状态
-    state: WorkflowState = {
-        "requirement": requirement_text,
-        "mode": "dev",
-        "metadata": {"requirement_name": req_path.stem},
-        "errors": [],
-        "artifacts": [],
-    }
-
-    if args.output:
-        state["metadata"]["output_dir"] = args.output
-
-    # 逐节点执行工作流（而非一次性 invoke），实现实时进度 + 交互确认
     print("[INFO] Starting development mode workflow...", flush=True)
 
-    from ..engine.nodes import (
-        node_ddl,
-        node_design,
-        node_dqc,
-        node_report,
-        node_requirement,
-        node_review,
-        node_sql,
+    agent = Aqueduct()
+    result = agent.dev(
+        args.requirement,
+        output_dir=args.output,
+        interactive=True,
+        on_confirm=_make_confirm_callback(),
+        on_progress=_make_progress_callback(),
     )
 
-    phases = [
-        ("Phase 1/7: Requirement understanding", node_requirement),
-        ("Phase 2/7: Design scheme", node_design),
-        ("Phase 3/7: DDL generation", node_ddl),
-        ("Phase 4/7: SQL development", node_sql),
-        ("Phase 4.5/7: Code review", node_review),
-        ("Phase 5/7: DQC quality test", node_dqc),
-        ("Phase 6/7: Report delivery", node_report),
-    ]
-
-    try:
-        for phase_name, node_func in phases:
-            print(f"  [RUNNING] {phase_name}", flush=True)
-
-            try:
-                state = node_func(state)
-            except Exception as e:
-                state.setdefault("errors", []).append(f"{phase_name} 异常: {e!s}")
-
-            # 检查错误
-            if state.get("errors"):
-                last_error = state["errors"][-1]
-                print(f"  [ERROR] {phase_name} failed: {last_error}", flush=True)
-                if "终止" in last_error or "halt" in last_error.lower():
-                    print("\n[WARN] Workflow halted.", flush=True)
-                    _print_artifacts(state)
-                    return 1
-
-            # Phase 1 完成后：展示需求摘要，等待用户确认
-            if phase_name.startswith("Phase 1"):
-                summary = state.get("requirement_summary", "")
-                if summary:
-                    print(f"\n{'=' * 60}", flush=True)
-                    print("[Phase 1 Complete] 需求理解摘要:", flush=True)
-                    print(f"{'=' * 60}", flush=True)
-                    print(summary, flush=True)
-                    print(f"{'=' * 60}", flush=True)
-                    print("\n请确认以上内容是否正确？", flush=True)
-                    print("  [Y] 确认，继续后续阶段", flush=True)
-                    print("  [N] 停止，需要修改需求文档", flush=True)
-                    print("  [Q] 退出", flush=True)
-                    try:
-                        choice = input("\nYour choice (Y/n/q): ").strip().lower()
-                    except (EOFError, KeyboardInterrupt):
-                        choice = "y"  # 非交互环境默认继续
-                    if choice in ("n",):
-                        print(
-                            "\n[INFO] Stopping workflow. Please update requirement doc.", flush=True
-                        )
-                        _print_artifacts(state)
-                        return 0
-                    elif choice in ("q",):
-                        print("\n[INFO] Exit.", flush=True)
-                        _print_artifacts(state)
-                        return 1
-                    # else: continue
-
-        artifacts = state.get("artifacts", [])
-        print(
-            f"\n[OK] Development mode workflow completed, {len(artifacts)} artifact(s):", flush=True
-        )
-        for artifact in artifacts:
-            print(f"  [FILE] {artifact}", flush=True)
-
-        return 0
-
-    except AqueductError as e:
-        print(f"\n[ERROR] Workflow failed: {e}", flush=True)
-        return 1
-
-
-def _print_artifacts(state: WorkflowState) -> None:
-    """打印已生成的产出物。"""
-    artifacts = state.get("artifacts", [])
-    errors = state.get("errors", [])
-    if artifacts:
-        print(f"\n已生成 {len(artifacts)} 个产出物:", flush=True)
-        for a in artifacts:
-            print(f"  [FILE] {a}", flush=True)
-    if errors:
-        print(f"\n错误记录 ({len(errors)}):", flush=True)
-        for e in errors:
-            print(f"  - {e}", flush=True)
+    _print_result(result)
+    return 0 if result.success else 1
 
 
 def _review_mode(args: argparse.Namespace) -> int:
@@ -224,73 +202,28 @@ def _change_mode(args: argparse.Namespace) -> int:
     if args.desc:
         print(f"[INFO] Change description: {args.desc}")
 
-    # 构建工作流状态
-    state: WorkflowState = {
-        "requirement": "",
-        "mode": "change",
-        "original_requirement": original_path.read_text(encoding="utf-8"),
-        "new_requirement": new_path.read_text(encoding="utf-8"),
-        "change_description": args.desc or "",
-        "metadata": {"requirement_name": original_path.stem},
-        "errors": [],
-        "artifacts": [],
-    }
-
-    if args.output:
-        state["metadata"]["output_dir"] = args.output
-
     print("[INFO] Starting change management workflow...")
 
-    from ..engine.nodes import (
-        node_change_archive,
-        node_change_document,
-        node_change_identify,
-        node_change_merge,
-        node_change_review,
-        node_change_sql,
+    agent = Aqueduct()
+    result = agent.change(
+        args.original,
+        args.new,
+        desc=args.desc or "",
+        output_dir=args.output,
+        on_progress=_make_progress_callback(),
     )
 
-    phases = [
-        ("Phase 1/6: Change identification", node_change_identify),
-        ("Phase 2/6: Change requirement document", node_change_document),
-        ("Phase 3/6: Change SQL generation", node_change_sql),
-        ("Phase 4/6: Change review", node_change_review),
-        ("Phase 5/6: Merge execution", node_change_merge),
-        ("Phase 6/6: Archive", node_change_archive),
-    ]
-
-    try:
-        for phase_name, node_func in phases:
-            print(f"  [RUNNING] {phase_name}", flush=True)
-
-            try:
-                state = node_func(state)
-            except Exception as e:
-                state.setdefault("errors", []).append(f"{phase_name} 异常: {e!s}")
-
-            # 检查错误
-            if state.get("errors"):
-                last_error = state["errors"][-1]
-                print(f"  [ERROR] {phase_name} failed: {last_error}", flush=True)
-                if "终止" in last_error or "halt" in last_error.lower():
-                    print("\n[WARN] Workflow halted.", flush=True)
-                    return 1
-
-        cr_dir = state.get("cr_dir", "")
-        cr_number = state.get("cr_number", "")
-        print(
-            "\n[OK] Change management workflow completed",
-            flush=True,
-        )
+    if result.success:
+        cr_number = result.state.get("cr_number", "")
+        cr_dir = result.state.get("cr_dir", "")
+        print(f"\n[OK] Change management workflow completed", flush=True)
         print(f"  [CR] CR-{cr_number}", flush=True)
         if cr_dir:
             print(f"  [DIR] {cr_dir}", flush=True)
-
         return 0
 
-    except AqueductError as e:
-        print(f"\n[ERROR] Change management failed: {e}", flush=True)
-        return 1
+    _print_result(result)
+    return 1
 
 
 def _validate_sql(args: argparse.Namespace) -> int:
@@ -315,7 +248,8 @@ def _validate_sql(args: argparse.Namespace) -> int:
 
 def _status(args: argparse.Namespace) -> int:
     """项目状态概览。"""
-    root = Path(__file__).resolve().parent.parent.parent.parent
+    settings = get_settings()
+    root = settings.project_root
 
     # 统计各层模块
     tools_dir = root / "src/aqueduct/tools"

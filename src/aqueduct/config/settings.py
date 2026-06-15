@@ -55,11 +55,6 @@ class Settings(BaseSettings):
         description="业务域本体 JSON 文件目录。",
     )
 
-    templates_dir: Path = Field(
-        default=Path("templates"),
-        description="Jinja2 模板目录（DDL、DQC、报告等）。",
-    )
-
     prompt_dir: Path = Field(
         default=Path("src/aqueduct/skills/prompt"),
         description="Skill Prompt 模板目录（.tpl.md 文件）。",
@@ -134,7 +129,6 @@ class Settings(BaseSettings):
         root = self.project_root
         for field_name in (
             "knowledge_dir",
-            "templates_dir",
             "prompt_dir",
             "output_dir",
             "workspace_dir",

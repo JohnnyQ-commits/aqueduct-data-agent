@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **ClaudeLLM env var loading**: Moved model ID defaults from class attributes to instance `__init__`, ensuring `.env` values are correctly picked up after pydantic-settings loads them
+- **CLI command injection**: Replaced `shell=True` + string concatenation in `_chat_cli` with list-form `subprocess.run` and file handle redirection
+- **Workflow execution duplication**: Unified dev/change pipeline execution into `core._run_pipeline()`, CLI now delegates to `Aqueduct` class instead of reimplementing the node loop
+
+### Removed
+
+- **Unused `templates/` directory**: Removed `templates/` and its `templates_dir` config entry — files were never loaded by any runtime code path
+
 ## [0.3.0] - 2026-06-14
 
 Initial public release.
