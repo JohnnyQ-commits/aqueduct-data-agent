@@ -19,16 +19,8 @@
 
 Give it a requirement document. Get back 11 standardized deliverables: DDL, ETL SQL, DQC test cases, field-level lineage, design documents, and a comprehensive report.
 
-```
-                     Aqueduct Pipeline
-
- Requirement       Design         SQL           Review
-  Document    -->  Scheme    -->  Code    -->   Check   --+
-    (.md)          (.md)          (.sql)                   |
-                                                          v
-                                                     DQC Test
-                                                    --> Report
-                                                        (.sql)  --> Deliverables/
+```text
+Requirement (.md) --> Design (.md) --> DDL (.sql) --> SQL (.sql) --> Review --> DQC (.sql) --> Report (.md) --> Deliverables (11 files)
 ```
 
 ### What makes it different
@@ -199,28 +191,28 @@ Once configured, `aqueduct dev` automatically executes DQC test cases and popula
 
 ## Architecture
 
-```
-+-------------------------------------------------------------+
-|  MCP Layer                                                    |
-|  Standard MCP protocol / User-configurable .mcp.json          |
-|  get_table_schema | execute_sql | list_tables                 |
-+-------------------------------------------------------------+
-|  Memory Layer                                                 |
-|  Ontology models / Domain knowledge / Auto-recall (Top-K)     |
-+-------------------------------------------------------------+
-|  Agent-DAG Layer (StateGraph)                                 |
-|  Dev: requirement->design->DDL->SQL->review->DQC->report      |
-|  Review: requirement->review->DQC->report                     |
-+-------------------------------------------------------------+
-|  Skills Layer (BaseSkill ABC)                                 |
-|  7 core skills + auxiliary / Prompt-code decoupled (.tpl.md)  |
-+-------------------------------------------------------------+
-|  Tools Layer (BaseTool ABC)                                   |
-|  9 atomic tools / SQL parsing / Template rendering / Registry |
-+-------------------------------------------------------------+
-|  LLM Layer (BaseLLM ABC)                                      |
-|  3-tier routing: Haiku (fast) -> Sonnet (balanced) -> Opus    |
-+-------------------------------------------------------------+
+```text
+┌─────────────────────────────────────────────────────────┐
+│  MCP Layer                                               │
+│  Standard MCP protocol / .mcp.json                       │
+│  get_table_schema · execute_sql · list_tables            │
+├─────────────────────────────────────────────────────────┤
+│  Memory Layer                                            │
+│  Ontology models / Domain knowledge / Auto-recall (Top-K)│
+├─────────────────────────────────────────────────────────┤
+│  Agent-DAG Layer (StateGraph)                            │
+│  Dev: requirement --> design --> DDL --> SQL --> review --> DQC  │
+│  Review: requirement --> review --> DQC --> report              │
+├─────────────────────────────────────────────────────────┤
+│  Skills Layer (BaseSkill ABC)                            │
+│  7 core skills / Prompt-code decoupled (.tpl.md)         │
+├─────────────────────────────────────────────────────────┤
+│  Tools Layer (BaseTool ABC)                              │
+│  9 atomic tools / SQL parsing / Template rendering       │
+├─────────────────────────────────────────────────────────┤
+│  LLM Layer (BaseLLM ABC)                                 │
+│  3-tier routing: Haiku --> Sonnet --> Opus                  │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ### Layers at a glance
