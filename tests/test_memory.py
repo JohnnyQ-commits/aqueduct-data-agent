@@ -162,9 +162,7 @@ class TestNodeRequirementKnowledgeRecall:
         """验证召回结果可被下游节点读取。"""
         from src.aqueduct.engine.nodes.requirement import _recall_domain_knowledge
 
-        state = self._make_state(
-            "统计每日订单GMV和客户数，数据来源 dw_demo.dwd_order_info_di"
-        )
+        state = self._make_state("统计每日订单GMV和客户数，数据来源 dw_demo.dwd_order_info_di")
         _recall_domain_knowledge(state)
 
         # 模拟下游节点的读取方式（和 sql.py / ddl.py 等一致）

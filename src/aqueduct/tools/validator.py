@@ -21,6 +21,7 @@ class Issue(TypedDict):
     message: str
     line: int | None
 
+
 # Validator 专用正则（不与其他工具共享）
 _RE_SELECT_STAR = re.compile(r"\bselect\s+\*", re.IGNORECASE)
 _RE_UNION = re.compile(r"\bunion\s+all\b|\bunion\b", re.IGNORECASE)
