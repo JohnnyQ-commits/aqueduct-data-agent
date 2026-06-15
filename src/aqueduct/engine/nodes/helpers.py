@@ -20,7 +20,7 @@ from ..state import WorkflowState
 logger = logging.getLogger(__name__)
 
 # 项目根目录
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
 
 
 def get_output_dir(state: WorkflowState) -> Path:
