@@ -28,6 +28,7 @@ class LLMUsage:
     total_tokens: int = 0  # 总计 token 数
     cache_read_tokens: int = 0  # 缓存读取 token 数
     cache_create_tokens: int = 0  # 缓存创建 token 数
+    estimated: bool = False  # 是否为估算值（CLI 后端无法获取真实 token 数）
 
 
 @dataclass

@@ -12,6 +12,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **ClaudeLLM env var loading**: Moved model ID defaults from class attributes to instance `__init__`, ensuring `.env` values are correctly picked up after pydantic-settings loads them
 - **CLI command injection**: Replaced `shell=True` + string concatenation in `_chat_cli` with list-form `subprocess.run` and file handle redirection
 - **Workflow execution duplication**: Unified dev/change pipeline execution into `core._run_pipeline()`, CLI now delegates to `Aqueduct` class instead of reimplementing the node loop
+- **Topological sort**: Replaced ad-hoc queue with proper Kahn's algorithm using `collections.deque`; added cycle detection to prevent infinite loops
+- **WorkflowState typing**: Replaced `total=False` (all optional) with explicit `NotRequired` for optional fields; required fields (`requirement`, `mode`, `errors`, `artifacts`) are now enforced by type checkers
+- **CLI token stats**: Added `estimated` flag to `LLMUsage` so downstream consumers (e.g. productivity board) can distinguish CLI-estimated counts from real API values
+- **Keyword extraction**: Filtered Chinese stopwords and switched from single-char to bigram-based extraction for better precision in domain matching
+- **Issue class**: Replaced meaningless `class Issue(dict)` with a proper `TypedDict`
+
+### Added
+
+- **Validator tests**: 30+ unit tests covering all 7 SQL validation rules + integration tests
+- **Lineage tests**: 10+ unit tests covering table/field lineage parsing and Mermaid generation
+- **Workflow tests**: Added execution tests for linear DAG, state propagation, halt on fatal error, and cycle detection
 
 ### Removed
 

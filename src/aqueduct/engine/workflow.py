@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import logging
+from collections import deque
 from collections.abc import Callable
 
 from ..exceptions import WorkflowError
@@ -126,7 +127,7 @@ class CompiledWorkflow:
     def invoke(self, state: WorkflowState) -> WorkflowState:
         """执行工作流。
 
-        按 DAG 拓扑顺序执行节点，每个节点的输出作为下一个节点的输入。
+        按 DAG 拓扑顺序（Kahn 算法）执行节点，每个节点的输出作为下一个节点的输入。
         错误时根据恢复策略决定重试/跳过/终止。
 
         Args:
@@ -138,34 +139,29 @@ class CompiledWorkflow:
         Raises:
             WorkflowError: 工作流无法继续时抛出。
         """
-        # 构建邻接表
-        adj: dict[str, list[str]] = {}
-        in_degree: dict[str, int] = {}
+        # 收集所有参与的节点名
+        all_nodes: set[str] = set(self._nodes.keys())
+
+        # 构建邻接表和入度表（Kahn 算法标准实现）
+        adj: dict[str, list[str]] = {n: [] for n in all_nodes}
+        in_degree: dict[str, int] = {n: 0 for n in all_nodes}
+
         for source, target in self._edges:
             if target == END:
                 continue
-            adj.setdefault(source, []).append(target)
-            in_degree[target] = in_degree.get(target, 0) + 1
+            if source in all_nodes and target in all_nodes:
+                adj[source].append(target)
+                in_degree[target] += 1
 
-        # 初始化入口节点入度
-        if self._entry_point not in in_degree:
-            in_degree[self._entry_point] = 0
+        # 入度为 0 的节点入队（入口节点应在其中）
+        queue: deque[str] = deque(n for n, d in in_degree.items() if d == 0)
 
-        # 拓扑排序 + 执行
-        queue = [self._entry_point]
         executed: set[str] = set()
 
         while queue:
-            # 取第一个入度为 0 的节点
-            node_name = queue.pop(0)
+            node_name = queue.popleft()
 
             if node_name in executed:
-                continue
-
-            # 检查前置节点是否都已执行
-            predecessors = [s for s, t in self._edges if t == node_name]
-            if not all(p in executed or p == "__start__" for p in predecessors):
-                queue.append(node_name)  # 重新入队
                 continue
 
             # 执行节点
@@ -181,13 +177,18 @@ class CompiledWorkflow:
 
             executed.add(node_name)
 
-            # 将后继节点入队
+            # 后继节点入度减 1，入度为 0 则入队
             for next_node in adj.get(node_name, []):
-                in_degree[next_node] = in_degree.get(next_node, 0) - 1
-                if in_degree[next_node] <= 0:
+                in_degree[next_node] -= 1
+                if in_degree[next_node] == 0:
                     queue.append(next_node)
 
-        logger.info("工作流执行完成, 已执行 %d 个节点", len(executed))
+        # 环检测：如果还有节点未被执行，说明存在环
+        unexecuted = all_nodes - executed
+        if unexecuted:
+            logger.warning("工作流存在环，以下节点未执行: %s", unexecuted)
+
+        logger.info("工作流执行完成, 已执行 %d/%d 个节点", len(executed), len(all_nodes))
         return state
 
     def _execute_node(

@@ -321,6 +321,7 @@ class ClaudeLLM(BaseLLM):
                 prompt_tokens=self.estimate_tokens(full_prompt),
                 completion_tokens=self.estimate_tokens(content),
                 total_tokens=self.estimate_tokens(full_prompt) + self.estimate_tokens(content),
+                estimated=True,  # CLI 后端无法获取真实 API token 用量，此为字符估算值
             ),
             model=self._model_id,
         )

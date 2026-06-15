@@ -7,11 +7,19 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 from ..tools.base import BaseTool, ToolResult
 from ..tools.registry import register_tool
 from ..utils.regex import RE_COMMENT
+
+
+class Issue(TypedDict):
+    """校验问题条目。"""
+
+    level: str  # "ERROR" | "WARN" | "INFO"
+    message: str
+    line: int | None
 
 # Validator 专用正则（不与其他工具共享）
 _RE_SELECT_STAR = re.compile(r"\bselect\s+\*", re.IGNORECASE)
@@ -37,12 +45,6 @@ _PARTITION_PATTERNS = [
     re.compile(r"\bday\s*(=|in|between)", re.IGNORECASE),
     re.compile(r"\bdata_day\s*(=|in|between)", re.IGNORECASE),
 ]
-
-
-class Issue(dict):
-    """校验问题条目。"""
-
-    pass
 
 
 class Validator:

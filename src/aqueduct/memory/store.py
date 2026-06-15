@@ -180,7 +180,8 @@ class MemoryStore:
     def _extract_keywords(text: str) -> list[str]:
         """从文本中提取关键词。
 
-        简单实现：中文按单字/双字，英文按单词。
+        简单实现：中文按双字 bigram 为主，英文按单词。
+        过滤常见中文停用字，减少噪声匹配。
         可替换为 jieba 分词或 embedding 模型。
 
         Args:
@@ -191,22 +192,26 @@ class MemoryStore:
         """
         import re
 
-        # 英文单词
+        # 中文停用字（高频虚词、代词、助词等，单独出现无业务含义）
+        STOPWORDS = frozenset(
+            "的了是在有和与或等为也不但而且如果因为所以可以已经还是就都"
+            "这那个些什么怎么哪谁我你他她它们被把给让到从向对于关于按"
+            "一二三四五六七八九十百千万亿上下中前后左右里外内外"
+        )
+
+        # 英文单词（长度 >= 2）
         words = re.findall(r"[a-z]+", text)
-        # 中文单字/双字
-        chinese_chars = list(text)
+        # 中文双字 bigram（比单字更有区分度）
         chinese_bigrams = [text[i : i + 2] for i in range(len(text) - 1)]
 
         # 合并并去重
-        all_kw = set()
+        all_kw: set[str] = set()
         for w in words:
-            if len(w) >= 2:  # 过滤单字母
+            if len(w) >= 2:
                 all_kw.add(w)
-        for c in chinese_chars:
-            if "一" <= c <= "鿿":  # 只保留中文字符
-                all_kw.add(c)
         for bg in chinese_bigrams:
-            if all("一" <= c <= "鿿" for c in bg):
+            # 只保留两个都是中文字符的 bigram，且不在停用词中
+            if all("一" <= c <= "鿿" for c in bg) and bg not in STOPWORDS:
                 all_kw.add(bg)
 
         return list(all_kw)
