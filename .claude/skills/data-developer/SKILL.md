@@ -55,7 +55,7 @@ version: "0.3.0"
 4. 识别歧义点，输出"需求理解摘要 + 问题清单"向用户确认
 5. 用户确认后，自动进入 Phase 2
 
-**输出**: `output/{需求名}/需求理解摘要.md`
+**输出**: `output/{需求名}/Phase1-需求理解摘要.md`
 
 ### Phase 2: 设计方案
 
@@ -64,7 +64,7 @@ version: "0.3.0"
 3. 输出上下游依赖关系
 4. 将设计方案写入文件
 
-**输出**: `output/{需求名}/设计方案.md`
+**输出**: `output/{需求名}/Phase2-设计方案.md`
 
 ### Phase 3: 表结构设计
 
@@ -72,7 +72,7 @@ version: "0.3.0"
 2. 规范：分区字段 `inc_day string`，格式 `YYYYMMDD`，存储格式 `PARQUET`
 3. 调用 `ValidatorTool` 校验 DDL 规范性
 
-**输出**: `output/{需求名}/表结构.sql`
+**输出**: `output/{需求名}/Phase3-表结构.sql`
 
 ### Phase 4: SQL 开发
 
@@ -82,10 +82,10 @@ version: "0.3.0"
 4. 调用 `LineageTool` 生成血缘图
 
 **输出**:
-- `output/{需求名}/{需求名}.sql`
-- `output/{需求名}/SQL校验报告.md`
-- `output/{需求名}/成本预警.md`
-- `output/{需求名}/字段级血缘图.md`
+- `output/{需求名}/Phase4-{需求名}.sql`
+- `output/{需求名}/Phase4-SQL校验报告.md`
+- `output/{需求名}/Phase4-成本预警.md`
+- `output/{需求名}/Phase4-字段级血缘图.md`
 
 ### Phase 4.5: 代码审查（审查模式入口）
 
@@ -93,7 +93,7 @@ version: "0.3.0"
 2. 需求覆盖度验证
 3. 潜在问题检查
 
-**输出**: `output/{需求名}/{需求名}_审查报告.md`
+**输出**: `output/{需求名}/Phase5-{需求名}_审查报告.md`
 
 ### Phase 5: 数据质量保障 (DQC)
 
@@ -106,8 +106,8 @@ version: "0.3.0"
 2. 调用 `DQCTool` 解析测试用例并生成质量仪表盘
 
 **输出**:
-- `output/{需求名}/数据质量测试.sql`
-- `output/{需求名}/质量仪表盘.md`
+- `output/{需求名}/Phase5-数据质量测试.sql`
+- `output/{需求名}/Phase5-质量仪表盘.md`
 
 ### Phase 6: 交付与沉淀
 
@@ -117,9 +117,9 @@ version: "0.3.0"
 4. 更新/创建语义模型 JSON
 
 **输出**:
-- `output/{需求名}/Design.md`
-- `output/{需求名}/交付总报告.md`
-- `output/{需求名}/知识沉淀.md`
+- `output/{需求名}/Phase6-Design.md`
+- `output/{需求名}/Phase6-交付总报告.md`
+- `output/{需求名}/Phase6-知识沉淀.md`
 - `knowledge/domains/{domain_id}.json`（新业务域时创建）
 
 ## Smart Fix 自动修复
@@ -185,9 +185,9 @@ aqueduct validate <sql_file> [--strict]
 ```
 output/{需求名}/changes/
 ├── CR-001_xxx/
-│   ├── 变更需求.md
-│   ├── 变更SQL.sql
-│   └── 变更审查报告.md
+│   ├── Phase2-变更需求.md
+│   ├── Phase3-变更SQL.sql
+│   └── Phase4-变更审查报告.md
 ├── CR-002_xxx/
 │   └── ...
 ```

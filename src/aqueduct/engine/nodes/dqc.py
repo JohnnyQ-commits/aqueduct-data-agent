@@ -38,7 +38,7 @@ def node_dqc(state: WorkflowState) -> WorkflowState:
 
         dqc_sql = extract_sql_block(llm_response)
 
-        save_artifact(state, "数据质量测试.sql", dqc_sql)
+        save_artifact(state, "Phase5-数据质量测试.sql", dqc_sql)
         state["dqc_result"] = dqc_sql
         state["metadata"] = {**(state.get("metadata", {})), "dqc_done": "true"}
 

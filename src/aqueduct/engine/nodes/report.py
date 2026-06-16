@@ -50,13 +50,13 @@ def node_report(state: WorkflowState) -> WorkflowState:
         prompt = result.data.get("prompt", "")
         llm_response = call_llm(state, "doc_gen", prompt)
 
-        save_artifact(state, "Design.md", llm_response)
+        save_artifact(state, "Phase6-Design.md", llm_response)
 
         delivery_report = _generate_delivery_report(state)
-        save_artifact(state, "交付总报告.md", delivery_report)
+        save_artifact(state, "Phase6-交付总报告.md", delivery_report)
 
         knowledge_doc = _generate_knowledge_doc(state)
-        save_artifact(state, "知识沉淀.md", knowledge_doc)
+        save_artifact(state, "Phase6-知识沉淀.md", knowledge_doc)
 
         # 生成提效看板
         try:
@@ -65,7 +65,7 @@ def node_report(state: WorkflowState) -> WorkflowState:
             if prod_result.success:
                 board_content = prod_result.data.get("report", "")
                 if board_content:
-                    save_artifact(state, "提效看板.md", board_content)
+                    save_artifact(state, "Phase6-提效看板.md", board_content)
         except Exception:
             logger.warning("提效看板生成失败，跳过", exc_info=True)
 
@@ -102,7 +102,7 @@ def _generate_delivery_report(state: WorkflowState) -> str:
         "- **执行模式**：开发模式",
         "",
         "详细信息参见：",
-        "- 设计文档：[Design.md](Design.md)",
+        "- 设计文档：[Phase6-Design.md](Phase6-Design.md)",
         "",
         "---",
         "",
@@ -137,7 +137,7 @@ def _generate_delivery_report(state: WorkflowState) -> str:
         ]
     )
     if state.get("dqc_result"):
-        lines.append("数据质量测试用例已生成（详见 `数据质量测试.sql`）。")
+        lines.append("数据质量测试用例已生成（详见 `Phase5-数据质量测试.sql`）。")
     else:
         lines.append("数据质量测试用例待生成。")
     lines.extend(["", "---", "", "## 四、上下游依赖", "", "**上游**:"])
@@ -159,7 +159,7 @@ def _generate_delivery_report(state: WorkflowState) -> str:
     )
     for a in artifacts:
         lines.append(f"| {a} | 产出物 | 已完成 |")
-    for expected in ["表结构.sql", "Design.md", "交付总报告.md", "知识沉淀.md", "提效看板.md"]:
+    for expected in ["Phase3-表结构.sql", "Phase6-Design.md", "Phase6-交付总报告.md", "Phase6-知识沉淀.md", "Phase6-提效看板.md"]:
         if not any(expected in a for a in artifacts):
             lines.append(f"| {expected} | 产出物 | 已完成 |")
     lines.append("")

@@ -37,7 +37,7 @@ def node_ddl(state: WorkflowState) -> WorkflowState:
 
         ddl_content = extract_sql_block(llm_response)
 
-        ddl_path = save_artifact(state, "表结构.sql", ddl_content)
+        ddl_path = save_artifact(state, "Phase3-表结构.sql", ddl_content)
         state["ddl_content"] = ddl_content
         state["ddl_file"] = ddl_path
         state["metadata"] = {**(state.get("metadata", {})), "ddl_done": "true"}

@@ -18,12 +18,12 @@
 
 | 文件 | 用途 |
 |------|------|
-| 表结构.sql | 目标表 DDL 定义 |
-| 核心SQL.sql | 核心 ETL 逻辑 |
-| 数据质量测试.sql | DQC 测试用例 |
-| Design.md | 完整设计文档 |
-| 交付总报告.md | 项目交付总报告 |
-| 知识沉淀.md | 知识沉淀文档 |
+| Phase3-表结构.sql | 目标表 DDL 定义 |
+| Phase4-核心SQL.sql | 核心 ETL 逻辑 |
+| Phase5-数据质量测试.sql | DQC 测试用例 |
+| Phase6-Design.md | 完整设计文档 |
+| Phase6-交付总报告.md | 项目交付总报告 |
+| Phase6-知识沉淀.md | 知识沉淀文档 |
 
 ## 任务
 

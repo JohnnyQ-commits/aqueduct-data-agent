@@ -51,7 +51,7 @@ version: "1.0.0"
 
 ### Phase 2: 变更需求文档
 
-在 `output/{需求名}/changes/CR-{NNN}_{简称}/` 下创建 `变更需求.md`：
+在 `output/{需求名}/changes/CR-{NNN}_{简称}/` 下创建 `Phase2-变更需求.md`：
 
 | 章节 | 内容 |
 |------|------|
@@ -64,7 +64,7 @@ version: "1.0.0"
 
 ### Phase 3: 变更 SQL
 
-创建 `变更SQL.sql`：
+创建 `Phase3-变更SQL.sql`：
 
 1. **修改的TMP表**：DROP + CREATE 完整重建
 2. **新增的TMP表**：DROP + CREATE
@@ -78,7 +78,7 @@ version: "1.0.0"
 
 ### Phase 4: 变更审查
 
-创建 `变更审查报告.md`：
+创建 `Phase4-变更审查报告.md`：
 
 | 审查维度 | 检查项 |
 |---------|--------|
@@ -121,9 +121,9 @@ version: "1.0.0"
 ```
 output/{需求名}/changes/
 ├── CR-{NNN}_{简称}/
-│   ├── 变更需求.md          ← Phase 2 产出
-│   ├── 变更SQL.sql          ← Phase 3 产出
-│   └── 变更审查报告.md      ← Phase 4 产出
+│   ├── Phase2-变更需求.md          ← Phase 2 产出
+│   ├── Phase3-变更SQL.sql          ← Phase 3 产出
+│   └── Phase4-变更审查报告.md      ← Phase 4 产出
 ```
 
 ## Constraints

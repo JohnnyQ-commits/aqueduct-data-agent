@@ -42,7 +42,7 @@ def node_sql(state: WorkflowState) -> WorkflowState:
         sql_content = extract_sql_block(llm_response)
 
         req_name = state.get("metadata", {}).get("requirement_name", "etl_sql")
-        sql_path = save_artifact(state, f"{req_name}.sql", sql_content)
+        sql_path = save_artifact(state, f"Phase4-{req_name}.sql", sql_content)
         state["sql_content"] = sql_content
         state["sql_file"] = sql_path
         state["metadata"] = {**(state.get("metadata", {})), "sql_done": "true"}
@@ -98,7 +98,7 @@ def _auto_validate(state: WorkflowState, sql_path: str) -> None:
             msg = issue.get("message", "")
             line = issue.get("line", "")
             report_lines.append(f"- [{level}] Line {line}: {msg}")
-        save_artifact(state, "SQL校验报告.md", "\n".join(report_lines))
+        save_artifact(state, "Phase4-SQL校验报告.md", "\n".join(report_lines))
         logger.info(
             "SQL 校验完成: %d errors, %d warnings",
             vr.get("error_count", 0),
@@ -137,7 +137,7 @@ def _auto_lineage(state: WorkflowState, sql_path: str) -> None:
         ]
         for src in sources:
             lines.append(f"- `{src}`")
-        save_artifact(state, "字段级血缘图.md", "\n".join(lines))
+        save_artifact(state, "Phase4-字段级血缘图.md", "\n".join(lines))
         logger.info("血缘解析完成: %d source tables", len(sources))
     except Exception:
         logger.warning("血缘解析失败，跳过", exc_info=True)
@@ -157,7 +157,7 @@ def _auto_cost_estimate(state: WorkflowState, sql_path: str) -> None:
 
         report_md = cost_result.data.get("report", "")
         if report_md:
-            save_artifact(state, "成本预警.md", report_md)
+            save_artifact(state, "Phase4-成本预警.md", report_md)
         logger.info("成本预估完成")
     except Exception:
         logger.warning("成本预估失败，跳过", exc_info=True)

@@ -35,7 +35,7 @@ def node_design(state: WorkflowState) -> WorkflowState:
         prompt = result.data.get("prompt", "")
         llm_response = call_llm(state, "scheme_write", prompt)
 
-        save_artifact(state, "设计方案.md", llm_response)
+        save_artifact(state, "Phase2-设计方案.md", llm_response)
         state["design_scheme"] = llm_response
         state["metadata"] = {**(state.get("metadata", {})), "design_done": "true"}
 

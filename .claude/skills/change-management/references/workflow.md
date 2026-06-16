@@ -5,9 +5,9 @@
 ```
 output/{需求名}/changes/
 ├── CR-001_电商网点效能指标/
-│   ├── 变更需求.md          ← Phase 2 产出
-│   ├── 变更SQL.sql          ← Phase 3 产出
-│   └── 变更审查报告.md      ← Phase 4 产出
+│   ├── Phase2-变更需求.md          ← Phase 2 产出
+│   ├── Phase3-变更SQL.sql          ← Phase 3 产出
+│   └── Phase4-变更审查报告.md      ← Phase 4 产出
 ├── CR-002_新增客户分层标签/
 │   └── ...
 └── ...
@@ -38,7 +38,7 @@ output/{需求名}/changes/
 
 ### Phase 2: 变更需求文档
 
-**文件**：`CR-{NNN}_{简称}/变更需求.md`
+**文件**：`CR-{NNN}_{简称}/Phase2-变更需求.md`
 
 **模板**：
 ```markdown
@@ -106,7 +106,7 @@ output/{需求名}/changes/
 
 ### Phase 3: 变更 SQL
 
-**文件**：`CR-{NNN}_{简称}/变更SQL.sql`
+**文件**：`CR-{NNN}_{简称}/Phase3-变更SQL.sql`
 
 **结构要求**：
 
@@ -164,7 +164,7 @@ SELECT ...
 
 ### Phase 4: 变更审查
 
-**文件**：`CR-{NNN}_{简称}/变更审查报告.md`
+**文件**：`CR-{NNN}_{简称}/Phase4-变更审查报告.md`
 
 **审查维度**：
 

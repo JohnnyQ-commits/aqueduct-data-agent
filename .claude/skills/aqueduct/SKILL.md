@@ -76,19 +76,19 @@ aqueduct status
 
 | 文件 | 用途 | 阶段 |
 |------|------|------|
-| 需求理解摘要.md | 需求解析与问题清单 | Phase 1 |
-| 设计方案.md | 取数逻辑与字段映射 | Phase 2 |
-| 表结构.sql | 目标表 DDL 定义 | Phase 3 |
-| {需求名}.sql | 核心 ETL 逻辑 | Phase 4 |
-| SQL校验报告.md | SQL 语法/逻辑/场景覆盖校验 | Phase 4 |
-| 成本预警.md | 数据量预估与优化建议 | Phase 4 |
-| 字段级血缘图.md | Mermaid 血缘拓扑图 | Phase 4 |
-| {需求名}_审查报告.md | 代码审查结果 | Phase 4.5 |
-| 数据质量测试.sql | DQC 测试用例 | Phase 5 |
-| 质量仪表盘.md | 数据质量测试结果看板 | Phase 5 |
-| Design.md | 完整设计文档 | Phase 6 |
-| 交付总报告.md | 项目交付总报告 | Phase 6 |
-| 知识沉淀.md | 业务规则与编码约定沉淀 | Phase 6 |
+| Phase1-需求理解摘要.md | 需求解析与问题清单 | Phase 1 |
+| Phase2-设计方案.md | 取数逻辑与字段映射 | Phase 2 |
+| Phase3-表结构.sql | 目标表 DDL 定义 | Phase 3 |
+| Phase4-{需求名}.sql | 核心 ETL 逻辑 | Phase 4 |
+| Phase4-SQL校验报告.md | SQL 语法/逻辑/场景覆盖校验 | Phase 4 |
+| Phase4-成本预警.md | 数据量预估与优化建议 | Phase 4 |
+| Phase4-字段级血缘图.md | Mermaid 血缘拓扑图 | Phase 4 |
+| Phase5-{需求名}_审查报告.md | 代码审查结果 | Phase 4.5 |
+| Phase5-数据质量测试.sql | DQC 测试用例 | Phase 5 |
+| Phase5-质量仪表盘.md | 数据质量测试结果看板 | Phase 5 |
+| Phase6-Design.md | 完整设计文档 | Phase 6 |
+| Phase6-交付总报告.md | 项目交付总报告 | Phase 6 |
+| Phase6-知识沉淀.md | 业务规则与编码约定沉淀 | Phase 6 |
 | knowledge/domains/{domain_id}.json | 语义模型（新业务域时创建） | Phase 6 |
 
 用户通过 `.mcp.json` 配置自己的数据平台，无需修改代码。

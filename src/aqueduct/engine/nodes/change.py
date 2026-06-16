@@ -177,7 +177,7 @@ CR-{cr_number}
         llm_response = call_llm(state, "doc_gen", prompt)
 
         # 保存到 CR 目录
-        req_doc_path = cr_dir / "变更需求.md"
+        req_doc_path = cr_dir / "Phase2-变更需求.md"
         req_doc_path.write_text(llm_response, encoding="utf-8")
 
         state["change_requirement_doc"] = llm_response
@@ -252,7 +252,7 @@ CR-{cr_number}
         sql_content = extract_sql_block(llm_response)
 
         # 保存到 CR 目录
-        sql_path = cr_dir / "变更SQL.sql"
+        sql_path = cr_dir / "Phase3-变更SQL.sql"
         sql_path.write_text(sql_content, encoding="utf-8")
 
         state["change_sql"] = sql_content
@@ -323,7 +323,7 @@ CR-{cr_number}
         llm_response = call_llm(state, "sql_review", prompt)
 
         # 保存到 CR 目录
-        review_path = cr_dir / "变更审查报告.md"
+        review_path = cr_dir / "Phase4-变更审查报告.md"
         review_path.write_text(llm_response, encoding="utf-8")
 
         state["change_review"] = llm_response
@@ -432,7 +432,7 @@ def node_change_archive(state: WorkflowState) -> WorkflowState:
         # 保存到 CR 目录
         cr_dir = Path(state.get("cr_dir", ""))
         if cr_dir.exists():
-            archive_path = cr_dir / "归档记录.md"
+            archive_path = cr_dir / "Phase6-归档记录.md"
             archive_path.write_text(archive_report, encoding="utf-8")
 
         state["change_archive"] = archive_report

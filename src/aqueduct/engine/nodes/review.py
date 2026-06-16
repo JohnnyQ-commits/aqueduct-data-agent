@@ -37,7 +37,7 @@ def node_review(state: WorkflowState) -> WorkflowState:
         llm_response = call_llm(state, "sql_review", prompt)
 
         req_name = state.get("metadata", {}).get("requirement_name", "code_review")
-        save_artifact(state, f"{req_name}_审查报告.md", llm_response)
+        save_artifact(state, f"Phase5-{req_name}_审查报告.md", llm_response)
         state["review_result"] = llm_response
         state["metadata"] = {**(state.get("metadata", {})), "review_done": "true"}
 

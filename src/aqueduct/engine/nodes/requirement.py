@@ -72,7 +72,7 @@ def node_requirement(state: WorkflowState) -> WorkflowState:
         prompt = result.data.get("prompt", "")
         llm_response = call_llm(state, "requirement_parse", prompt)
 
-        save_artifact(state, "需求理解摘要.md", llm_response)
+        save_artifact(state, "Phase1-需求理解摘要.md", llm_response)
         state["requirement_summary"] = llm_response
         state["metadata"] = {**(state.get("metadata", {})), "requirement_parsed": "true"}
 
