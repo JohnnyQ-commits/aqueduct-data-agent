@@ -159,7 +159,13 @@ def _generate_delivery_report(state: WorkflowState) -> str:
     )
     for a in artifacts:
         lines.append(f"| {a} | 产出物 | 已完成 |")
-    for expected in ["Phase3-表结构.sql", "Phase6-Design.md", "Phase6-交付总报告.md", "Phase6-知识沉淀.md", "Phase6-提效看板.md"]:
+    for expected in [
+        "Phase3-表结构.sql",
+        "Phase6-Design.md",
+        "Phase6-交付总报告.md",
+        "Phase6-知识沉淀.md",
+        "Phase6-提效看板.md",
+    ]:
         if not any(expected in a for a in artifacts):
             lines.append(f"| {expected} | 产出物 | 已完成 |")
     lines.append("")
