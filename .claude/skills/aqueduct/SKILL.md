@@ -86,6 +86,7 @@ aqueduct status
 | Phase5-{需求名}_审查报告.md | 代码审查结果 | Phase 4.5 |
 | Phase5-数据质量测试.sql | DQC 测试用例 | Phase 5 |
 | Phase5-质量仪表盘.md | 数据质量测试结果看板 | Phase 5 |
+| Phase5-DQC执行报告.md | DQC 测试执行结果报告 | Phase 5 |
 | Phase6-Design.md | 完整设计文档 | Phase 6 |
 | Phase6-交付总报告.md | 项目交付总报告 | Phase 6 |
 | Phase6-知识沉淀.md | 业务规则与编码约定沉淀 | Phase 6 |

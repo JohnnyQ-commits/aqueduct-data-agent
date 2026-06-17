@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **DQC execution capability**: Phase 5 now auto-executes DQC test SQL via `SQLExecutorTool` (registered as `executor`). Wraps `HiveExecuteTool` with `health_check()`, `execute()`, and `execute_batch()`. Execution failure does not block workflow — marked as WARN with `Phase5-DQC执行报告.md` output. Controlled by `AQUEDUCT_EXECUTION_ENABLED` env var (default: true, auto-skip if DP_* not configured)
 - **KnowledgeRecall wired into CLI workflow**: `node_requirement` now calls `KnowledgeRecall.recall()` at the start of Phase 1, populating `state["domain_context"]` from ontology knowledge base. Previously this was dead code — all 6 downstream nodes read empty strings. Now the full pipeline (dev / review / change) automatically loads matching business domain context
 - **Validator tests**: 30+ unit tests covering all 7 SQL validation rules + integration tests
 - **Lineage tests**: 10+ unit tests covering table/field lineage parsing and Mermaid generation

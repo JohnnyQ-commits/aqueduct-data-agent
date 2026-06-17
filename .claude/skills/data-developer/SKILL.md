@@ -108,6 +108,7 @@ version: "0.3.0"
 **输出**:
 - `output/{需求名}/Phase5-数据质量测试.sql`
 - `output/{需求名}/Phase5-质量仪表盘.md`
+- `output/{需求名}/Phase5-DQC执行报告.md`（自动执行时生成）
 
 ### Phase 6: 交付与沉淀
 
