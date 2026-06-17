@@ -2,5 +2,5 @@
 
 from .core import Aqueduct, AqueductResult
 
-__version__ = "0.3.0-dev"
+__version__ = "0.3.1"
 __all__ = ["Aqueduct", "AqueductResult", "__version__"]

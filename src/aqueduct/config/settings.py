@@ -123,6 +123,23 @@ class Settings(BaseSettings):
         description="允许的 SQL 文件扩展名。",
     )
 
+    # === 执行配置 ===
+
+    execution_enabled: bool = Field(
+        default=True,
+        description="是否启用 SQL 执行能力（DQC 验证）。True=有 DP_* 配置就执行，False=强制不执行。",
+    )
+
+    execution_timeout_seconds: int = Field(
+        default=300,
+        description="单条 SQL 执行超时时间（秒）。",
+    )
+
+    execution_max_rows: int = Field(
+        default=1000,
+        description="SQL 执行最大返回行数。",
+    )
+
     @model_validator(mode="after")
     def _resolve_paths(self) -> Settings:
         """将相对路径解析为基于 project_root 的绝对路径。"""
