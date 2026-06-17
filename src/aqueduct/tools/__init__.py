@@ -8,6 +8,7 @@ from . import (
     design,  # noqa: F401
     dqc,  # noqa: F401
     estimator,  # noqa: F401
+    executor,  # noqa: F401
     lineage,  # noqa: F401
     productivity,  # noqa: F401
     semantic,  # noqa: F401
