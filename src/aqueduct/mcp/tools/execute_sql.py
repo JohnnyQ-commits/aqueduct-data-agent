@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
 from ..adapters.dp_client import DataPlatformAdapter
@@ -60,9 +59,7 @@ class HiveExecuteTool:
             )
 
         try:
-            start_time = time.time()
             result = self.adapter.execute_hive_query(sql)
-            execution_time_ms = int((time.time() - start_time) * 1000)
 
             if result["data"]:
                 columns = list(result["data"][0].keys())

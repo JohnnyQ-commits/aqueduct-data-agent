@@ -11,7 +11,6 @@ import time
 from typing import Any
 
 from ..config.settings import get_settings
-from ..mcp.tools import QueryResult
 from ..mcp.tools.execute_sql import HiveExecuteTool
 from .base import BaseTool, ToolResult
 from .registry import register_tool
@@ -36,8 +35,7 @@ class SQLExecutorTool(BaseTool):
 
     name = "executor"
     description = (
-        "SQL 执行工具 — 执行单条 SQL、健康检查、批量执行。"
-        "用于 DQC 验证和未来的 ETL 执行。"
+        "SQL 执行工具 — 执行单条 SQL、健康检查、批量执行。用于 DQC 验证和未来的 ETL 执行。"
     )
 
     def __init__(self) -> None:
@@ -64,7 +62,10 @@ class SQLExecutorTool(BaseTool):
         if not settings.execution_enabled:
             return ToolResult(
                 success=False,
-                data={"status": "unavailable", "message": "执行能力已禁用 (execution_enabled=false)"},
+                data={
+                    "status": "unavailable",
+                    "message": "执行能力已禁用 (execution_enabled=false)",
+                },
             )
 
         result = self._hive_tool.health_check()
@@ -100,21 +101,25 @@ class SQLExecutorTool(BaseTool):
 
             if qr.success:
                 passed += 1
-                results.append({
-                    "index": idx,
-                    "success": True,
-                    "rows": qr.rows,
-                    "row_count": qr.row_count,
-                    "time_ms": elapsed_ms,
-                })
+                results.append(
+                    {
+                        "index": idx,
+                        "success": True,
+                        "rows": qr.rows,
+                        "row_count": qr.row_count,
+                        "time_ms": elapsed_ms,
+                    }
+                )
             else:
                 failed += 1
-                results.append({
-                    "index": idx,
-                    "success": False,
-                    "error": qr.error,
-                    "time_ms": elapsed_ms,
-                })
+                results.append(
+                    {
+                        "index": idx,
+                        "success": False,
+                        "error": qr.error,
+                        "time_ms": elapsed_ms,
+                    }
+                )
 
         total_time_ms = int((time.time() - batch_start) * 1000)
 

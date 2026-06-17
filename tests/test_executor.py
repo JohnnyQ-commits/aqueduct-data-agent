@@ -110,11 +110,13 @@ class TestExecutorBatch:
         tool._hive_tool.adapter = mock_adapter
         tool._hive_tool._init_error = None
 
-        result = tool.execute_batch(sqls=[
-            "SELECT COUNT(*) as dup FROM t HAVING cnt > 1",
-            "SELECT * FROM nonexistent_table",
-            "SELECT COUNT(*) as cnt FROM good_table",
-        ])
+        result = tool.execute_batch(
+            sqls=[
+                "SELECT COUNT(*) as dup FROM t HAVING cnt > 1",
+                "SELECT * FROM nonexistent_table",
+                "SELECT COUNT(*) as cnt FROM good_table",
+            ]
+        )
 
         assert result.success is True  # batch 本身成功
         assert result.data["total"] == 3
@@ -140,5 +142,3 @@ class TestDQCNodeIntegration:
         # 不应抛出异常
         _auto_execute_dqc(state, "SELECT 'DQC-001' AS rule_name, 0 AS cnt;")
         assert state.get("dqc_execution_skipped") is True
-
-

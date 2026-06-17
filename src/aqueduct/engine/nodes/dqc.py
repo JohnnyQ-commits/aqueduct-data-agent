@@ -80,9 +80,7 @@ def _auto_execute_dqc(state: WorkflowState, dqc_sql: str) -> None:
             return
 
         # 批量执行
-        batch_result = executor.execute_batch(
-            sqls=[tc["sql"] for tc in test_cases]
-        )
+        batch_result = executor.execute_batch(sqls=[tc["sql"] for tc in test_cases])
 
         # 合并结果
         merged = _merge_dqc_results(test_cases, batch_result.data)
@@ -143,21 +141,25 @@ def _merge_dqc_results(
     for idx, tc in enumerate(test_cases):
         if idx < len(results):
             r = results[idx]
-            merged.append({
-                "name": tc["name"],
-                "success": r.get("success", False),
-                "rows": r.get("rows", []),
-                "row_count": r.get("row_count", 0),
-                "error": r.get("error", ""),
-                "time_ms": r.get("time_ms", 0),
-            })
+            merged.append(
+                {
+                    "name": tc["name"],
+                    "success": r.get("success", False),
+                    "rows": r.get("rows", []),
+                    "row_count": r.get("row_count", 0),
+                    "error": r.get("error", ""),
+                    "time_ms": r.get("time_ms", 0),
+                }
+            )
         else:
-            merged.append({
-                "name": tc["name"],
-                "success": False,
-                "error": "未执行",
-                "time_ms": 0,
-            })
+            merged.append(
+                {
+                    "name": tc["name"],
+                    "success": False,
+                    "error": "未执行",
+                    "time_ms": 0,
+                }
+            )
 
     return merged
 
@@ -169,7 +171,6 @@ def _generate_dqc_execution_report(
     """生成 DQC 执行报告 Markdown。"""
     from datetime import datetime
 
-    total = batch_data.get("total", len(merged))
     passed = batch_data.get("passed", sum(1 for m in merged if m["success"]))
     failed = batch_data.get("failed", sum(1 for m in merged if not m["success"]))
     total_time_ms = batch_data.get("total_time_ms", 0)
