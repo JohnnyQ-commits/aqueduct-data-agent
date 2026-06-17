@@ -57,3 +57,25 @@ class TestSettingsValidation:
     def test_workflow_timeout_default(self):
         settings = Settings()
         assert settings.workflow_timeout_seconds == 3600
+
+
+class TestExecutionSettings:
+    """执行能力配置测试。"""
+
+    def test_execution_enabled_default(self):
+        """execution_enabled 默认为 True。"""
+        from src.aqueduct.config.settings import Settings
+        settings = Settings()
+        assert settings.execution_enabled is True
+
+    def test_execution_timeout_default(self):
+        """execution_timeout_seconds 默认 300。"""
+        from src.aqueduct.config.settings import Settings
+        settings = Settings()
+        assert settings.execution_timeout_seconds == 300
+
+    def test_execution_max_rows_default(self):
+        """execution_max_rows 默认 1000。"""
+        from src.aqueduct.config.settings import Settings
+        settings = Settings()
+        assert settings.execution_max_rows == 1000
