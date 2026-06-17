@@ -54,45 +54,143 @@ def node_dqc(state: WorkflowState) -> WorkflowState:
 
 
 def _auto_execute_dqc(state: WorkflowState, dqc_sql: str) -> None:
-    """尝试自动执行 DQC 测试用例（需要 数据平台执行工具）。"""
+    """通过注册工具执行 DQC 测试用例。
+
+    执行失败不阻塞流程，标记 dqc_execution_skipped 继续。
+    """
     try:
-        from ...mcp.tools.execute_sql import HiveExecuteTool
+        from ...tools.registry import get_tool
 
-        sql_tool = HiveExecuteTool()
-        test_results = []
+        executor = get_tool("executor")
 
-        dqc_lines = dqc_sql.split("\n")
-        current_test = None
-        current_sql: list[str] = []
+        # 先检查连接
+        health = executor.health_check()
+        if not health.success:
+            logger.info("DQC 执行跳过: %s", health.data.get("message", ""))
+            state["dqc_execution_skipped"] = True
+            state["dqc_execution_reason"] = health.data.get("message", "")
+            return
 
-        for line in dqc_lines:
-            if line.strip().startswith("-- ["):
-                if current_test:
-                    sql_to_run = "\n".join(current_sql).strip().rstrip(";")
-                    if sql_to_run:
-                        res = sql_tool.execute(sql_to_run)
-                        test_results.append(
-                            {
-                                "name": current_test,
-                                "result": res.success,
-                                "row_count": res.row_count,
-                            }
-                        )
-                current_test = line.strip()
-                current_sql = []
-            else:
-                current_sql.append(line)
+        # 解析 DQC SQL 为多条测试
+        test_cases = _parse_dqc_sql(dqc_sql)
+        if not test_cases:
+            logger.info("DQC SQL 中未解析出测试用例")
+            state["dqc_execution_skipped"] = True
+            state["dqc_execution_reason"] = "未解析出测试用例"
+            return
 
-        # 执行最后一个测试
-        if current_test and current_sql:
-            sql_to_run = "\n".join(current_sql).strip().rstrip(";")
-            if sql_to_run:
-                res = sql_tool.execute(sql_to_run)
-                test_results.append(
-                    {"name": current_test, "result": res.success, "row_count": res.row_count}
-                )
+        # 批量执行
+        batch_result = executor.execute_batch(
+            sqls=[tc["sql"] for tc in test_cases]
+        )
 
-        state["dqc_results"] = test_results
-        logger.info("Phase 5 DQC 测试已自动执行，结果已记录")
+        # 合并结果
+        merged = _merge_dqc_results(test_cases, batch_result.data)
+        state["dqc_results"] = merged
+        state["dqc_execution_skipped"] = False
+
+        # 生成执行报告
+        report = _generate_dqc_execution_report(merged, batch_result.data)
+        save_artifact(state, "Phase5-DQC执行报告.md", report)
+
+        logger.info(
+            "Phase 5 DQC 执行完成: %d passed, %d failed",
+            batch_result.data.get("passed", 0),
+            batch_result.data.get("failed", 0),
+        )
     except Exception:
-        logger.warning("DQC 自动执行失败，可能是未配置 数据平台执行工具", exc_info=True)
+        logger.warning("DQC 执行异常，不阻塞流程", exc_info=True)
+        state["dqc_execution_skipped"] = True
+        state["dqc_execution_reason"] = "执行异常"
+
+
+def _parse_dqc_sql(dqc_sql: str) -> list[dict[str, str]]:
+    """解析 DQC SQL，按 '-- [' 注释拆分为多条测试用例。"""
+    test_cases: list[dict[str, str]] = []
+    current_name: str | None = None
+    current_lines: list[str] = []
+
+    for line in dqc_sql.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("-- ["):
+            # 保存前一条
+            if current_name and current_lines:
+                sql = "\n".join(current_lines).strip().rstrip(";")
+                if sql:
+                    test_cases.append({"name": current_name, "sql": sql})
+            current_name = stripped
+            current_lines = []
+        else:
+            current_lines.append(line)
+
+    # 保存最后一条
+    if current_name and current_lines:
+        sql = "\n".join(current_lines).strip().rstrip(";")
+        if sql:
+            test_cases.append({"name": current_name, "sql": sql})
+
+    return test_cases
+
+
+def _merge_dqc_results(
+    test_cases: list[dict[str, str]],
+    batch_data: dict,
+) -> list[dict]:
+    """将测试用例名称与执行结果合并。"""
+    merged: list[dict] = []
+    results = batch_data.get("results", [])
+
+    for idx, tc in enumerate(test_cases):
+        if idx < len(results):
+            r = results[idx]
+            merged.append({
+                "name": tc["name"],
+                "success": r.get("success", False),
+                "rows": r.get("rows", []),
+                "row_count": r.get("row_count", 0),
+                "error": r.get("error", ""),
+                "time_ms": r.get("time_ms", 0),
+            })
+        else:
+            merged.append({
+                "name": tc["name"],
+                "success": False,
+                "error": "未执行",
+                "time_ms": 0,
+            })
+
+    return merged
+
+
+def _generate_dqc_execution_report(
+    merged: list[dict],
+    batch_data: dict,
+) -> str:
+    """生成 DQC 执行报告 Markdown。"""
+    from datetime import datetime
+
+    total = batch_data.get("total", len(merged))
+    passed = batch_data.get("passed", sum(1 for m in merged if m["success"]))
+    failed = batch_data.get("failed", sum(1 for m in merged if not m["success"]))
+    total_time_ms = batch_data.get("total_time_ms", 0)
+
+    lines = [
+        "# DQC 执行报告",
+        "",
+        f"> 执行时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"> 执行耗时：{total_time_ms / 1000:.1f}s",
+        f"> 结果：{passed} PASS / {failed} FAIL",
+        "",
+        "| # | 规则名称 | 结果 | 耗时 | 备注 |",
+        "|---|---------|------|------|------|",
+    ]
+
+    for i, m in enumerate(merged, 1):
+        status = "PASS" if m["success"] else "FAIL"
+        time_str = f"{m['time_ms']}ms"
+        note = m.get("error", "") if not m["success"] else ""
+        name = m["name"].replace("|", "\\|")
+        lines.append(f"| {i} | {name} | {status} | {time_str} | {note} |")
+
+    lines.append("")
+    return "\n".join(lines)

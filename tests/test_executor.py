@@ -129,3 +129,16 @@ class TestExecutorBatch:
         tool._hive_tool.adapter = None
 
 
+class TestDQCNodeIntegration:
+    """DQC 节点集成测试。"""
+
+    def test_dqc_node_skip_when_no_exec(self):
+        """DQC 节点在无执行能力时正常跳过，不抛异常。"""
+        from src.aqueduct.engine.nodes.dqc import _auto_execute_dqc
+
+        state: dict = {}
+        # 不应抛出异常
+        _auto_execute_dqc(state, "SELECT 'DQC-001' AS rule_name, 0 AS cnt;")
+        assert state.get("dqc_execution_skipped") is True
+
+
