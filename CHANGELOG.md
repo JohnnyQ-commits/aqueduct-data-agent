@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-06-17
+
 ### Fixed
 
 - **ClaudeLLM env var loading**: Moved model ID defaults from class attributes to instance `__init__`, ensuring `.env` values are correctly picked up after pydantic-settings loads them
