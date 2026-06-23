@@ -4,7 +4,8 @@ description: >
   Aqueduct 数据开发一键启动入口。
   DO trigger when 用户提供需求文档要求开发SQL、提到"帮我开发这个需求"、
   "从需求生成SQL"、"走一遍管道"、"aqueduct dev"、"数据开发"、"SQL开发"、
-  "ETL开发"、"需求转SQL"。
+  "ETL开发"、"需求转SQL"、"用我的SQL跑一遍"、"我有现成的SQL"。
+  如果用户提供了 SQL 文件，使用 `--sql-file` 参数跳过 LLM 生成。
   Do NOT trigger for 仅查询表结构/血缘/API、仅做SQL规范校验、
   通用编程问题、变更管理（使用 /change-management）。
 allowed-tools:
