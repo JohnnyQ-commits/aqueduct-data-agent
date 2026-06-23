@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from ...config.settings import get_settings
 from ...memory.recall import KnowledgeRecall
@@ -54,6 +55,10 @@ def node_requirement(state: WorkflowState) -> WorkflowState:
 
     调用 RequirementClarifySkill 生成 prompt -> LLM 解析需求。
     """
+    req_name = state.get("metadata", {}).get("requirement_name", "unknown")
+    start = time.time()
+    logger.info("[task=%s, phase=1] 需求理解开始", req_name)
+
     # 自动召回领域知识，填充 domain_context 供全流程使用
     _recall_domain_knowledge(state)
 
@@ -76,9 +81,22 @@ def node_requirement(state: WorkflowState) -> WorkflowState:
         state["requirement_summary"] = llm_response
         state["metadata"] = {**(state.get("metadata", {})), "requirement_parsed": "true"}
 
-        logger.info("Phase 1 需求解析完成")
+        elapsed = time.time() - start
+        logger.info(
+            "[task=%s, phase=1] 需求理解完成: summary=%d 字符, 耗时=%.1fs",
+            req_name,
+            len(llm_response),
+            elapsed,
+        )
     except Exception as e:
+        elapsed = time.time() - start
         state.setdefault("errors", []).append(f"需求解析异常: {e!s}")
-        logger.error("需求解析异常: %s", e, exc_info=True)
+        logger.error(
+            "[task=%s, phase=1] 需求理解异常: %s, 耗时=%.1fs",
+            req_name,
+            e,
+            elapsed,
+            exc_info=True,
+        )
 
     return state

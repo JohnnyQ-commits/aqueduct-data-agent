@@ -127,6 +127,15 @@ def _dev_mode(args: argparse.Namespace) -> int:
     print(f"[INFO] Reading requirement: {args.requirement}", flush=True)
     print("[INFO] Starting development mode workflow...", flush=True)
 
+    # 外部 SQL 文件路径
+    external_sql_path = getattr(args, "sql_file", None)
+    if external_sql_path:
+        sql_path = Path(external_sql_path)
+        if not sql_path.exists():
+            print(f"[ERROR] SQL file not found: {external_sql_path}")
+            return 1
+        print(f"[INFO] Using external SQL: {external_sql_path}", flush=True)
+
     agent = Aqueduct()
     result = agent.dev(
         args.requirement,
@@ -134,6 +143,7 @@ def _dev_mode(args: argparse.Namespace) -> int:
         interactive=True,
         on_confirm=_make_confirm_callback(),
         on_progress=_make_progress_callback(),
+        external_sql_path=external_sql_path,
     )
 
     _print_result(result)
@@ -298,6 +308,10 @@ def create_parser() -> argparse.ArgumentParser:
     )
     dev_parser.add_argument("requirement", help="Requirement document path (.md file)")
     dev_parser.add_argument("--output", "-o", help="Output directory")
+    dev_parser.add_argument(
+        "--sql-file",
+        help="External SQL file path (skip LLM SQL generation in Phase 4)",
+    )
 
     # review 命令
     review_parser = subparsers.add_parser(

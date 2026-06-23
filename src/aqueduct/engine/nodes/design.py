@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from ...skills.base import SkillContext
 from ...skills.registry import get_skill
@@ -17,6 +18,10 @@ def node_design(state: WorkflowState) -> WorkflowState:
 
     调用 DesignSchemeSkill 生成 prompt -> LLM 生成设计方案。
     """
+    req_name = state.get("metadata", {}).get("requirement_name", "unknown")
+    start = time.time()
+    logger.info("[task=%s, phase=2] 方案设计开始", req_name)
+
     try:
         skill = get_skill("design_scheme")
         context = SkillContext(
@@ -39,9 +44,22 @@ def node_design(state: WorkflowState) -> WorkflowState:
         state["design_scheme"] = llm_response
         state["metadata"] = {**(state.get("metadata", {})), "design_done": "true"}
 
-        logger.info("Phase 2 方案设计完成")
+        elapsed = time.time() - start
+        logger.info(
+            "[task=%s, phase=2] 方案设计完成: design=%d 字符, 耗时=%.1fs",
+            req_name,
+            len(llm_response),
+            elapsed,
+        )
     except Exception as e:
+        elapsed = time.time() - start
         state.setdefault("errors", []).append(f"方案设计异常: {e!s}")
-        logger.error("方案设计异常: %s", e, exc_info=True)
+        logger.error(
+            "[task=%s, phase=2] 方案设计异常: %s, 耗时=%.1fs",
+            req_name,
+            e,
+            elapsed,
+            exc_info=True,
+        )
 
     return state

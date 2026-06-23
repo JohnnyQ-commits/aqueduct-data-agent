@@ -32,6 +32,8 @@ Requirement (.md) --> Design (.md) --> DDL (.sql) --> SQL (.sql) --> Review --> 
 | **Platform agnostic** | Connects to any data platform via standard MCP protocol (`.mcp.json`) |
 | **Ontology knowledge** | Business domains modeled as typed JSON — entities, relationships, metrics, axioms |
 | **DAG orchestration** | StateGraph-based workflow with interactive checkpoints and error recovery |
+| **Review-fix loop** | Code review finds bugs → auto-fix SQL → re-review → production-ready quality |
+| **Full observability** | Per-task log files, phase timing, LLM call tracing, tool execution audit |
 | **Prompt-code decoupled** | Prompts as `.tpl.md` files — edit without touching code, i18n-ready |
 
 ### Output: 11 mandatory deliverables
@@ -81,6 +83,9 @@ pip install -e ".[dev]"
 ```bash
 # Development mode: requirement --> full delivery
 aqueduct dev requirement.md
+
+# With external SQL file (skip LLM SQL generation)
+aqueduct dev requirement.md --sql-file my_etl.sql
 
 # Review mode: validate SQL changes against online version
 aqueduct review online.sql changed.sql -d "Add customer filter"
@@ -243,6 +248,7 @@ Phase 2: Design scheme                 (source analysis + table design)
 Phase 3: DDL generation                (target table structure)
 Phase 4: SQL development               (ETL logic with CTEs)
 Phase 4.5: Code review                 (automated quality check)
+  └── Fix loop: Critical/Warning → auto-fix SQL → back to Phase 4
 Phase 5: DQC quality tests             (5 test categories)
 Phase 6: Report delivery               (comprehensive delivery report)
 ```
@@ -385,6 +391,14 @@ make format
 | `.pre-commit-config.yaml` | Git pre-commit hooks (ruff, bandit, markdownlint) |
 | `.claude/settings.json` | Claude Code permissions |
 
+### Environment variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AQUEDUCT_MAX_FIX_ITERATIONS` | `2` | Review-fix loop max iterations |
+| `AQUEDUCT_LLM_MAX_RETRIES` | `2` | LLM timeout retry count (exponential backoff) |
+| `AQUEDUCT_EXTERNAL_SQL_PATH` | `""` | External SQL file (skips LLM generation) |
+
 ---
 
 ## Design Principles
@@ -444,7 +458,11 @@ MIT. See [LICENSE](LICENSE).
 
 | 特性 | 说明 |
 |------|------|
-| **开发模式** | 需求理解 -> 设计方案 -> DDL 生成 -> SQL 开发 -> 代码审查 -> DQC 质检 -> 报告交付 |
+| **开发模式** | 需求理解 -> 设计方案 -> DDL 生成 -> SQL 开发 -> 代码审查 -> (修复循环) -> DQC 质检 -> 报告交付 |
+| **审查→修复循环** | Phase 4.5 审查发现 Critical/Warning → 自动修复 SQL → 回环到 Phase 4 重新执行 |
+| **全链路可观测** | 每任务独立日志文件、Phase 阶段耗时、LLM 调用追踪、工具执行审计 |
+| **LLM 超时重试** | 指数退避重试（最多 2 次，timeout 翻倍），超时不再静默吞掉 |
+| **外部 SQL 输入** | `--sql-file` 参数跳过 LLM 生成，直接使用已有的 SQL 文件 |
 | **审查模式** | 需求理解 -> 差异比对 -> 代码审查 -> DQC 质检 -> 报告交付 |
 | **变更管理** | CR 建档 -> 变更 SQL -> 影响分析 -> 审查 -> 合并 -> 归档（含回滚脚本） |
 | **本体知识库** | 业务域建模为 JSON — 实体、关系、指标、公理，自动 Top-K 召回 |
@@ -464,6 +482,9 @@ pip install -e .
 
 # 开发模式：需求文档 -> 完整交付
 aqueduct dev 需求文档.md
+
+# 使用外部 SQL 文件（跳过 LLM 生成）
+aqueduct dev 需求文档.md --sql-file my_etl.sql
 
 # 审查模式：对比线上版本 vs 变更版本
 aqueduct review 线上版本.sql 变更版本.sql

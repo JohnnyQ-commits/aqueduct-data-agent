@@ -111,6 +111,25 @@ class Settings(BaseSettings):
         description="工作流最大执行时间（秒）。",
     )
 
+    max_fix_iterations: int = Field(
+        default=2,
+        description="审查→修复循环最大迭代次数。",
+    )
+
+    # === LLM 重试配置 ===
+
+    llm_max_retries: int = Field(
+        default=2,
+        description="LLM 调用超时后最大重试次数（指数退避）。",
+    )
+
+    # === 外部 SQL 输入 ===
+
+    external_sql_path: str = Field(
+        default="",
+        description="外部 SQL 文件路径。非空时 Phase 4 跳过 LLM 生成，直接读取该文件。",
+    )
+
     # === 校验配置 ===
 
     sql_max_file_size_kb: int = Field(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime
 
 from ...skills.base import SkillContext
@@ -20,6 +21,10 @@ def node_report(state: WorkflowState) -> WorkflowState:
     调用 ReportDeliverySkill 生成 prompt -> LLM 生成报告，
     同时生成 Design.md、交付总报告.md、知识沉淀.md。
     """
+    req_name = state.get("metadata", {}).get("requirement_name", "unknown")
+    start = time.time()
+    logger.info("[task=%s, phase=6] 报告交付开始", req_name)
+
     try:
         inp = {
             "requirement_name": state.get("metadata", {}).get("requirement_name", ""),
@@ -70,10 +75,23 @@ def node_report(state: WorkflowState) -> WorkflowState:
             logger.warning("提效看板生成失败，跳过", exc_info=True)
 
         state["metadata"] = {**(state.get("metadata", {})), "report_done": "true"}
-        logger.info("Phase 6 报告交付完成, artifacts=%d", len(state["artifacts"]))
+        elapsed = time.time() - start
+        logger.info(
+            "[task=%s, phase=6] 报告交付完成: artifacts=%d, 耗时=%.1fs",
+            req_name,
+            len(state["artifacts"]),
+            elapsed,
+        )
     except Exception as e:
+        elapsed = time.time() - start
         state.setdefault("errors", []).append(f"报告交付异常: {e!s}")
-        logger.error("报告交付异常: %s", e, exc_info=True)
+        logger.error(
+            "[task=%s, phase=6] 报告交付异常: %s, 耗时=%.1fs",
+            req_name,
+            e,
+            elapsed,
+            exc_info=True,
+        )
 
     return state
 
@@ -140,7 +158,7 @@ def _generate_delivery_report(state: WorkflowState) -> str:
         lines.append("数据质量测试用例已生成（详见 `Phase5-数据质量测试.sql`）。")
     else:
         lines.append("数据质量测试用例待生成。")
-    lines.extend(["", "---", "", "## 四、上下游依赖", "", "**上游**:"])
+    lines.extend(["", "---", "", "## 四、上下游依赖", "", "**上游**:",])
     for src in lr.get("sources", []):
         lines.append(f"- `{src}`")
     lines.extend(

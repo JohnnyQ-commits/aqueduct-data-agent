@@ -50,9 +50,11 @@ class WorkflowState(TypedDict):
     # === 可选：Phase 4 SQL ===
     sql_content: NotRequired[str]
     sql_file: NotRequired[str]
+    external_sql_path: NotRequired[str]  # 外部 SQL 文件路径（跳过 LLM 生成）
 
     # === 可选：Phase 4.5 代码审查 ===
     review_result: NotRequired[str]
+    fix_iterations: NotRequired[int]  # 审查→修复循环当前迭代次数
 
     # === 可选：Phase 5 DQC ===
     dqc_result: NotRequired[str]

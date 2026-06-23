@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from ...skills.base import SkillContext
 from ...skills.registry import get_skill
@@ -17,6 +18,10 @@ def node_dqc(state: WorkflowState) -> WorkflowState:
 
     调用 DQCQualitySkill 生成 prompt -> LLM 生成质量测试用例。
     """
+    req_name = state.get("metadata", {}).get("requirement_name", "unknown")
+    start = time.time()
+    logger.info("[task=%s, phase=5] DQC 质检开始", req_name)
+
     try:
         skill = get_skill("dqc_quality")
         context = SkillContext(
@@ -45,10 +50,23 @@ def node_dqc(state: WorkflowState) -> WorkflowState:
         # 尝试自动执行 DQC 测试用例
         _auto_execute_dqc(state, dqc_sql)
 
-        logger.info("Phase 5 DQC 质检完成")
+        elapsed = time.time() - start
+        logger.info(
+            "[task=%s, phase=5] DQC 质检完成: dqc=%d 字符, 耗时=%.1fs",
+            req_name,
+            len(dqc_sql),
+            elapsed,
+        )
     except Exception as e:
+        elapsed = time.time() - start
         state.setdefault("errors", []).append(f"DQC 质检异常: {e!s}")
-        logger.error("DQC 质检异常: %s", e, exc_info=True)
+        logger.error(
+            "[task=%s, phase=5] DQC 质检异常: %s, 耗时=%.1fs",
+            req_name,
+            e,
+            elapsed,
+            exc_info=True,
+        )
 
     return state
 

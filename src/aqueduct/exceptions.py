@@ -17,6 +17,7 @@ Memory/知识层异常继承自 `MemoryError`。
     ├── WorkflowError（DAG 执行失败）
     │   └── WorkflowNodeError（特定节点失败）
     ├── LLMError（LLM 调用失败）
+    │   ├── LLMTimeoutError（LLM 调用超时）
     │   └── LLMContextExceededError（超出上下文窗口）
     ├── MemoryError（知识存储操作失败）
     │   └── DomainNotFoundError（业务域不存在）
@@ -83,6 +84,12 @@ class LLMError(AqueductError):
     """LLM 调用失败时抛出。"""
 
     code = "llm_error"
+
+
+class LLMTimeoutError(LLMError):
+    """LLM 调用超时时抛出。"""
+
+    code = "llm_timeout"
 
 
 class LLMContextExceededError(LLMError):

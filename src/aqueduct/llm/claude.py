@@ -9,13 +9,18 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
+from ..exceptions import LLMTimeoutError
 from .base import BaseLLM, LLMMessage, LLMResponse, LLMUsage
+
+logger = logging.getLogger(__name__)
 
 
 class ClaudeLLM(BaseLLM):
@@ -221,7 +226,22 @@ class ClaudeLLM(BaseLLM):
         此方法通过 `claude -p` 直接获取响应。
 
         使用列表形式的 subprocess 调用 + 文件重定向，避免 shell 注入风险。
+        超时自动重试（指数退避，最多 2 次）。
         """
+        from ..config.settings import get_settings
+
+        settings = get_settings()
+        max_retries = settings.llm_max_retries
+
+        return self._chat_cli_with_retry(messages, kwargs, max_retries=max_retries)
+
+    def _chat_cli_with_retry(
+        self,
+        messages: list[LLMMessage],
+        kwargs: dict[str, Any],
+        max_retries: int = 2,
+    ) -> LLMResponse:
+        """带重试的 CLI 调用实现。"""
         # 拼接所有消息为单个 prompt（system 消息作为前缀）
         parts = []
         for msg in messages:
@@ -247,82 +267,130 @@ class ClaudeLLM(BaseLLM):
         tmp_dir = Path(__file__).resolve().parent.parent.parent.parent / ".claude_tmp"
         tmp_dir.mkdir(exist_ok=True)
 
-        with (
-            tempfile.NamedTemporaryFile(
-                mode="wb",
-                prefix="claude_out_",
-                suffix=".txt",
-                delete=False,
-                dir=str(tmp_dir),
-            ) as stdout_tmp,
-            tempfile.NamedTemporaryFile(
-                mode="wb",
-                prefix="claude_err_",
-                suffix=".txt",
-                delete=False,
-                dir=str(tmp_dir),
-            ) as stderr_tmp,
-        ):
-            stdout_path = stdout_tmp.name
-            stderr_path = stderr_tmp.name
+        timeout = 600  # 单次超时时间（秒）
+        last_error: Exception | None = None
 
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            prefix="prompt_",
-            suffix=".txt",
-            delete=False,
-            encoding="utf-8",
-            dir=str(tmp_dir),
-        ) as prompt_tmp:
-            prompt_tmp.write(full_prompt)
-            prompt_path = prompt_tmp.name
-
-        try:
-            # 使用列表形式的 subprocess 调用，避免 shell 注入风险
-            # stdin 从 prompt 文件读取，stdout/stderr 重定向到临时文件
-            claude_cmd = self._claude_cli_path or "claude"
-
+        for attempt in range(max_retries + 1):
             with (
-                open(prompt_path, encoding="utf-8") as stdin_file,
-                open(stdout_path, "w", encoding="utf-8") as stdout_file,
-                open(stderr_path, "w", encoding="utf-8") as stderr_file,
+                tempfile.NamedTemporaryFile(
+                    mode="wb",
+                    prefix="claude_out_",
+                    suffix=".txt",
+                    delete=False,
+                    dir=str(tmp_dir),
+                ) as stdout_tmp,
+                tempfile.NamedTemporaryFile(
+                    mode="wb",
+                    prefix="claude_err_",
+                    suffix=".txt",
+                    delete=False,
+                    dir=str(tmp_dir),
+                ) as stderr_tmp,
             ):
-                subprocess.run(
-                    [claude_cmd, "-p", "--bare"],
-                    stdin=stdin_file,
-                    stdout=stdout_file,
-                    stderr=stderr_file,
-                    timeout=600,
-                    cwd=Path(__file__).resolve().parent.parent.parent.parent,
+                stdout_path = stdout_tmp.name
+                stderr_path = stderr_tmp.name
+
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                prefix="prompt_",
+                suffix=".txt",
+                delete=False,
+                encoding="utf-8",
+                dir=str(tmp_dir),
+            ) as prompt_tmp:
+                prompt_tmp.write(full_prompt)
+                prompt_path = prompt_tmp.name
+
+            try:
+                # 使用列表形式的 subprocess 调用，避免 shell 注入风险
+                # stdin 从 prompt 文件读取，stdout/stderr 重定向到临时文件
+                claude_cmd = self._claude_cli_path or "claude"
+
+                with (
+                    open(prompt_path, encoding="utf-8") as stdin_file,
+                    open(stdout_path, "w", encoding="utf-8") as stdout_file,
+                    open(stderr_path, "w", encoding="utf-8") as stderr_file,
+                ):
+                    subprocess.run(
+                        [claude_cmd, "-p", "--bare"],
+                        stdin=stdin_file,
+                        stdout=stdout_file,
+                        stderr=stderr_file,
+                        timeout=timeout,
+                        cwd=Path(__file__).resolve().parent.parent.parent.parent,
+                    )
+
+                # 从临时文件读取输出（UTF-8 编码）
+                content = Path(stdout_path).read_text(encoding="utf-8").strip()
+                if not content and Path(stderr_path).stat().st_size > 0:
+                    content = Path(stderr_path).read_text(encoding="utf-8", errors="replace").strip()
+
+                # 调用成功，跳出重试循环
+                return LLMResponse(
+                    content=content or "[LLM 调用返回为空]",
+                    usage=LLMUsage(
+                        prompt_tokens=self.estimate_tokens(full_prompt),
+                        completion_tokens=self.estimate_tokens(content),
+                        total_tokens=self.estimate_tokens(full_prompt)
+                        + self.estimate_tokens(content),
+                        estimated=True,  # CLI 后端无法获取真实 API token 用量，此为字符估算值
+                    ),
+                    model=self._model_id,
                 )
 
-            # 从临时文件读取输出（UTF-8 编码）
-            content = Path(stdout_path).read_text(encoding="utf-8").strip()
-            if not content and Path(stderr_path).stat().st_size > 0:
-                content = Path(stderr_path).read_text(encoding="utf-8", errors="replace").strip()
-        except subprocess.TimeoutExpired:
-            content = "[LLM 超时]"
-        except Exception as e:
-            content = f"[LLM CLI 错误: {e}]"
-        finally:
-            # 清理临时文件
-            for path in (prompt_path, stdout_path, stderr_path):
-                try:
-                    if os.path.exists(path):
-                        os.unlink(path)
-                except OSError:
-                    pass
+            except subprocess.TimeoutExpired:
+                last_error = LLMTimeoutError(
+                    f"LLM 调用超时（{timeout}s），模型={self._model_id}",
+                )
+                logger.error(
+                    "[model=%s] LLM CLI 调用超时: timeout=%ds, attempt=%d/%d, prompt_size=%d 字符",
+                    self._model_id,
+                    timeout,
+                    attempt + 1,
+                    max_retries + 1,
+                    len(full_prompt),
+                )
+                if attempt < max_retries:
+                    new_timeout = timeout * 2
+                    logger.warning(
+                        "[model=%s] LLM 超时，第 %d 次重试，timeout=%ds",
+                        self._model_id,
+                        attempt + 1,
+                        new_timeout,
+                    )
+                    timeout = new_timeout
+                    continue
 
-        return LLMResponse(
-            content=content or "[LLM 调用返回为空]",
-            usage=LLMUsage(
-                prompt_tokens=self.estimate_tokens(full_prompt),
-                completion_tokens=self.estimate_tokens(content),
-                total_tokens=self.estimate_tokens(full_prompt) + self.estimate_tokens(content),
-                estimated=True,  # CLI 后端无法获取真实 API token 用量，此为字符估算值
-            ),
-            model=self._model_id,
-        )
+            except Exception as e:
+                last_error = e
+                logger.error(
+                    "[model=%s] LLM CLI 调用异常: error=%s, attempt=%d/%d",
+                    self._model_id,
+                    str(e),
+                    attempt + 1,
+                    max_retries + 1,
+                )
+                if attempt < max_retries:
+                    delay = 2**attempt  # 指数退避：1s, 2s
+                    logger.warning(
+                        "[model=%s] LLM 异常，%0.1f 秒后重试",
+                        self._model_id,
+                        delay,
+                    )
+                    time.sleep(delay)
+                    continue
+
+            finally:
+                # 清理临时文件
+                for path in (prompt_path, stdout_path, stderr_path):
+                    try:
+                        if os.path.exists(path):
+                            os.unlink(path)
+                    except OSError:
+                        pass
+
+        # 所有重试均失败
+        raise last_error  # type: ignore[misc]
 
     def estimate_tokens(self, text: str) -> int:
         """估算文本的 Token 数量。

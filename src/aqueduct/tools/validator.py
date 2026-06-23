@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Any, TypedDict
@@ -12,6 +13,8 @@ from typing import Any, TypedDict
 from ..tools.base import BaseTool, ToolResult
 from ..tools.registry import register_tool
 from ..utils.regex import RE_COMMENT
+
+logger = logging.getLogger(__name__)
 
 
 class Issue(TypedDict):
@@ -245,11 +248,20 @@ class ValidatorTool(BaseTool):
             )
 
         strict = kwargs.get("strict", False)
+        logger.info("校验开始: file=%s", sql_file)
+
         validator = Validator(sql_file, strict=strict)
         report = validator.run()
 
         if "error" in report:
+            logger.warning("校验异常: %s", report["error"])
             return ToolResult(success=False, error=report["error"])
+
+        logger.info(
+            "校验完成: errors=%d, warnings=%d",
+            report["error_count"],
+            report["warn_count"],
+        )
 
         return ToolResult(
             success=report["error_count"] == 0,

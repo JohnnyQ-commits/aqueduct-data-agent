@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,8 @@ from typing import Any
 from ..tools.base import BaseTool, ToolResult
 from ..tools.registry import register_tool
 from ..utils.regex import RE_JOIN, RE_TABLE_NAME
+
+logger = logging.getLogger(__name__)
 
 
 class CostEstimator:
@@ -131,6 +134,8 @@ class EstimatorTool(BaseTool):
         if not sql_file:
             return ToolResult(success=False, error="缺少必填参数 sql_file")
 
+        logger.info("成本预估开始: file=%s", sql_file)
+
         estimator = CostEstimator(sql_file)
         estimator.load_sql()
         estimator.extract_tables()
@@ -142,6 +147,12 @@ class EstimatorTool(BaseTool):
         design_file = kwargs.get("design_file")
         if design_file:
             estimator.update_design_doc(design_file)
+
+        logger.info(
+            "成本预估完成: tables=%d, risks=%d",
+            len(estimator.tables),
+            len(estimator.risks),
+        )
 
         return ToolResult(
             success=True,

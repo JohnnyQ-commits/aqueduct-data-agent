@@ -13,8 +13,12 @@
 
 from __future__ import annotations
 
+import logging
+
 from .base import BaseLLM
 from .claude import ClaudeLLM
+
+logger = logging.getLogger(__name__)
 
 # 任务类型分类
 ANALYSIS_TASKS = frozenset(
@@ -81,15 +85,22 @@ class ModelRouter:
             ValueError: 未知任务类型时抛出。
         """
         if task_type in ANALYSIS_TASKS:
-            return self._haiku
+            llm = self._haiku
+            tier = "haiku"
         elif task_type in MEDIUM_TASKS:
-            return self._sonnet
+            llm = self._sonnet
+            tier = "sonnet"
         elif task_type in HEAVY_TASKS:
-            return self._opus
-        raise ValueError(
-            f"未知任务类型: {task_type}。"
-            f"可用: {sorted(ANALYSIS_TASKS | MEDIUM_TASKS | HEAVY_TASKS)}"
-        )
+            llm = self._opus
+            tier = "opus"
+        else:
+            raise ValueError(
+                f"未知任务类型: {task_type}。"
+                f"可用: {sorted(ANALYSIS_TASKS | MEDIUM_TASKS | HEAVY_TASKS)}"
+            )
+
+        logger.info("路由决策: task_type=%s → tier=%s, model=%s", task_type, tier, llm.model_id)
+        return llm
 
     @property
     def haiku(self) -> BaseLLM:

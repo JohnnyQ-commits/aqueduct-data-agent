@@ -66,8 +66,8 @@ print(settings.dp_base_url)  # Type-safe access
 **Key Components**:
 
 - `base.py` — `BaseLLM` abstract base class
-- `claude.py` — Claude adapter (SDK + CLI backends)
-- `router.py` — 3-tier model router (Haiku/Sonnet/Opus)
+- `claude.py` — Claude adapter (SDK + CLI backends), timeout retry with exponential backoff
+- `router.py` — 3-tier model router (Haiku/Sonnet/Opus), routing decision logging
 - `context.py` — Token budget management and prompt truncation
 
 **Design Principles**:
@@ -75,6 +75,8 @@ print(settings.dp_base_url)  # Type-safe access
 - Provider-agnostic interface — swap LLMs without changing business logic
 - Cost optimization: route simple tasks to cheaper models
 - Context window management prevents token overflow
+- Timeout resilience: CLI backend auto-retries with exponential backoff (600s → 1200s → 2400s)
+- Timeout errors raise `LLMTimeoutError` instead of being silently swallowed
 
 **Model Routing Strategy**:
 | Tier | Model | Use Case |
@@ -175,8 +177,9 @@ if errors:
 
 - `state.py` — `WorkflowState` TypedDict (workflow context)
 - `workflow.py` — StateGraph definition and compilation
-- `nodes/` — 8 node modules (state assembly only)
+- `nodes/` — 8 node modules (state assembly only), with phase timing logs
 - `recovery.py` — Error recovery with exponential backoff
+- `core.py` — Linear pipeline executor with review-fix loop and per-task logging
 
 **Workflow Modes**:
 
@@ -184,7 +187,9 @@ if errors:
 
 ```
 requirement → design → ddl → sql → review → dqc → report
-   (Phase 1)   (2)    (3)   (4)    (4.5)   (5)    (6)
+   (Phase 1)   (2)    (3)   (4)   (4.5)   (5)    (6)
+                             ↑______|
+                          review-fix loop (if Critical/Warning found)
 ```
 
 **Review Mode** (change validation):

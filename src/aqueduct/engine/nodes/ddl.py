@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from ...skills.base import SkillContext
 from ...skills.registry import get_skill
@@ -17,6 +18,10 @@ def node_ddl(state: WorkflowState) -> WorkflowState:
 
     调用 DDLGenerateSkill 生成 prompt -> LLM 生成 DDL -> 保存到文件。
     """
+    req_name = state.get("metadata", {}).get("requirement_name", "unknown")
+    start = time.time()
+    logger.info("[task=%s, phase=3] DDL 生成开始", req_name)
+
     try:
         skill = get_skill("ddl_generate")
         context = SkillContext(
@@ -42,9 +47,23 @@ def node_ddl(state: WorkflowState) -> WorkflowState:
         state["ddl_file"] = ddl_path
         state["metadata"] = {**(state.get("metadata", {})), "ddl_done": "true"}
 
-        logger.info("Phase 3 DDL 生成完成: %s", ddl_path)
+        elapsed = time.time() - start
+        logger.info(
+            "[task=%s, phase=3] DDL 生成完成: ddl=%d 字符, 产出=%s, 耗时=%.1fs",
+            req_name,
+            len(ddl_content),
+            ddl_path,
+            elapsed,
+        )
     except Exception as e:
+        elapsed = time.time() - start
         state.setdefault("errors", []).append(f"DDL 生成异常: {e!s}")
-        logger.error("DDL 生成异常: %s", e, exc_info=True)
+        logger.error(
+            "[task=%s, phase=3] DDL 生成异常: %s, 耗时=%.1fs",
+            req_name,
+            e,
+            elapsed,
+            exc_info=True,
+        )
 
     return state

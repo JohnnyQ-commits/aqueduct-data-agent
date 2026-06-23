@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-23
+
+### Added
+
+- **LLM 超时异常化**: `_chat_cli` 中 `subprocess.TimeoutExpired` 不再静默转为 `"[LLM 超时]"` 字符串，改为抛出 `LLMTimeoutError`，调用方可正确捕获和处理
+- **LLM 超时自动重试**: CLI 后端超时后指数退避重试（最多 2 次，timeout 翻倍 600s → 1200s → 2400s），通过 `AQUEDUCT_LLM_MAX_RETRIES` 配置
+- **call_llm 完整日志**: `helpers.call_llm()` 在调用前后记录 task_type、model_id、prompt/response 大小、token 用量、耗时
+- **Phase 阶段日志**: 7 个 Phase 节点均增加"开始/完成"日志，含耗时秒数和产出物大小
+- **SQL 有效性校验**: `extract_sql_block` 后增加 `is_valid_sql()` 兜底校验，无效 SQL 写入错误并终止管道
+- **工具执行日志**: ValidatorTool、LineageTool、EstimatorTool 的 `execute()` 方法增加输入/输出日志
+- **每任务独立日志**: 管道启动时在输出目录创建 `task.YYYY-MM-DD.log`，日志自动同步写入
+- **ModelRouter 路由日志**: `route()` 方法记录 task_type → model 路由决策
+- **审查→修复循环**: Phase 4.5 审查发现 Critical/Warning 问题时，自动构建修复 prompt 让 LLM 修复 SQL，回环到 Phase 4 重新执行（最多 `max_fix_iterations` 次）
+- **外部 SQL 输入**: `--sql-file` CLI 参数和 `external_sql_path` 配置项，Phase 4 可跳过 LLM 直接读取外部 SQL 文件
+- **新增 `sql_fix.tpl.md`**: SQL 修复 prompt 模板
+- **新增 `utils/task_logger.py`**: 任务级日志管理模块
+- **新增 `LLMTimeoutError` 异常**: 继承自 `LLMError`
+
+### Fixed
+
+- **Phase4 SQL 为空 bug**: 根因链 `超时静默吞掉 → 无效 SQL 保存 → 工具对垃圾内容校验 → 管道继续执行`，通过 4 层防御彻底解决（超时抛异常 + SQL 有效性校验 + 工具输入预检 + 管道熔断）
+
+### Changed
+
+- `WorkflowState` 新增 `fix_iterations`、`external_sql_path` 可选字段
+- `Settings` 新增 `max_fix_iterations`、`llm_max_retries`、`external_sql_path` 配置项
+- `Aqueduct.dev()` 新增 `external_sql_path` 参数
+- CLI `dev` 命令新增 `--sql-file` 参数
+
 ## [0.3.1] - 2026-06-17
 
 ### Fixed

@@ -33,6 +33,7 @@ from .engine.nodes import (
     node_sql,
 )
 from .engine.state import WorkflowState
+from .utils.task_logger import remove_task_handler, setup_task_logging
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,86 @@ def _is_halt_error(error_msg: str) -> bool:
     return "终止" in error_msg or "halt" in error_msg.lower()
 
 
+def _run_fix_loop(state: WorkflowState) -> WorkflowState:
+    """审查→修复循环：根据审查发现的问题让 LLM 修复 SQL。"""
+    from .engine.nodes.helpers import call_llm, extract_sql_block, is_valid_sql, save_artifact
+    from .skills.base import SkillContext
+    from .skills.registry import get_skill
+
+    req_name = state.get("metadata", {}).get("requirement_name", "unknown")
+    sql_content = state.get("sql_content", "")
+    issues = state.get("_review_issues", [])
+    review_report = state.get("review_result", "")
+
+    if not sql_content or not issues:
+        return state
+
+    # 格式化审查问题
+    issues_lines = []
+    for i, issue in enumerate(issues, 1):
+        severity = issue.get("severity", "Unknown")
+        message = issue.get("message", "")
+        issues_lines.append(f"{i}. [{severity}] {message}")
+    issues_formatted = "\n".join(issues_lines)
+
+    # 读取 sql_fix 模板
+    try:
+        from .config.settings import get_settings
+
+        settings = get_settings()
+        tpl_path = settings.prompt_dir / "sql_fix.tpl.md"
+        if tpl_path.exists():
+            prompt = tpl_path.read_text(encoding="utf-8")
+            prompt = prompt.replace("{sql_content}", sql_content)
+            prompt = prompt.replace("{issues_formatted}", issues_formatted)
+        else:
+            # 模板不存在时使用默认 prompt
+            prompt = (
+                f"你是一个 SQL 工程师。以下 SQL 在代码审查中发现了问题，请修复。\n\n"
+                f"## 原始 SQL\n```sql\n{sql_content}\n```\n\n"
+                f"## 审查发现的问题\n{issues_formatted}\n\n"
+                f"请修复上述问题，输出完整的修复后 SQL。"
+            )
+    except Exception:
+        prompt = (
+            f"请修复以下 SQL 的审查问题：\n\n{issues_formatted}\n\n"
+            f"原始 SQL：\n```sql\n{sql_content}\n```"
+        )
+
+    logger.info("[task=%s] 修复循环: 发送修复 prompt（%d 字符）", req_name, len(prompt))
+
+    fix_response = call_llm(state, "sql_fix", prompt)
+    fixed_sql = extract_sql_block(fix_response)
+
+    if not is_valid_sql(fixed_sql):
+        logger.warning(
+            "[task=%s] 修复循环: LLM 修复输出无效（%d 字符），保留原 SQL",
+            req_name,
+            len(fixed_sql),
+        )
+        return state
+
+    # 保存修复后的 SQL
+    fix_iterations = state.get("fix_iterations", 0)
+    req_name = state.get("metadata", {}).get("requirement_name", "etl_sql")
+    sql_path = save_artifact(
+        state, f"Phase4-{req_name}_fix{fix_iterations + 1}.sql", fixed_sql
+    )
+    state["sql_content"] = fixed_sql
+    state["sql_file"] = sql_path
+    state["fix_iterations"] = fix_iterations + 1
+    state["_needs_fix_loop"] = False
+
+    logger.info(
+        "[task=%s] 修复循环完成: fix_iterations=%d, fixed_sql=%d 字符",
+        req_name,
+        fix_iterations + 1,
+        len(fixed_sql),
+    )
+
+    return state
+
+
 def _run_pipeline(
     state: WorkflowState,
     phases: list[tuple[str, Any]],
@@ -92,7 +173,24 @@ def _run_pipeline(
     total = len(phases)
     halted = False
 
-    for idx, (phase_name, node_func) in enumerate(phases, 1):
+    # 设置任务级日志
+    req_name = state.get("metadata", {}).get("requirement_name", "unknown")
+    metadata = state.get("metadata", {})
+    output_dir_name = metadata.get("output_dir") or req_name
+    from .engine.nodes.helpers import _PROJECT_ROOT
+
+    out_dir = Path(output_dir_name)
+    if not out_dir.is_absolute():
+        out_dir = _PROJECT_ROOT / "output" / out_dir.name
+    task_handler = setup_task_logging(req_name, out_dir)
+
+    logger.info("[task=%s] 管道启动: phases=%d", req_name, total)
+
+    i = 0
+    while i < len(phases):
+        phase_name, node_func = phases[i]
+        idx = i + 1
+
         # 进度回调
         if on_progress:
             on_progress(phase_name, idx, total, state)
@@ -106,9 +204,22 @@ def _run_pipeline(
         # 检查是否有致命错误需要终止
         errors = state.get("errors", [])
         if errors and _is_halt_error(errors[-1]):
-            logger.warning("工作流因致命错误终止于阶段 '%s'", phase_name)
+            logger.warning("[task=%s] 管道终止: phase=%s, 原因=%s", req_name, phase_name, errors[-1])
             halted = True
             break
+
+        # 审查→修复回环
+        if phase_name == "review" and state.get("_needs_fix_loop"):
+            logger.info("[task=%s] 审查→修复回环：回到 SQL 阶段重新执行", req_name)
+            state = _run_fix_loop(state)
+            # 回到 sql 节点重新跑
+            sql_idx = next(
+                (j for j, (name, _) in enumerate(phases) if name == "sql"),
+                None,
+            )
+            if sql_idx is not None:
+                i = sql_idx
+                continue
 
         # 交互确认：在指定阶段完成后暂停等待用户确认
         if (
@@ -120,6 +231,20 @@ def _run_pipeline(
         ):
             logger.info("用户确认停止工作流")
             break
+
+        i += 1
+
+    logger.info(
+        "[task=%s] 管道结束: success=%s, halted=%s, artifacts=%d, errors=%d",
+        req_name,
+        len(errors) == 0 and not halted,
+        halted,
+        len(state.get("artifacts", [])),
+        len(errors),
+    )
+
+    # 清理任务日志处理器
+    remove_task_handler(task_handler)
 
     return AqueductResult(state, halted=halted)
 
@@ -203,6 +328,7 @@ class Aqueduct:
         interactive: bool = False,
         on_confirm: ConfirmCallback | None = None,
         on_progress: ProgressCallback | None = None,
+        external_sql_path: str | None = None,
     ) -> AqueductResult:
         """开发模式：从需求文档到完整交付。
 
@@ -212,6 +338,7 @@ class Aqueduct:
             interactive: 是否启用交互模式（Phase 1 后暂停确认）。
             on_confirm: 确认回调（interactive=True 时用于 Phase 1 后确认）。
             on_progress: 进度回调，每个阶段开始时调用。
+            external_sql_path: 外部 SQL 文件路径。非空时 Phase 4 跳过 LLM 生成。
 
         Returns:
             AqueductResult 包含所有产出物和内容。
@@ -233,6 +360,8 @@ class Aqueduct:
         }
         if output_dir:
             state["metadata"]["output_dir"] = output_dir
+        if external_sql_path:
+            state["external_sql_path"] = external_sql_path
 
         return _run_pipeline(
             state,

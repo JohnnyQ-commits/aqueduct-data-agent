@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Any
@@ -12,6 +13,8 @@ from typing import Any
 from ..tools.base import BaseTool, ToolResult
 from ..tools.registry import register_tool
 from ..utils.regex import RE_INSERT_OVERWRITE, RE_TABLE_NAME
+
+logger = logging.getLogger(__name__)
 
 # 血缘解析专用正则
 RE_SELECT_BLOCK = re.compile(r"select\s+(.*?)\s+from", re.IGNORECASE | re.DOTALL)
@@ -165,9 +168,17 @@ class LineageTool(BaseTool):
         if not sql_file:
             return ToolResult(success=False, error="缺少必填参数 sql_file")
 
+        logger.info("血缘解析开始: file=%s", sql_file)
+
         parser = LineageParser(sql_file)
         parser.load_sql()
         parser.parse_table_lineage()
+
+        logger.info(
+            "血缘解析完成: target=%s, sources=%d",
+            parser.target_table,
+            len(parser.source_tables),
+        )
 
         return ToolResult(
             success=True,

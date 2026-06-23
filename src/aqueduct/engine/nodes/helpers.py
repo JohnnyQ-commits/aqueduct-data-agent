@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from pathlib import Path
 
 from ...llm.base import LLMMessage
@@ -46,7 +47,7 @@ def save_artifact(state: WorkflowState, filename: str, content: str) -> str:
 
 
 def call_llm(state: WorkflowState, task_type: str, prompt: str) -> str:
-    """通过 ModelRouter 调用 LLM。
+    """通过 ModelRouter 调用 LLM，带完整日志。
 
     Args:
         state: 工作流状态（用于传递 LLM 实例）。
@@ -56,15 +57,55 @@ def call_llm(state: WorkflowState, task_type: str, prompt: str) -> str:
     Returns:
         LLM 回复的文本内容。
     """
+    req_name = state.get("metadata", {}).get("requirement_name", "unknown")
+
     router = state.get("_llm_router")
     if router is None:
         router = ModelRouter()
         state["_llm_router"] = router
 
     llm = router.route(task_type)
-    messages = [LLMMessage(role="user", content=prompt)]
-    response = llm.chat(messages, max_tokens=32768)
-    return response.content
+
+    logger.info(
+        "[task=%s] LLM 调用开始: task_type=%s, model=%s, prompt=%d 字符",
+        req_name,
+        task_type,
+        llm.model_id,
+        len(prompt),
+    )
+
+    start_time = time.time()
+    try:
+        messages = [LLMMessage(role="user", content=prompt)]
+        response = llm.chat(messages, max_tokens=32768)
+        elapsed = time.time() - start_time
+
+        logger.info(
+            "[task=%s] LLM 调用完成: task_type=%s, model=%s, "
+            "response=%d 字符, tokens(prompt=%d, completion=%d), "
+            "耗时=%.1fs",
+            req_name,
+            task_type,
+            llm.model_id,
+            len(response.content),
+            response.usage.prompt_tokens if response.usage else 0,
+            response.usage.completion_tokens if response.usage else 0,
+            elapsed,
+        )
+        return response.content
+
+    except Exception as e:
+        elapsed = time.time() - start_time
+        logger.error(
+            "[task=%s] LLM 调用失败: task_type=%s, model=%s, "
+            "error=%s, 耗时=%.1fs",
+            req_name,
+            task_type,
+            llm.model_id,
+            str(e),
+            elapsed,
+        )
+        raise
 
 
 def extract_sql_block(text: str) -> str:
@@ -81,3 +122,16 @@ def extract_sql_block(text: str) -> str:
         return m.group(1).strip()
 
     return text.strip()
+
+
+def is_valid_sql(content: str) -> bool:
+    """检查内容是否为有效 SQL（至少包含 SELECT/INSERT/CREATE 之一且长度 > 50）。
+
+    用于在 extract_sql_block 后做有效性兜底校验，
+    防止 LLM 超时/异常产出的垃圾内容被当作正常 SQL 保存。
+    """
+    if not content or len(content) <= 50:
+        return False
+    keywords = ["select", "insert", "create", "update", "merge"]
+    lower = content.lower()
+    return any(kw in lower for kw in keywords)
