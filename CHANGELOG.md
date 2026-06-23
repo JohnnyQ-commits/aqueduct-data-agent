@@ -11,30 +11,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **LLM 超时异常化**: `_chat_cli` 中 `subprocess.TimeoutExpired` 不再静默转为 `"[LLM 超时]"` 字符串，改为抛出 `LLMTimeoutError`，调用方可正确捕获和处理
-- **LLM 超时自动重试**: CLI 后端超时后指数退避重试（最多 2 次，timeout 翻倍 600s → 1200s → 2400s），通过 `AQUEDUCT_LLM_MAX_RETRIES` 配置
-- **call_llm 完整日志**: `helpers.call_llm()` 在调用前后记录 task_type、model_id、prompt/response 大小、token 用量、耗时
-- **Phase 阶段日志**: 7 个 Phase 节点均增加"开始/完成"日志，含耗时秒数和产出物大小
-- **SQL 有效性校验**: `extract_sql_block` 后增加 `is_valid_sql()` 兜底校验，无效 SQL 写入错误并终止管道
-- **工具执行日志**: ValidatorTool、LineageTool、EstimatorTool 的 `execute()` 方法增加输入/输出日志
-- **每任务独立日志**: 管道启动时在输出目录创建 `task.YYYY-MM-DD.log`，日志自动同步写入
-- **ModelRouter 路由日志**: `route()` 方法记录 task_type → model 路由决策
-- **审查→修复循环**: Phase 4.5 审查发现 Critical/Warning 问题时，自动构建修复 prompt 让 LLM 修复 SQL，回环到 Phase 4 重新执行（最多 `max_fix_iterations` 次）
-- **外部 SQL 输入**: `--sql-file` CLI 参数和 `external_sql_path` 配置项，Phase 4 可跳过 LLM 直接读取外部 SQL 文件
-- **新增 `sql_fix.tpl.md`**: SQL 修复 prompt 模板
-- **新增 `utils/task_logger.py`**: 任务级日志管理模块
-- **新增 `LLMTimeoutError` 异常**: 继承自 `LLMError`
+- **LLM timeout as exception**: `_chat_cli` now raises `LLMTimeoutError` instead of silently converting `subprocess.TimeoutExpired` to `"[LLM timeout]"` string, allowing callers to properly catch and handle timeouts
+- **LLM timeout auto-retry**: CLI backend retries with exponential backoff on timeout (max 2 retries, timeout doubles 600s -> 1200s -> 2400s), configurable via `AQUEDUCT_LLM_MAX_RETRIES`
+- **Full call_llm logging**: `helpers.call_llm()` logs task_type, model_id, prompt/response size, token usage, and elapsed time before and after each call
+- **Phase timing logs**: All 7 Phase nodes now emit "start/complete" logs with elapsed seconds and artifact size
+- **SQL validity check**: Added `is_valid_sql()` guard after `extract_sql_block()` — invalid SQL writes a halting error and stops the pipeline
+- **Tool execution logging**: ValidatorTool, LineageTool, EstimatorTool `execute()` methods now log input/output with pre-validation
+- **Per-task log files**: Pipeline creates `task.YYYY-MM-DD.log` in output directory, logs are synced to both global and task-level handlers
+- **ModelRouter routing log**: `route()` method now logs task_type -> model routing decisions
+- **Review-fix loop**: Phase 4.5 review parses Critical/Warning issues; if found, builds fix prompt and loops back to Phase 4 (up to `max_fix_iterations`)
+- **External SQL input**: `--sql-file` CLI arg and `external_sql_path` config — Phase 4 can skip LLM and read SQL directly from file
+- **LLM-based field lineage**: `_auto_lineage()` replaced regex parsing with `call_llm("lineage")` — handles CASE/WHEN, COALESCE, CTE chains; new `lineage.tpl.md` prompt template
+- **Claude Code Skills**: `CLAUDE.md` project instructions + `aqueduct-dev` / `aqueduct-review` skill definitions for zero-config pipeline launch
+- **New `sql_fix.tpl.md`**: SQL fix prompt template for review-fix loop
+- **New `utils/task_logger.py`**: Task-level log file management module
+- **New `LLMTimeoutError` exception**: Inherits from `LLMError`
 
 ### Fixed
 
-- **Phase4 SQL 为空 bug**: 根因链 `超时静默吞掉 → 无效 SQL 保存 → 工具对垃圾内容校验 → 管道继续执行`，通过 4 层防御彻底解决（超时抛异常 + SQL 有效性校验 + 工具输入预检 + 管道熔断）
+- **Phase4 empty SQL bug**: Root cause chain `timeout silently swallowed -> invalid SQL saved -> tools validate garbage -> pipeline continues`. Solved with 4-layer defense: timeout raises exception + SQL validity check + tool input pre-validation + pipeline circuit breaker
 
 ### Changed
 
-- `WorkflowState` 新增 `fix_iterations`、`external_sql_path` 可选字段
-- `Settings` 新增 `max_fix_iterations`、`llm_max_retries`、`external_sql_path` 配置项
-- `Aqueduct.dev()` 新增 `external_sql_path` 参数
-- CLI `dev` 命令新增 `--sql-file` 参数
+- `WorkflowState` added `fix_iterations`, `external_sql_path` optional fields
+- `Settings` added `max_fix_iterations`, `llm_max_retries`, `external_sql_path` config entries
+- `Aqueduct.dev()` added `external_sql_path` parameter
+- CLI `dev` command added `--sql-file` parameter
 
 ## [0.3.1] - 2026-06-17
 

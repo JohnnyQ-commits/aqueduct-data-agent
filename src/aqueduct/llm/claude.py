@@ -323,7 +323,9 @@ class ClaudeLLM(BaseLLM):
                 # 从临时文件读取输出（UTF-8 编码）
                 content = Path(stdout_path).read_text(encoding="utf-8").strip()
                 if not content and Path(stderr_path).stat().st_size > 0:
-                    content = Path(stderr_path).read_text(encoding="utf-8", errors="replace").strip()
+                    content = (
+                        Path(stderr_path).read_text(encoding="utf-8", errors="replace").strip()
+                    )
 
                 # 调用成功，跳出重试循环
                 return LLMResponse(

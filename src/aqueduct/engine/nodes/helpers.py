@@ -97,8 +97,7 @@ def call_llm(state: WorkflowState, task_type: str, prompt: str) -> str:
     except Exception as e:
         elapsed = time.time() - start_time
         logger.error(
-            "[task=%s] LLM 调用失败: task_type=%s, model=%s, "
-            "error=%s, 耗时=%.1fs",
+            "[task=%s] LLM 调用失败: task_type=%s, model=%s, error=%s, 耗时=%.1fs",
             req_name,
             task_type,
             llm.model_id,

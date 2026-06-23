@@ -158,7 +158,16 @@ def _generate_delivery_report(state: WorkflowState) -> str:
         lines.append("数据质量测试用例已生成（详见 `Phase5-数据质量测试.sql`）。")
     else:
         lines.append("数据质量测试用例待生成。")
-    lines.extend(["", "---", "", "## 四、上下游依赖", "", "**上游**:",])
+    lines.extend(
+        [
+            "",
+            "---",
+            "",
+            "## 四、上下游依赖",
+            "",
+            "**上游**:",
+        ]
+    )
     for src in lr.get("sources", []):
         lines.append(f"- `{src}`")
     lines.extend(

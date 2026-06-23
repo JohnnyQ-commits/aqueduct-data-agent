@@ -42,12 +42,12 @@ Every pipeline run produces a standardized output directory:
 
 | # | File | Description |
 |---|------|-------------|
-| 1 | `表结构.sql` | Target table DDL |
-| 2 | `{name}.sql` | ETL SQL with full lineage |
-| 3 | `数据质量测试.sql` | DQC test cases (5 categories) |
-| 4 | `Design.md` | Design document |
-| 5 | `{name}_审查报告.md` | Code review report |
-| 6 | `Report.md` | Delivery summary report |
+| 1 | `Phase3-table_ddl.sql` | Target table DDL |
+| 2 | `Phase4-{name}.sql` | ETL SQL with full lineage |
+| 3 | `Phase5-dqc_tests.sql` | DQC test cases (5 categories) |
+| 4 | `Phase6-Design.md` | Design document |
+| 5 | `Phase5-{name}_review.md` | Code review report |
+| 6 | `Phase6-Report.md` | Delivery summary report |
 | 7-11 | Metadata files | Lineage, cost estimate, productivity metrics, etc. |
 
 ---

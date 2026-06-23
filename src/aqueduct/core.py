@@ -72,13 +72,10 @@ def _is_halt_error(error_msg: str) -> bool:
 def _run_fix_loop(state: WorkflowState) -> WorkflowState:
     """审查→修复循环：根据审查发现的问题让 LLM 修复 SQL。"""
     from .engine.nodes.helpers import call_llm, extract_sql_block, is_valid_sql, save_artifact
-    from .skills.base import SkillContext
-    from .skills.registry import get_skill
 
     req_name = state.get("metadata", {}).get("requirement_name", "unknown")
     sql_content = state.get("sql_content", "")
     issues = state.get("_review_issues", [])
-    review_report = state.get("review_result", "")
 
     if not sql_content or not issues:
         return state
@@ -131,9 +128,7 @@ def _run_fix_loop(state: WorkflowState) -> WorkflowState:
     # 保存修复后的 SQL
     fix_iterations = state.get("fix_iterations", 0)
     req_name = state.get("metadata", {}).get("requirement_name", "etl_sql")
-    sql_path = save_artifact(
-        state, f"Phase4-{req_name}_fix{fix_iterations + 1}.sql", fixed_sql
-    )
+    sql_path = save_artifact(state, f"Phase4-{req_name}_fix{fix_iterations + 1}.sql", fixed_sql)
     state["sql_content"] = fixed_sql
     state["sql_file"] = sql_path
     state["fix_iterations"] = fix_iterations + 1
@@ -204,7 +199,9 @@ def _run_pipeline(
         # 检查是否有致命错误需要终止
         errors = state.get("errors", [])
         if errors and _is_halt_error(errors[-1]):
-            logger.warning("[task=%s] 管道终止: phase=%s, 原因=%s", req_name, phase_name, errors[-1])
+            logger.warning(
+                "[task=%s] 管道终止: phase=%s, 原因=%s", req_name, phase_name, errors[-1]
+            )
             halted = True
             break
 
