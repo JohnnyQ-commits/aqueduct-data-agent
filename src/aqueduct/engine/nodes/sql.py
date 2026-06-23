@@ -170,7 +170,12 @@ def _auto_validate(state: WorkflowState, sql_path: str) -> None:
 
 
 def _auto_lineage(state: WorkflowState, sql_path: str) -> None:
-    """自动运行血缘解析并生成血缘图。"""
+    """用 LLM 生成字段级血缘图（替代正则解析）。
+
+    正则解析无法处理 CASE/WHEN、COALESCE、子查询、CTE 链等常见 ETL 模式，
+    且 LineageTool.execute() 从未调用 parse_field_lineage()，字段级血缘永远为空。
+    改为让 LLM 读 SQL 内容，生成 Mermaid 图 + 字段映射表。
+    """
     try:
         abs_path = _resolve_sql_path(state, sql_path)
         sql_content = abs_path.read_text(encoding="utf-8")
@@ -183,35 +188,23 @@ def _auto_lineage(state: WorkflowState, sql_path: str) -> None:
             )
             return
 
-        lineage_tool = get_tool("lineage")
-        lineage_result = lineage_tool.execute(sql_file=str(abs_path))
-        state["lineage_result"] = lineage_result.data
+        # 加载 prompt 模板
+        from ...config.settings import get_settings
 
-        if lineage_result.data is None:
-            logger.warning("血缘解析返回空结果: %s", lineage_result.error)
+        settings = get_settings()
+        tpl_path = settings.prompt_dir / "lineage.tpl.md"
+        if not tpl_path.exists():
+            logger.warning("lineage.tpl.md 不存在，跳过血缘生成")
             return
 
-        lr = lineage_result.data
-        mermaid = lr.get("mermaid", "")
-        sources = lr.get("sources", [])
-        target = lr.get("target", "unknown")
-        lines = [
-            "# 字段级血缘图",
-            "",
-            f"目标表: `{target}`",
-            f"来源表: {len(sources)} 张",
-            "",
-            mermaid,
-            "",
-            "## 来源表清单",
-            "",
-        ]
-        for src in sources:
-            lines.append(f"- `{src}`")
-        save_artifact(state, "Phase4-字段级血缘图.md", "\n".join(lines))
-        logger.info("血缘解析完成: %d source tables", len(sources))
+        prompt = tpl_path.read_text(encoding="utf-8")
+        prompt = prompt.replace("{sql_content}", sql_content)
+
+        result = call_llm(state, "lineage", prompt)
+        save_artifact(state, "Phase4-字段级血缘图.md", result)
+        logger.info("LLM 血缘生成完成: %d 字符", len(result))
     except Exception:
-        logger.warning("血缘解析失败，跳过", exc_info=True)
+        logger.warning("LLM 血缘生成失败，跳过", exc_info=True)
 
 
 def _auto_cost_estimate(state: WorkflowState, sql_path: str) -> None:
