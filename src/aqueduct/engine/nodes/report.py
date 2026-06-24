@@ -70,9 +70,7 @@ def node_report(state: WorkflowState) -> WorkflowState:
             dqc_data = dqc_results.get("results", []) if isinstance(dqc_results, dict) else []
             prod_result = prod_tool.execute(
                 dqc_tests_run=len(dqc_data),
-                dqc_auto_fixes=sum(
-                    1 for r in dqc_data if r.get("status") == "PASSED"
-                ),
+                dqc_auto_fixes=sum(1 for r in dqc_data if r.get("status") == "PASSED"),
             )
             if prod_result.success:
                 board_content = prod_result.data.get("report", "")

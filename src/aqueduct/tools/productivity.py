@@ -83,9 +83,7 @@ class ProductivityTool(BaseTool):
         )
         rating = "极度活跃" if score > 80 else "表现优异" if score > 50 else "持续进化"
 
-        dqc_display = (
-            f"`{auto_fix_rate}%`" if metrics["dqc_tests_run"] else "暂无 DQC 数据"
-        )
+        dqc_display = f"`{auto_fix_rate}%`" if metrics["dqc_tests_run"] else "暂无 DQC 数据"
         dqc_note = "DQC 闭环自愈能力表现" if metrics["dqc_tests_run"] else "暂无实际执行数据"
 
         report = "\n".join(

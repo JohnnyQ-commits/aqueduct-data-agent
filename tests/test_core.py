@@ -167,17 +167,19 @@ class TestRunFixLoop:
             "fix_iterations": 0,
         }
 
-    @patch("src.aqueduct.engine.nodes.helpers.save_artifact", side_effect=lambda s, n, c: f"output/{n}")
+    @patch(
+        "src.aqueduct.engine.nodes.helpers.save_artifact", side_effect=lambda s, n, c: f"output/{n}"
+    )
     @patch("src.aqueduct.engine.nodes.helpers.is_valid_sql", return_value=True)
     @patch("src.aqueduct.engine.nodes.helpers.extract_sql_block", side_effect=lambda x: x)
-    @patch("src.aqueduct.engine.nodes.helpers.call_llm", return_value="SELECT 1 FROM dual WHERE 1=1")
+    @patch(
+        "src.aqueduct.engine.nodes.helpers.call_llm", return_value="SELECT 1 FROM dual WHERE 1=1"
+    )
     def test_fix_loop_fixes_sql(self, _mock_llm, _mock_extract, _mock_valid, _mock_save):
         """LLM 返回有效修复 SQL 时，state 被更新。"""
         state = self._make_state_with_issues()
 
-        with patch(
-            "src.aqueduct.config.settings.get_settings"
-        ) as mock_settings:
+        with patch("src.aqueduct.config.settings.get_settings") as mock_settings:
             mock_settings.return_value.max_fix_iterations = 2
             result = _run_fix_loop(state)
 
@@ -185,25 +187,29 @@ class TestRunFixLoop:
         assert result["fix_iterations"] == 1
         assert result.get("_needs_fix_loop") is False
 
-    @patch("src.aqueduct.engine.nodes.helpers.save_artifact", side_effect=lambda s, n, c: f"output/{n}")
+    @patch(
+        "src.aqueduct.engine.nodes.helpers.save_artifact", side_effect=lambda s, n, c: f"output/{n}"
+    )
     @patch("src.aqueduct.engine.nodes.helpers.is_valid_sql", return_value=True)
     @patch("src.aqueduct.engine.nodes.helpers.extract_sql_block", side_effect=lambda x: x)
-    @patch("src.aqueduct.engine.nodes.helpers.call_llm", return_value="SELECT 1 FROM dual WHERE 1=1")
+    @patch(
+        "src.aqueduct.engine.nodes.helpers.call_llm", return_value="SELECT 1 FROM dual WHERE 1=1"
+    )
     def test_fix_loop_max_iterations(self, _mock_llm, _mock_extract, _mock_valid, _mock_save):
         """达到最大迭代次数时不再修复。"""
         state = self._make_state_with_issues()
         state["fix_iterations"] = 2
 
-        with patch(
-            "src.aqueduct.config.settings.get_settings"
-        ) as mock_settings:
+        with patch("src.aqueduct.config.settings.get_settings") as mock_settings:
             mock_settings.return_value.max_fix_iterations = 2
             result = _run_fix_loop(state)
 
         # 没有修改 SQL
         assert result["sql_content"] == "SELECT 1 FROM dual"
 
-    @patch("src.aqueduct.engine.nodes.helpers.save_artifact", side_effect=lambda s, n, c: f"output/{n}")
+    @patch(
+        "src.aqueduct.engine.nodes.helpers.save_artifact", side_effect=lambda s, n, c: f"output/{n}"
+    )
     @patch("src.aqueduct.engine.nodes.helpers.is_valid_sql", return_value=False)
     @patch("src.aqueduct.engine.nodes.helpers.extract_sql_block", side_effect=lambda x: x)
     @patch("src.aqueduct.engine.nodes.helpers.call_llm", return_value="not valid sql at all")
@@ -212,9 +218,7 @@ class TestRunFixLoop:
         state = self._make_state_with_issues()
         original_sql = state["sql_content"]
 
-        with patch(
-            "src.aqueduct.config.settings.get_settings"
-        ) as mock_settings:
+        with patch("src.aqueduct.config.settings.get_settings") as mock_settings:
             mock_settings.return_value.max_fix_iterations = 2
             result = _run_fix_loop(state)
 
