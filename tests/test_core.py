@@ -223,3 +223,67 @@ class TestRunFixLoop:
             result = _run_fix_loop(state)
 
         assert result["sql_content"] == original_sql
+
+    @patch(
+        "src.aqueduct.engine.nodes.helpers.save_artifact", side_effect=lambda s, n, c: f"output/{n}"
+    )
+    @patch("src.aqueduct.engine.nodes.helpers.is_valid_sql", return_value=False)
+    @patch("src.aqueduct.engine.nodes.helpers.extract_sql_block", side_effect=lambda x: x)
+    @patch("src.aqueduct.engine.nodes.helpers.call_llm", return_value="not valid sql at all")
+    def test_fix_loop_invalid_output_clears_flag(
+        self, _mock_llm, _mock_extract, _mock_valid, _mock_save
+    ):
+        """回归测试: LLM 修复输出无效时 _needs_fix_loop 应被设为 False，防止无限循环。"""
+        state = self._make_state_with_issues()
+        state["_needs_fix_loop"] = True
+
+        with patch("src.aqueduct.config.settings.get_settings") as mock_settings:
+            mock_settings.return_value.max_fix_iterations = 2
+            result = _run_fix_loop(state)
+
+        assert result["_needs_fix_loop"] is False
+
+    @patch("src.aqueduct.core._run_fix_loop")
+    def test_pipeline_no_infinite_fix_loop(self, mock_fix):
+        """回归测试: 审查反复发现 Critical 时，达到 max_fix_iterations 后应继续后续阶段。"""
+
+        # 每次修复循环递增 fix_iterations
+        def increment_fix(s):
+            s["fix_iterations"] = s.get("fix_iterations", 0) + 1
+            return s
+
+        mock_fix.side_effect = increment_fix
+        state = {
+            "requirement": "test",
+            "mode": "dev",
+            "metadata": {"requirement_name": "test_req"},
+            "errors": [],
+            "artifacts": [],
+            "sql_content": "SELECT 1",
+            "fix_iterations": 0,
+        }
+
+        sql_fn = MagicMock(side_effect=lambda s: s, name="node_sql")
+        review_fn = MagicMock(name="node_review")
+
+        # 审查每次都设置 _needs_fix_loop = True
+        def review_always_finds_issues(s):
+            s["_needs_fix_loop"] = True
+            s["_review_issues"] = [{"severity": "Critical", "message": "some issue"}]
+            return s
+
+        review_fn.side_effect = review_always_finds_issues
+        phases = [
+            ("sql", sql_fn),
+            ("review", review_fn),
+            ("dqc", MagicMock(side_effect=lambda s: s)),
+        ]
+
+        with patch("src.aqueduct.config.settings.get_settings") as mock_settings:
+            mock_settings.return_value.max_fix_iterations = 2
+            _run_pipeline(state, phases)
+
+        # SQL 节点不应被无限调用（最多 3 次：初始 + 2 次修复回环）
+        assert sql_fn.call_count <= 3
+        # DQC 节点应该被执行（管道没有被卡在修复循环中）
+        phases[2][1].assert_called_once()

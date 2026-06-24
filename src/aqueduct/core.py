@@ -147,6 +147,7 @@ def _run_fix_loop(state: WorkflowState) -> WorkflowState:
             req_name,
             len(fixed_sql),
         )
+        state["_needs_fix_loop"] = False
         return state
 
     # 保存修复后的 SQL
@@ -236,16 +237,29 @@ def _run_pipeline(
 
         # 审查→修复回环
         if phase_name == "review" and state.get("_needs_fix_loop"):
-            logger.info("[task=%s] 审查→修复回环：回到 SQL 阶段重新执行", req_name)
-            state = _run_fix_loop(state)
-            # 回到 sql 节点重新跑
-            sql_idx = next(
-                (j for j, (name, _) in enumerate(phases) if name == "sql"),
-                None,
-            )
-            if sql_idx is not None:
-                i = sql_idx
-                continue
+            from .config.settings import get_settings
+
+            fix_iterations = state.get("fix_iterations", 0)
+            max_fix_iterations = get_settings().max_fix_iterations
+            if fix_iterations >= max_fix_iterations:
+                logger.warning(
+                    "[task=%s] 修复循环: 已达最大迭代次数 %d/%d，跳过回环，继续后续阶段",
+                    req_name,
+                    fix_iterations,
+                    max_fix_iterations,
+                )
+                state["_needs_fix_loop"] = False
+            else:
+                logger.info("[task=%s] 审查→修复回环：回到 SQL 阶段重新执行", req_name)
+                state = _run_fix_loop(state)
+                # 回到 sql 节点重新跑
+                sql_idx = next(
+                    (j for j, (name, _) in enumerate(phases) if name == "sql"),
+                    None,
+                )
+                if sql_idx is not None:
+                    i = sql_idx
+                    continue
 
         # 交互确认：在指定阶段完成后暂停等待用户确认
         if (
