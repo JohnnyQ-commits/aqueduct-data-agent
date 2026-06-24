@@ -5,7 +5,7 @@
 Skill 层异常继承自 `SkillError`。
 工作流/引擎异常继承自 `WorkflowError`。
 LLM 层异常继承自 `LLMError`。
-Memory/知识层异常继承自 `MemoryError`。
+Memory/知识层异常继承自 `AqueductMemoryError`。
 
 异常层级：
     AqueductError（根）
@@ -15,11 +15,12 @@ Memory/知识层异常继承自 `MemoryError`。
     ├── SkillError（Skill 执行失败）
     │   └── SkillNotFoundError（Skill 未注册）
     ├── WorkflowError（DAG 执行失败）
+    │   ├── WorkflowHaltError（工作流需立即终止）
     │   └── WorkflowNodeError（特定节点失败）
     ├── LLMError（LLM 调用失败）
     │   ├── LLMTimeoutError（LLM 调用超时）
     │   └── LLMContextExceededError（超出上下文窗口）
-    ├── MemoryError（知识存储操作失败）
+    ├── AqueductMemoryError（知识存储操作失败）
     │   └── DomainNotFoundError（业务域不存在）
     └── ConfigError（配置校验失败）
 """
@@ -74,6 +75,16 @@ class WorkflowError(AqueductError):
     code = "workflow_error"
 
 
+class WorkflowHaltError(WorkflowError):
+    """工作流应立即终止时抛出。
+
+    节点遇到不可恢复的致命错误时抛出此异常，
+    管道执行器捕获后立即终止工作流，不再执行后续节点。
+    """
+
+    code = "workflow_halt"
+
+
 class WorkflowNodeError(WorkflowError):
     """DAG 中某个特定节点失败。"""
 
@@ -98,13 +109,13 @@ class LLMContextExceededError(LLMError):
     code = "llm_context_exceeded"
 
 
-class MemoryError(AqueductError):
+class AqueductMemoryError(AqueductError):
     """知识存储操作失败时抛出。"""
 
     code = "memory_error"
 
 
-class DomainNotFoundError(MemoryError):
+class DomainNotFoundError(AqueductMemoryError):
     """请求的业务域不存在。"""
 
     code = "domain_not_found"

@@ -71,19 +71,22 @@ class KnowledgeRecall:
         # 3. 提取相关实体（按关键词匹配度排序，取 Top-K）
         keywords = self._store._extract_keywords(requirement.lower())
         scored_entities: list[tuple[int, str, list]] = []
-        for entity_name, attrs in domain.search_entities(""):
+        for entity_name, entity in domain.entities.items():
             score = 0
+            matched_attrs = []
             # 关键词匹配加分
             for kw in keywords:
                 if kw in entity_name.lower():
                     score += 3
-                for attr in attrs:
+                for attr in entity.attributes:
                     if kw in attr.name.lower() or kw in (attr.description or "").lower():
                         score += 1
-            # 有属性的实体优先
-            if attrs:
+                        if attr not in matched_attrs:
+                            matched_attrs.append(attr)
+            # 有匹配属性的实体优先
+            if matched_attrs:
                 score += 1
-            scored_entities.append((score, entity_name, attrs))
+            scored_entities.append((score, entity_name, matched_attrs))
 
         # 按分数降序排列，取 Top-K
         scored_entities.sort(key=lambda x: x[0], reverse=True)

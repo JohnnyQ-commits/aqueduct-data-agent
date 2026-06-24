@@ -15,7 +15,7 @@ import logging
 from collections import deque
 from collections.abc import Callable
 
-from ..exceptions import WorkflowError
+from ..exceptions import WorkflowError, WorkflowHaltError
 from .recovery import RecoveryStrategy
 from .state import WorkflowState
 
@@ -166,9 +166,14 @@ class CompiledWorkflow:
 
             # 执行节点
             if node_name in self._nodes:
-                state = self._execute_node(node_name, state)
+                try:
+                    state = self._execute_node(node_name, state)
+                except WorkflowHaltError as e:
+                    state.setdefault("errors", []).append(str(e))
+                    logger.warning("工作流因致命错误终止于节点 '%s': %s", node_name, e)
+                    break
 
-                # 检查是否有致命错误导致终止
+                # 降级辅助检查：节点未抛 WorkflowHaltError 但错误消息含终止标记
                 if state.get("errors"):
                     last_error = state["errors"][-1]
                     if "终止" in last_error or "halt" in last_error.lower():
@@ -218,6 +223,8 @@ class CompiledWorkflow:
             try:
                 logger.debug("执行节点 '%s'（第 %d 次）", node_name, attempt)
                 return node_func(state)
+            except WorkflowHaltError:
+                raise  # 致命错误不重试，直接传播
             except Exception as e:
                 result = self._recovery.recover(node_name, e, attempt)
 

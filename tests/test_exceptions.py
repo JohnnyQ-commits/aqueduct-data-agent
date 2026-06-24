@@ -6,17 +6,18 @@ import pytest
 
 from src.aqueduct.exceptions import (
     AqueductError,
+    AqueductMemoryError,
     ConfigError,
     DomainNotFoundError,
     LLMContextExceededError,
     LLMError,
-    MemoryError,
     SkillError,
     SkillNotFoundError,
     ToolError,
     ToolNotFoundError,
     ToolValidationError,
     WorkflowError,
+    WorkflowHaltError,
     WorkflowNodeError,
 )
 
@@ -38,6 +39,7 @@ class TestExceptionHierarchy:
 
     def test_workflow_errors_inherit_aqueduct(self):
         assert issubclass(WorkflowError, AqueductError)
+        assert issubclass(WorkflowHaltError, WorkflowError)
         assert issubclass(WorkflowNodeError, WorkflowError)
 
     def test_llm_errors_inherit_aqueduct(self):
@@ -45,8 +47,8 @@ class TestExceptionHierarchy:
         assert issubclass(LLMContextExceededError, LLMError)
 
     def test_memory_errors_inherit_aqueduct(self):
-        assert issubclass(MemoryError, AqueductError)
-        assert issubclass(DomainNotFoundError, MemoryError)
+        assert issubclass(AqueductMemoryError, AqueductError)
+        assert issubclass(DomainNotFoundError, AqueductMemoryError)
 
     def test_config_error_inherits_aqueduct(self):
         assert issubclass(ConfigError, AqueductError)

@@ -33,6 +33,7 @@ from .engine.nodes import (
     node_sql,
 )
 from .engine.state import WorkflowState
+from .exceptions import WorkflowHaltError
 from .utils.task_logger import remove_task_handler, setup_task_logging
 
 logger = logging.getLogger(__name__)
@@ -65,12 +66,18 @@ ProgressCallback = Callable[[str, int, int, WorkflowState], None]
 
 
 def _is_halt_error(error_msg: str) -> bool:
-    """判断错误消息是否表示工作流应终止。"""
+    """判断错误消息是否表示工作流应终止。
+
+    优先依赖结构化异常 WorkflowHaltError（参见 _run_pipeline 中的捕获）。
+    此函数仅作降级辅助：当节点未抛出 WorkflowHaltError 但错误消息
+    明确包含终止标记时，仍然终止工作流。
+    """
     return "终止" in error_msg or "halt" in error_msg.lower()
 
 
 def _run_fix_loop(state: WorkflowState) -> WorkflowState:
     """审查→修复循环：根据审查发现的问题让 LLM 修复 SQL。"""
+    from .config.settings import get_settings
     from .engine.nodes.helpers import call_llm, extract_sql_block, is_valid_sql, save_artifact
 
     req_name = state.get("metadata", {}).get("requirement_name", "unknown")
@@ -78,6 +85,18 @@ def _run_fix_loop(state: WorkflowState) -> WorkflowState:
     issues = state.get("_review_issues", [])
 
     if not sql_content or not issues:
+        return state
+
+    # 最大迭代保护：防止无限循环
+    fix_iterations = state.get("fix_iterations", 0)
+    max_fix_iterations = get_settings().max_fix_iterations
+    if fix_iterations >= max_fix_iterations:
+        logger.warning(
+            "[task=%s] 修复循环: 已达最大迭代次数 %d，跳过",
+            req_name,
+            max_fix_iterations,
+        )
+        state["_needs_fix_loop"] = False
         return state
 
     # 格式化审查问题
@@ -90,14 +109,19 @@ def _run_fix_loop(state: WorkflowState) -> WorkflowState:
 
     # 读取 sql_fix 模板
     try:
+        from string import Template
+
         from .config.settings import get_settings
 
         settings = get_settings()
         tpl_path = settings.prompt_dir / "sql_fix.tpl.md"
         if tpl_path.exists():
-            prompt = tpl_path.read_text(encoding="utf-8")
-            prompt = prompt.replace("{sql_content}", sql_content)
-            prompt = prompt.replace("{issues_formatted}", issues_formatted)
+            raw_tpl = tpl_path.read_text(encoding="utf-8")
+            tpl = Template(raw_tpl)
+            prompt = tpl.safe_substitute(
+                sql_content=sql_content,
+                issues_formatted=issues_formatted,
+            )
         else:
             # 模板不存在时使用默认 prompt
             prompt = (
@@ -192,6 +216,11 @@ def _run_pipeline(
 
         try:
             state = node_func(state)
+        except WorkflowHaltError as e:
+            state.setdefault("errors", []).append(f"{phase_name}: {e!s}")
+            logger.warning("[task=%s] 管道终止: phase=%s, 原因=%s", req_name, phase_name, e)
+            halted = True
+            break
         except Exception as e:
             state.setdefault("errors", []).append(f"{phase_name}: {e!s}")
             logger.error("阶段 '%s' 异常: %s", phase_name, e, exc_info=True)
