@@ -66,6 +66,22 @@ def _make_confirm_callback() -> callable:
         print(f"{'=' * 60}", flush=True)
         print(summary, flush=True)
         print(f"{'=' * 60}", flush=True)
+
+        # 检测非交互环境（如 Claude Code 子进程、CI/CD 管道等）
+        import sys
+
+        if not sys.stdin.isatty():
+            print(
+                "\n[WARNING] 非交互环境（stdin 不是 TTY），无法等待用户确认。",
+                flush=True,
+            )
+            print(
+                "工作流已暂停。如需跳过确认，请使用 Python API: "
+                "Aqueduct().dev(..., interactive=False)",
+                flush=True,
+            )
+            return False
+
         print("\n请确认以上内容是否正确？", flush=True)
         print("  [Y] 确认，继续后续阶段", flush=True)
         print("  [N] 停止，需要修改需求文档", flush=True)
@@ -73,7 +89,7 @@ def _make_confirm_callback() -> callable:
         try:
             choice = input("\nYour choice (Y/n/q): ").strip().lower()
         except (EOFError, KeyboardInterrupt):
-            choice = "y"  # 非交互环境默认继续
+            choice = "y"  # Ctrl+C / Ctrl+D 默认继续
 
         if choice in ("n",):
             print(

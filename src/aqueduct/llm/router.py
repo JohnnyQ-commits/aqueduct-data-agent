@@ -76,13 +76,13 @@ class ModelRouter:
 
         settings = get_settings()
         self._haiku = haiku_model or ClaudeLLM(
-            model_id=settings.default_analysis_model or None,
+            model_id=settings.default_analysis_model,
         )
         self._sonnet = sonnet_model or ClaudeLLM(
-            model_id=settings.default_medium_model or None,
+            model_id=settings.default_medium_model,
         )
         self._opus = opus_model or ClaudeLLM(
-            model_id=settings.default_heavy_model or None,
+            model_id=settings.default_heavy_model,
         )
 
     def route(self, task_type: str) -> BaseLLM:

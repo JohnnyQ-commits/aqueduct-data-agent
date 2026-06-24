@@ -5,7 +5,7 @@ description: >
   DO trigger when 用户要求审查 SQL 变更、对比线上 SQL 和变更版本、
   提到"审查 SQL"、"对比线上版本"、"review SQL"、"aqueduct review"、
   "SQL 变更校验"。
-  Do NOT trigger for 从需求文档开发新 SQL（使用 /aqueduct-dev）、
+  Do NOT trigger for 从需求文档开发新 SQL（使用 /data-developer）、
   交付后的需求变更（使用 /change-management）、仅校验 SQL 规范（使用 aqueduct validate）。
 allowed-tools:
   - Read

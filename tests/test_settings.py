@@ -50,9 +50,12 @@ class TestSettingsValidation:
     """配置校验测试。"""
 
     def test_empty_model_ids_allowed(self):
-        """模型 ID 为空不报错，只发出警告。"""
+        """模型 ID 为空不报错，只发出警告。默认值不为空。"""
         settings = Settings()
-        assert settings.default_analysis_model == ""
+        # 默认值应指向实际的模型 ID（三档路由生效）
+        assert settings.default_analysis_model == "claude-haiku-4-5-20251001"
+        assert settings.default_medium_model == "claude-sonnet-4-6-20250514"
+        assert settings.default_heavy_model == "claude-opus-4-7-20250514"
 
     def test_workflow_timeout_default(self):
         settings = Settings()

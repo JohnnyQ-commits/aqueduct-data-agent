@@ -1,11 +1,15 @@
 ---
 name: data-developer
 description: >
-  Aqueduct 数据开发自动化全流程执行技能。
-  从需求文档出发，自动完成需求澄清、表结构设计、ETL SQL开发、代码审查、DQC质量保障、交付沉淀六步闭环。
-  DO trigger when 用户提供需求文档要求开发SQL、要求执行aqueduct全流程、
-  提到"帮我开发这个需求"、"从需求生成SQL"、"走一遍aqueduct流程"。
-  Do NOT trigger for 仅查询表结构/血缘/API、仅做SQL规范校验、通用编程问题。
+  Aqueduct 数据开发自动化全流程执行技能（默认模式）。
+  从需求文档出发，在单次对话中自动完成需求澄清、表结构设计、ETL SQL开发、
+  代码审查、DQC质量保障、交付沉淀六步闭环。
+  DO trigger when 用户提供需求文档要求开发SQL（默认首选此技能）、
+  自然语言描述数据开发需求（如"帮我开发这个需求"、"从需求生成SQL"、
+  "数据开发"、"SQL开发"、"ETL开发"、"需求转SQL"）、
+  发送需求文档路径。
+  DO NOT trigger when 用户明确要求 CLI/管道模式（此时用 /aqueduct-dev）、
+  仅查询表结构/血缘/API、仅做SQL规范校验、通用编程问题。
 allowed-tools:
   - Read
   - Write

@@ -206,6 +206,31 @@ class TestLLMIntegration:
         opus_llm = router.route("sql_gen")
         assert opus_llm is not None
 
+    def test_model_router_three_tiers_distinct(self):
+        """回归测试：三档路由必须指向不同模型，不能全部 fallback 到同一个 Sonnet。"""
+        from src.aqueduct.llm.router import ModelRouter
+
+        router = ModelRouter()
+        haiku = router.route("requirement_parse")
+        sonnet = router.route("scheme_write")
+        opus = router.route("sql_gen")
+
+        # 三档模型 ID 必须互不相同
+        assert haiku.model_id != sonnet.model_id, (
+            f"Haiku 和 Sonnet 路由到了同一个模型: {haiku.model_id}"
+        )
+        assert sonnet.model_id != opus.model_id, (
+            f"Sonnet 和 Opus 路由到了同一个模型: {opus.model_id}"
+        )
+        assert haiku.model_id != opus.model_id, (
+            f"Haiku 和 Opus 路由到了同一个模型: {haiku.model_id}"
+        )
+
+        # 各档模型 ID 应包含对应关键词
+        assert "haiku" in haiku.model_id.lower()
+        assert "sonnet" in sonnet.model_id.lower()
+        assert "opus" in opus.model_id.lower()
+
     def test_model_router_unknown_task(self):
         """测试路由器对未知任务类型抛出异常。"""
         from src.aqueduct.llm.router import ModelRouter

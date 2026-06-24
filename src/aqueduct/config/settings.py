@@ -85,18 +85,18 @@ class Settings(BaseSettings):
     # === LLM 配置 ===
 
     default_analysis_model: str = Field(
-        default="",
-        description="轻量分析任务模型（Haiku 档）。",
+        default="claude-haiku-4-5-20251001",
+        description="轻量分析任务模型（Haiku 档）。可通过环境变量 ANTHROPIC_DEFAULT_HAIKU_MODEL 覆盖。",
     )
 
     default_medium_model: str = Field(
-        default="",
-        description="中等生成任务模型（Sonnet/Qwen 档）。",
+        default="claude-sonnet-4-6-20250514",
+        description="中等生成任务模型（Sonnet 档）。可通过环境变量 ANTHROPIC_DEFAULT_SONNET_MODEL 覆盖。",
     )
 
     default_heavy_model: str = Field(
-        default="",
-        description="重度生成任务模型（Opus 档）。",
+        default="claude-opus-4-7-20250514",
+        description="重度生成任务模型（Opus 档）。可通过环境变量 ANTHROPIC_DEFAULT_OPUS_MODEL 覆盖。",
     )
 
     # === 工作流配置 ===

@@ -4,6 +4,7 @@ description: >
   Aqueduct 数据开发自动化框架调用入口。
   DO trigger when 用户提到"数据开发"、"SQL开发"、"数仓开发"、"数据管道"、
   "表结构设计"、"数据质量测试"、"DA设计"、"aqueduct"、"需求转SQL"、"ETL开发"。
+  默认路由到 /data-developer（插件直接生成模式），除非用户明确要求 CLI 管道模式。
   Do NOT trigger for 仅查询数据血缘/上下游依赖、仅查询现有API/数据源/离线任务详情、
   讨论非数仓相关的通用编程问题。
 allowed-tools:

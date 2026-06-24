@@ -8,25 +8,36 @@
 给定需求文档，自动产出 11 个标准化交付物（DDL、ETL SQL、DQC、血缘图、设计文档等）。
 
 核心特点：
-- **Python 管道优先**：所有数据开发工作必须通过 `aqueduct` CLI 或 Python API 执行
+- **插件直接生成为优先**：日常数据开发优先使用 `/data-developer` 在单次对话中完成，快速高效
+- **CLI 管道模式**：需要自动化/CI/CD/批量处理时使用 `aqueduct dev`（7 阶段管道）
 - **7 层架构**：Config → LLM → Tools → Skills → Engine → Memory → MCP
 - **DAG 编排**：7 个 Phase 按顺序执行，Phase 4.5 有审查→修复循环
 
 ## 最重要的规则
 
+### 模式选择（关键）
+
+**自然语言请求数据开发时，默认使用 `/data-developer`（插件直接生成模式）**：
+- 用户在对话中发送需求文档路径、描述数据开发需求 → 使用 `/data-developer`
+- Claude 在单次对话中直接生成所有交付物（1-2 次 LLM 调用，5-10 分钟）
+
+**仅在以下情况使用 `/aqueduct-dev`（CLI 管道模式）**：
+- 用户明确提到"CLI"、"管道"、"pipeline"
+- 用户明确使用 `/aqueduct-dev` skill
+- 用户要求"走管道"、"用项目代码"、"跑 aqueduct dev"
+- CI/CD 或批量处理场景
+
 ### ❌ 绝对不要做的事
 
-1. **不要绕过管道**：不要自己读需求文档然后直接写 SQL/DDL/Design。
-   - 必须通过 `aqueduct dev <requirement.md>` 或 `from aqueduct import Aqueduct; Aqueduct().dev()` 执行
-   - 即使你觉得"直接写更快"，也必须走管道
-2. **不要跳过 Phase 4.5 的工具链校验**：ValidatorTool、LineageTool、EstimatorTool 的结果必须保留
+1. **不要在 `/data-developer` 模式下绕过 Skill**：使用 `/data-developer` 时，按其指导直接生成所有交付物
+2. **不要跳过 Phase 4.5 的工具链校验**（CLI 管道模式下）：ValidatorTool、LineageTool、EstimatorTool 的结果必须保留
 3. **不要忽略管道输出的 errors 列表**：如果有 errors，必须向用户报告并分析原因
 
 ### ✅ 必须做的事
 
-1. **使用 Skills**：用户要求数据开发时，优先使用 `/aqueduct-dev` 或 `/data-developer` skill
-2. **Phase 1 必须确认**：管道在 Phase 1 会暂停要求用户确认需求理解，不要跳过
-3. **展示产出物**：管道完成后，列出 output/ 目录下所有生成文件
+1. **使用 Skills**：用户要求数据开发时，**默认使用 `/data-developer`**（直接生成，快速高效）
+2. **Phase 1 必须确认**（CLI 管道模式下）：管道在 Phase 1 会暂停要求用户确认需求理解，不要跳过
+3. **展示产出物**：完成后，列出 output/ 目录下所有生成文件
 
 ## 开发环境
 
@@ -103,11 +114,11 @@ aqueduct dev examples/ecommerce_daily_stat.md
 
 本项目有 3 个 Claude Code Skills：
 
-| Skill | 触发方式 | 用途 |
-|-------|---------|------|
-| `/aqueduct-dev` | 用户提供需求文档 | 一键启动完整管道 |
-| `/data-developer` | 同上（更详细的领域知识） | Phase 1-6 详细指导 |
-| `/change-management` | 用户提到"变更"、"CR" | 交付后需求变更管理 |
+| Skill | 触发方式 | 用途 | 优先级 |
+|-------|---------|------|--------|
+| `/data-developer` | **默认** — 自然语言数据开发请求 | 单次对话直接生成所有交付物 | ⭐ 最高 |
+| `/aqueduct-dev` | 用户明确提到"CLI"、"管道" | 启动 7 阶段 CLI 管道 | 仅明确指定时 |
+| `/change-management` | 用户提到"变更"、"CR" | 交付后需求变更管理 | — |
 
 ## 配置文件
 

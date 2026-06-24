@@ -1,11 +1,11 @@
 ---
 name: aqueduct-dev
 description: >
-  Aqueduct 数据开发一键启动入口。
-  DO trigger when 用户提供需求文档要求开发SQL、提到"帮我开发这个需求"、
-  "从需求生成SQL"、"走一遍管道"、"aqueduct dev"、"数据开发"、"SQL开发"、
-  "ETL开发"、"需求转SQL"、"用我的SQL跑一遍"、"我有现成的SQL"。
-  如果用户提供了 SQL 文件，使用 `--sql-file` 参数跳过 LLM 生成。
+  Aqueduct CLI 管道启动入口。仅在用户明确要求 CLI/管道模式时触发。
+  DO trigger when 用户明确提到"CLI"、"管道"、"pipeline"、"aqueduct dev"命令、
+  "走一遍管道"、"跑 CLI"、"用项目代码跑"、"用我的SQL跑一遍"、"我有现成的SQL"。
+  DO NOT trigger when 用户只是自然语言描述数据开发需求（此时应由 /data-developer 处理）。
+  如果用户提供了 SQL 文件且要求走管道，使用 `--sql-file` 参数跳过 LLM 生成。
   Do NOT trigger for 仅查询表结构/血缘/API、仅做SQL规范校验、
   通用编程问题、变更管理（使用 /change-management）。
 allowed-tools:
@@ -25,7 +25,7 @@ tags:
   - etl
   - sql
   - entry-point
-version: "1.0.0"
+version: "1.1.0"
 ---
 
 # Aqueduct Dev — 管道启动入口
