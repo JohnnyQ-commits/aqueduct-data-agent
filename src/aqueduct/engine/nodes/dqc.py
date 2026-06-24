@@ -39,7 +39,7 @@ def node_dqc(state: WorkflowState) -> WorkflowState:
             return state
 
         prompt = result.data.get("prompt", "")
-        llm_response = call_llm(state, "sql_gen", prompt)
+        llm_response = call_llm(state, "dqc_gen", prompt)
 
         dqc_sql = extract_sql_block(llm_response)
 

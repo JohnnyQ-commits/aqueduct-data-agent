@@ -123,6 +123,11 @@ class Settings(BaseSettings):
         description="LLM 调用超时后最大重试次数（指数退避）。",
     )
 
+    llm_max_context_tokens: int = Field(
+        default=200_000,
+        description="LLM 上下文窗口最大 token 数。超过此值触发自动截断。",
+    )
+
     # === 外部 SQL 输入 ===
 
     external_sql_path: str = Field(

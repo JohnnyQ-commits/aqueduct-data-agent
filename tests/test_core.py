@@ -287,3 +287,113 @@ class TestRunFixLoop:
         assert sql_fn.call_count <= 3
         # DQC 节点应该被执行（管道没有被卡在修复循环中）
         phases[2][1].assert_called_once()
+
+
+# ============================================================
+# OPT-4: _split_design_and_ddl 测试
+# ============================================================
+
+
+class TestSplitDesignAndDdl:
+    """合并调用的响应拆分测试。"""
+
+    def test_split_normal_response(self):
+        """正常响应：设计方案 + SQL 代码块。"""
+        from src.aqueduct.engine.nodes.design import _split_design_and_ddl
+
+        response = """## 取数逻辑
+从 source_table 取数
+
+## 字段映射
+| 目标字段 | 源字段 | 转换逻辑 |
+|----------|--------|----------|
+
+```sql
+CREATE TABLE test (id INT COMMENT '主键')
+```"""
+        design, ddl = _split_design_and_ddl(response)
+
+        assert "取数逻辑" in design
+        assert "字段映射" in design
+        assert "CREATE TABLE" in ddl
+        assert "```sql" not in ddl
+        assert "```" not in ddl
+
+    def test_split_no_sql_block(self):
+        """无 SQL 代码块时，全部作为设计方案。"""
+        from src.aqueduct.engine.nodes.design import _split_design_and_ddl
+
+        response = "## 设计方案\n一些设计内容，没有 SQL 代码块。"
+        design, ddl = _split_design_and_ddl(response)
+
+        assert design == "## 设计方案\n一些设计内容，没有 SQL 代码块。"
+        assert ddl == ""
+
+    def test_split_sql_before_design(self):
+        """SQL 在文本最前面时，设计方案为空。"""
+        from src.aqueduct.engine.nodes.design import _split_design_and_ddl
+
+        response = """```sql
+CREATE TABLE test (id INT)
+```"""
+        design, ddl = _split_design_and_ddl(response)
+
+        assert design == ""
+        assert "CREATE TABLE" in ddl
+
+
+# ============================================================
+# OPT-4: node_ddl 跳过测试
+# ============================================================
+
+
+class TestNodeDdlSkip:
+    """Phase 3 DDL 节点跳过行为测试。"""
+
+    def test_ddl_skips_when_already_produced(self):
+        """DDL 已在 Phase 2 合并调用中产出时，Phase 3 跳过 LLM 调用。"""
+        from src.aqueduct.engine.nodes.ddl import node_ddl
+
+        state = {
+            "requirement": "test",
+            "mode": "dev",
+            "metadata": {"requirement_name": "test_req"},
+            "errors": [],
+            "artifacts": [],
+            "design_scheme": "some design",
+            "ddl_content": "CREATE TABLE test (id INT)",
+            "ddl_file": "output/Phase3-表结构.sql",
+        }
+
+        result = node_ddl(state)
+
+        # DDL 内容未变
+        assert result["ddl_content"] == "CREATE TABLE test (id INT)"
+        assert result["ddl_file"] == "output/Phase3-表结构.sql"
+        assert result["metadata"]["ddl_done"] == "true"
+
+    def test_ddl_fallback_when_not_produced(self):
+        """DDL 未在合并调用中产出时，Phase 3 独立生成（通过 mock LLM）。"""
+        from src.aqueduct.engine.nodes.ddl import node_ddl
+
+        state = {
+            "requirement": "test",
+            "mode": "dev",
+            "metadata": {"requirement_name": "test_req"},
+            "errors": [],
+            "artifacts": [],
+            "design_scheme": "some design",
+            "domain_context": "",
+        }
+
+        with (
+            patch("src.aqueduct.engine.nodes.ddl.call_llm", return_value="CREATE TABLE test (id INT)"),
+            patch(
+                "src.aqueduct.engine.nodes.ddl.save_artifact",
+                side_effect=lambda s, n, c: f"output/{n}",
+            ),
+        ):
+            result = node_ddl(state)
+
+        assert result["ddl_content"] == "CREATE TABLE test (id INT)"
+        assert result["metadata"]["ddl_done"] == "true"

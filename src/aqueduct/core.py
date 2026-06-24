@@ -250,15 +250,15 @@ def _run_pipeline(
                 )
                 state["_needs_fix_loop"] = False
             else:
-                logger.info("[task=%s] 审查→修复回环：回到 SQL 阶段重新执行", req_name)
+                logger.info("[task=%s] 审查→修复回环：回到审查阶段重新审查", req_name)
                 state = _run_fix_loop(state)
-                # 回到 sql 节点重新跑
-                sql_idx = next(
-                    (j for j, (name, _) in enumerate(phases) if name == "sql"),
+                # 回到 review 节点重新审查（修复后的 SQL 已在 state 中）
+                review_idx = next(
+                    (j for j, (name, _) in enumerate(phases) if name == "review"),
                     None,
                 )
-                if sql_idx is not None:
-                    i = sql_idx
+                if review_idx is not None:
+                    i = review_idx
                     continue
 
         # 交互确认：在指定阶段完成后暂停等待用户确认

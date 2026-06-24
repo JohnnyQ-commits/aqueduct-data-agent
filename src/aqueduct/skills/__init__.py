@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 _SKILL_MODULES = [
     "code_review",
     "ddl_generate",
+    "design_ddl",
     "design_scheme",
     "dqc_quality",
     "report_delivery",

@@ -131,7 +131,9 @@ class ClaudeLLM(BaseLLM):
 
     @property
     def max_context(self) -> int:
-        return self.CONTEXT_WINDOWS.get(self._tier, 200_000)
+        from ..config.settings import get_settings
+
+        return get_settings().llm_max_context_tokens
 
     def chat(self, messages: list[LLMMessage], **kwargs: Any) -> LLMResponse:
         """发送对话请求并返回结构化响应。

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
 from ...skills.base import SkillContext
@@ -86,8 +87,8 @@ def node_sql(state: WorkflowState) -> WorkflowState:
 
         # 自动运行 SQL 校验
         _auto_validate(state, sql_path)
-        # 自动运行血缘解析
-        _auto_lineage(state, sql_path)
+        # 自动运行血缘解析（异步，不阻塞 review）
+        _auto_lineage_async(state, sql_path)
         # 自动运行成本预估
         _auto_cost_estimate(state, sql_path)
 
@@ -171,12 +172,12 @@ def _auto_validate(state: WorkflowState, sql_path: str) -> None:
         logger.warning("SQL 校验失败，跳过", exc_info=True)
 
 
-def _auto_lineage(state: WorkflowState, sql_path: str) -> None:
-    """用 LLM 生成字段级血缘图（替代正则解析）。
+def _auto_lineage_async(state: WorkflowState, sql_path: str) -> None:
+    """用 LLM 生成字段级血缘图（异步版本，OPT-5）。
 
-    正则解析无法处理 CASE/WHEN、COALESCE、子查询、CTE 链等常见 ETL 模式，
-    且 LineageTool.execute() 从未调用 parse_field_lineage()，字段级血缘永远为空。
-    改为让 LLM 读 SQL 内容，生成 Mermaid 图 + 字段映射表。
+    在后台线程中执行 LLM 调用，不阻塞后续 review 阶段。
+    Future 存储在 state["_lineage_future"] 中，
+    在 node_report 开始前通过 wait_for_lineage() 等待完成。
     """
     try:
         abs_path = _resolve_sql_path(state, sql_path)
@@ -202,11 +203,46 @@ def _auto_lineage(state: WorkflowState, sql_path: str) -> None:
         prompt = tpl_path.read_text(encoding="utf-8")
         prompt = prompt.replace("{sql_content}", sql_content)
 
-        result = call_llm(state, "lineage", prompt)
-        save_artifact(state, "Phase4-字段级血缘图.md", result)
-        logger.info("LLM 血缘生成完成: %d 字符", len(result))
+        # 在后台线程中执行 LLM 调用
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(_run_lineage_llm, state, prompt)
+        state["_lineage_future"] = future
+        state["_lineage_executor"] = executor
+        logger.info("血缘 LLM 调用已在后台启动（不阻塞 review）")
     except Exception:
-        logger.warning("LLM 血缘生成失败，跳过", exc_info=True)
+        logger.warning("LLM 血缘生成启动失败，跳过", exc_info=True)
+
+
+def _run_lineage_llm(state: WorkflowState, prompt: str) -> str:
+    """在线程中执行的 LLM 血缘生成。"""
+    result = call_llm(state, "lineage", prompt)
+    save_artifact(state, "Phase4-字段级血缘图.md", result)
+    logger.info("LLM 血缘生成完成: %d 字符", len(result))
+    return result
+
+
+def wait_for_lineage(state: WorkflowState) -> None:
+    """等待后台血缘 LLM 调用完成（OPT-5）。
+
+    在需要血缘产出物的节点（如 report）前调用。
+    """
+    future: Future | None = state.get("_lineage_future")
+    executor: ThreadPoolExecutor | None = state.get("_lineage_executor")
+
+    if future is None:
+        return
+
+    try:
+        future.result(timeout=300)  # 最多等待 5 分钟
+        logger.info("后台血缘生成已完成")
+    except Exception:
+        logger.warning("后台血缘生成异常，不阻塞流程", exc_info=True)
+    finally:
+        # 清理线程资源
+        state.pop("_lineage_future", None)
+        if executor:
+            executor.shutdown(wait=False)
+            state.pop("_lineage_executor", None)
 
 
 def _auto_cost_estimate(state: WorkflowState, sql_path: str) -> None:

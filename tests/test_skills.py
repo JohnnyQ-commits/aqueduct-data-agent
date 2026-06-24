@@ -16,6 +16,7 @@ class TestSkillRegistry:
         expected = [
             "requirement_clarify",
             "design_scheme",
+            "design_ddl",
             "ddl_generate",
             "sql_develop",
             "code_review",
@@ -36,7 +37,7 @@ class TestSkillRegistry:
 
     def test_list_skills_returns_all(self):
         skills = list_skills()
-        assert len(skills) >= 7
+        assert len(skills) >= 8
 
 
 class TestSkillExecution:
@@ -61,6 +62,16 @@ class TestSkillExecution:
 
     def test_design_scheme_execution(self):
         skill = get_skill("design_scheme")
+        context = SkillContext(
+            input={"requirement_doc": "查询工单数据", "domain_context": ""},
+            state={},
+        )
+        result = skill.execute(context)
+        assert result.success
+        assert "prompt" in result.data
+
+    def test_design_ddl_execution(self):
+        skill = get_skill("design_ddl")
         context = SkillContext(
             input={"requirement_doc": "查询工单数据", "domain_context": ""},
             state={},

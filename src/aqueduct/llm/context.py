@@ -47,7 +47,7 @@ class ContextManager:
             budget: 上下文预算。未指定时使用默认值。
         """
         self._model = model
-        self._budget = budget or ContextBudget(max_tokens=model.max_context)
+        self._budget = budget or ContextBudget(max_tokens=self._model.max_context)
         self._messages: list[LLMMessage] = []
 
     @property

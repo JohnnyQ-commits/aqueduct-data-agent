@@ -11,6 +11,7 @@ from ...skills.registry import get_skill
 from ...tools.registry import get_tool
 from ..state import WorkflowState
 from .helpers import call_llm, save_artifact
+from .sql import wait_for_lineage
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,9 @@ def node_report(state: WorkflowState) -> WorkflowState:
     req_name = state.get("metadata", {}).get("requirement_name", "unknown")
     start = time.time()
     logger.info("[task=%s, phase=6] 报告交付开始", req_name)
+
+    # OPT-5: 等待后台血缘 LLM 调用完成（在 Phase 4 中异步启动）
+    wait_for_lineage(state)
 
     try:
         inp = {

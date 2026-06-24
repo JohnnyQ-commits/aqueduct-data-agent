@@ -35,6 +35,9 @@ MEDIUM_TASKS = frozenset(
         "scheme_write",  # 方案编写
         "ddl_gen",  # DDL 生成
         "doc_gen",  # 文档输出
+        "dqc_gen",  # DQC 测试用例生成
+        "design_ddl",  # 方案+DDL 合并生成（OPT-4）
+        "lineage",  # 字段级血缘生成（结构化提取，不需要 Opus）
     ]
 )
 
@@ -44,7 +47,6 @@ HEAVY_TASKS = frozenset(
         "sql_review",  # SQL 质检
         "code_review",  # 代码审查
         "sql_fix",  # 审查→修复循环
-        "lineage",  # 字段级血缘生成
     ]
 )
 
