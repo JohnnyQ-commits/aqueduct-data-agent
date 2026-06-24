@@ -196,11 +196,11 @@ def _run_pipeline(
     req_name = state.get("metadata", {}).get("requirement_name", "unknown")
     metadata = state.get("metadata", {})
     output_dir_name = metadata.get("output_dir") or req_name
-    from .engine.nodes.helpers import _PROJECT_ROOT
+    from .config.settings import get_settings
 
     out_dir = Path(output_dir_name)
     if not out_dir.is_absolute():
-        out_dir = _PROJECT_ROOT / "output" / out_dir.name
+        out_dir = get_settings().project_root / "output" / out_dir
     task_handler = setup_task_logging(req_name, out_dir)
 
     logger.info("[task=%s] 管道启动: phases=%d", req_name, total)

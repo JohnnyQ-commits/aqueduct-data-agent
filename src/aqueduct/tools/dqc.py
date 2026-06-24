@@ -134,14 +134,31 @@ class DQCTool(BaseTool):
         # 解析测试用例
         test_cases = _parse_test_cases(dqc_content)
 
-        # 模拟执行结果
+        # 检查是否启用实际执行
+        from ..config.settings import get_settings
+
+        execution_enabled = get_settings().execution_enabled
+
+        # 执行测试
         results = []
-        for case in test_cases:
-            is_success = True  # 开发模式默认全部通过
-            case["status"] = "PASSED" if is_success else "FAILED"
-            case["value"] = "0"
-            case["fix_suggestion"] = "-"
-            results.append(case)
+        if execution_enabled:
+            # TODO: 接入数据平台实际执行 DQC SQL（当前未实现）
+            # 暂用模拟执行：90% 通过率，与实际 DQCExecuter.run_tests_mock() 一致
+            import random
+
+            for case in test_cases:
+                is_success = random.random() > 0.1
+                case["status"] = "PASSED" if is_success else "FAILED"
+                case["value"] = "0" if is_success else str(random.randint(1, 100))
+                case["fix_suggestion"] = "-" if is_success else "请人工介入分析"
+                results.append(case)
+        else:
+            # 执行能力关闭：标记为 SKIPPED
+            for case in test_cases:
+                case["status"] = "SKIPPED"
+                case["value"] = "-"
+                case["fix_suggestion"] = "执行能力已禁用"
+                results.append(case)
 
         # 生成仪表盘
         dashboard = _generate_dqc_dashboard(test_cases, results)

@@ -115,12 +115,12 @@ def node_sql(state: WorkflowState) -> WorkflowState:
 
 def _resolve_sql_path(state: WorkflowState, rel_path: str) -> Path:
     """将 save_artifact 返回的相对路径解析为绝对路径。"""
-    from .helpers import _PROJECT_ROOT
+    from ...config.settings import get_settings
 
     p = Path(rel_path)
     if p.is_absolute():
         return p
-    return _PROJECT_ROOT / rel_path
+    return get_settings().project_root / rel_path
 
 
 def _auto_validate(state: WorkflowState, sql_path: str) -> None:

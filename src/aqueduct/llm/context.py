@@ -74,12 +74,16 @@ class ContextManager:
             message: 要添加的消息。
 
         Returns:
-            True 表示添加成功，False 表示消息被截断丢弃。
+            True 表示添加成功，False 表示消息因空间不足被丢弃。
         """
         self._messages.append(message)
         # 如果超出预算，自动截断
         if self.token_count > self._budget.available:
+            old_count = len(self._messages)
             self._truncate()
+            # 如果新消息在截断后被移除（消息列表未变长），说明消息被丢弃
+            if len(self._messages) == old_count - 1:
+                return False
         return True
 
     def add_many(self, messages: list[LLMMessage]) -> None:
