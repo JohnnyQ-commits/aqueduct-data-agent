@@ -44,6 +44,19 @@ class CodeReviewSkill(BaseSkill):
             "validation_result", {}
         )
 
+        # 将 validation_result dict 格式化为可读文本，避免 str.format() 渲染 Python repr
+        if isinstance(validation_result, dict):
+            issues = validation_result.get("issues", [])
+            if issues:
+                validation_text = "\n".join(
+                    f"- [{i.get('level', 'INFO')}] Line {i.get('line', '?')}: {i.get('message', '')}"
+                    for i in issues
+                )
+            else:
+                validation_text = "未发现校验问题"
+        else:
+            validation_text = str(validation_result)
+
         # 加载 Prompt 模板
         prompt = self.load_prompt_template(
             requirement_desc=requirement_desc,
@@ -51,7 +64,7 @@ class CodeReviewSkill(BaseSkill):
             changed_sql=changed_sql,
             sql_content=sql_content,
             domain_context=context.state.get("domain_context", ""),
-            validation_result=validation_result,
+            validation_result=validation_text,
         )
 
         return SkillResult(

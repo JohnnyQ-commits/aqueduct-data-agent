@@ -64,12 +64,56 @@ class RecoveryStrategy:
     def classify_error(self, error: Exception) -> ErrorSeverity:
         """根据异常类型分类错误严重程度。
 
+        优先检查异常类型层次（基于 aqueduct 自定义异常），
+        无法通过类型判断时 fallback 到关键词字符串匹配。
+
         Args:
             error: 捕获的异常。
 
         Returns:
             错误严重程度枚举值。
         """
+        # 优先：基于异常类型分类
+        from ..exceptions import (
+            LLMError,
+            SkillError,
+            ToolError,
+            WorkflowError,
+            WorkflowHaltError,
+        )
+
+        # WorkflowHaltError 一定是致命错误
+        if isinstance(error, WorkflowHaltError):
+            return ErrorSeverity.FATAL
+
+        # 已知可重试的异常类型（网络连接类，非文件类）
+        if isinstance(error, (ConnectionError, TimeoutError)):
+            return ErrorSeverity.TRANSIENT
+
+        # FileNotFoundError / ModuleNotFoundError：资源不存在，属于校验错误
+        if isinstance(error, (FileNotFoundError, ModuleNotFoundError)):
+            return ErrorSeverity.VALIDATION
+
+        # LLM 错误：超时属于临时错误，其他按消息判断
+        if isinstance(error, LLMError):
+            msg = str(error).lower()
+            if "timeout" in msg or "rate limit" in msg or "429" in msg:
+                return ErrorSeverity.TRANSIENT
+            # 其他 LLM 错误默认为致命
+            return ErrorSeverity.FATAL
+
+        # 工具/技能校验错误
+        if isinstance(error, (ToolError, SkillError)):
+            msg = str(error).lower()
+            if "not found" in msg or "missing" in msg or "未注册" in msg:
+                return ErrorSeverity.VALIDATION
+            return ErrorSeverity.FATAL
+
+        # WorkflowError（非 Halt）：校验类错误
+        if isinstance(error, WorkflowError):
+            return ErrorSeverity.VALIDATION
+
+        # Fallback：字符串关键词匹配
         error_msg = str(error).lower()
 
         # 临时错误：网络相关、超时、限流

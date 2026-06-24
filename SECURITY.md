@@ -6,8 +6,8 @@ As Aqueduct is in active development (pre-1.0), we only support the latest relea
 
 | Version | Supported |
 |---------|-----------|
-| 0.3.x   | ✅        |
-| < 0.3   | ❌        |
+| 0.4.x   | ✅        |
+| < 0.4   | ❌        |
 
 ## Reporting a Vulnerability
 
@@ -17,7 +17,7 @@ If you discover a security vulnerability in Aqueduct, please report it responsib
 
 ### How to Report
 
-Send an email to: **<johnnyq@example.com>**
+Send an email to: **<security@aqueduct.dev>**
 
 Please include:
 

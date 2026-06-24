@@ -66,7 +66,14 @@ def node_report(state: WorkflowState) -> WorkflowState:
         # 生成提效看板
         try:
             prod_tool = get_tool("productivity")
-            prod_result = prod_tool.execute()
+            dqc_results = state.get("dqc_result") or {}
+            dqc_data = dqc_results.get("results", []) if isinstance(dqc_results, dict) else []
+            prod_result = prod_tool.execute(
+                dqc_tests_run=len(dqc_data),
+                dqc_auto_fixes=sum(
+                    1 for r in dqc_data if r.get("status") == "PASSED"
+                ),
+            )
             if prod_result.success:
                 board_content = prod_result.data.get("report", "")
                 if board_content:

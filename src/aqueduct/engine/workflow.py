@@ -7,6 +7,20 @@
 - 兼容 LangGraph StateGraph API（后续可无缝迁移）
 - 节点无 Prompt、无业务逻辑
 - 支持错误恢复和重试
+
+---
+
+### 架构决策记录 (ADR-001): workflow.py vs core.py 双引擎共存
+
+- **状态**: 已决定（deferred）
+- **背景**: 项目同时存在两个执行引擎：
+  - `core.py` 线性管道 `_run_pipeline()`：实际运行所有 Phase
+  - `workflow.py` DAG 引擎 `StateGraph`：功能完整但未被调用
+- **决策**: 保留 `workflow.py` 作为未来扩展点，当前不接入核心管道。
+  线性管道已满足 7 Phase 串行需求，DAG 引擎的价值在于未来引入
+  并行 Phase 和条件分支（如 Phase 4.5 审查→修复循环的 DAG 化）。
+- **后果**: 两份引擎代码需同步维护。如 Phase 3 周期内决定删除，
+  需同时清理 `tests/test_workflow.py` 和 `state.py` 的相关引用。
 """
 
 from __future__ import annotations

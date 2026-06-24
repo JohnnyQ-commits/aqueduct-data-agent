@@ -82,8 +82,10 @@ class CostEstimator:
             for risk in self.risks:
                 report.append(f"  - ⚠️ {risk}")
 
-        report.append("- **预估扫描量**: 约 500GB - 2TB (基于上游表历史日增量预估)")
-        report.append("- **资源预警级别**: " + ("🔴 高" if self.risks else "🟢 低"))
+        if self.risks:
+            report.append("- **资源预警级别**: 🔴 高")
+        else:
+            report.append("- **资源预警级别**: 🟢 低")
         return "\n".join(report)
 
     def update_design_doc(self, design_file: str | Path) -> bool:

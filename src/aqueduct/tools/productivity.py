@@ -60,9 +60,10 @@ class ProductivityTool(BaseTool):
             except Exception:
                 pass
 
-        # 3. 模拟 DQC 历史数据
-        metrics["dqc_tests_run"] = 24
-        metrics["dqc_auto_fixes"] = 18
+        # 3. DQC 数据（从实际执行结果获取，无数据时标记为 0）
+        # dqc_tests_run 和 dqc_auto_fixes 由外部调用方通过 kwargs 传入
+        metrics["dqc_tests_run"] = kwargs.get("dqc_tests_run", 0)
+        metrics["dqc_auto_fixes"] = kwargs.get("dqc_auto_fixes", 0)
 
         # 4. 计算节省工时
         saved_mins = (
@@ -82,6 +83,11 @@ class ProductivityTool(BaseTool):
         )
         rating = "极度活跃" if score > 80 else "表现优异" if score > 50 else "持续进化"
 
+        dqc_display = (
+            f"`{auto_fix_rate}%`" if metrics["dqc_tests_run"] else "暂无 DQC 数据"
+        )
+        dqc_note = "DQC 闭环自愈能力表现" if metrics["dqc_tests_run"] else "暂无实际执行数据"
+
         report = "\n".join(
             [
                 "# Data Agent 提效看板 (Productivity Dashboard)",
@@ -91,7 +97,7 @@ class ProductivityTool(BaseTool):
                 "| 指标项 | 统计数值 | 提效说明 |",
                 "| :--- | :--- | :--- |",
                 f"| **累计节省工时** | `{metrics['estimated_hours_saved']} 小时` | 相当于节省了约 {round(metrics['estimated_hours_saved'] / 8, 1)} 个开发人天 |",
-                f"| **自动修复成功率** | `{auto_fix_rate}%` | DQC 闭环自愈能力表现 |",
+                f"| **自动修复成功率** | {dqc_display} | {dqc_note} |",
                 "| **交付件自动化率** | `100%` | 所有 DDL/DQC/文档均由 Agent 自动生成 |",
                 "",
                 "## 2. 产出物明细",

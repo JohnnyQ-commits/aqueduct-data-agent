@@ -256,6 +256,7 @@ def _run_pipeline(
             and not on_confirm(state)
         ):
             logger.info("用户确认停止工作流")
+            halted = True
             break
 
         i += 1
