@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-06-23
+## [0.4.0] - 2026-06-24
 
 ### Added
 
@@ -26,10 +26,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **New `sql_fix.tpl.md`**: SQL fix prompt template for review-fix loop
 - **New `utils/task_logger.py`**: Task-level log file management module
 - **New `LLMTimeoutError` exception**: Inherits from `LLMError`
+- **tests/test_core.py**: New test module with 10 tests covering core pipeline execution (`_run_pipeline`) and review-fix loop (`_run_fix_loop`)
 
 ### Fixed
 
 - **Phase4 empty SQL bug**: Root cause chain `timeout silently swallowed -> invalid SQL saved -> tools validate garbage -> pipeline continues`. Solved with 4-layer defense: timeout raises exception + SQL validity check + tool input pre-validation + pipeline circuit breaker
+
+**Phase 1 — 紧急修复 (6 items)**
+
+- **MemoryError naming conflict**: Renamed `MemoryError` → `KnowledgeRecallError` to avoid shadowing Python built-in `MemoryError`
+- **WorkflowHaltError**: Added dedicated exception for pipeline halt conditions, replacing string-based error detection
+- **recall.py recall() method**: Fixed incorrect method signature that prevented KnowledgeRecall from being called
+- **report.py logic inversion**: Fixed inverted condition that showed "execution disabled" when execution was actually enabled
+- **Template safe_substitute**: Replaced `str.replace()` with `string.Template.safe_substitute()` to prevent KeyError on missing placeholders
+- **sql.py None guards**: Added None checks before accessing `sql_content` to prevent AttributeError when Phase 4 produces no SQL
+
+**Phase 2 — 重要修复 (9 items)**
+
+- **Unified _PROJECT_ROOT**: Removed duplicate `_PROJECT_ROOT` definitions across 3 files; single source of truth now in `config/settings.py`
+- **ModelRouter model tiers**: Haiku/Sonnet/Opus now use distinct model IDs from settings instead of all defaulting to the same model
+- **Path truncation fix**: `get_output_dir()` now preserves full subpath instead of extracting only the filename
+- **save_artifact path traversal**: Added `Path(filename).name` sanitization to prevent directory traversal in artifact filenames
+- **fix_loop iteration protection**: Added `fix_iterations` check against `max_fix_iterations` to prevent infinite review-fix loops
+- **context.py add() return**: `add()` now returns `False` when message is truncated away after budget overflow
+- **claude.py temp file security**: Changed from predictable `.claude_tmp/` to `tempfile.mkdtemp()` with cleanup
+- **dqc.py hardcoded is_success**: Removed hardcoded `is_success=True`; now checks `execution_enabled` from settings
+- **Skills import chain**: Replaced fragile sequential imports with `importlib.import_module` in try/except loop per module
+
+**Phase 3 — 改进提升 (fixes)**
+
+- **store.py score normalization**: Capped similarity score at 1.0 via `min(1.0, total_matches / max_possible)`
+- **code_review.py dict repr**: Pre-formats `validation_result` dict to readable markdown before passing to LLM template
+- **classify_error exception types**: `recovery.py` now checks exception type hierarchy before string keyword fallback
+- **Eliminated fabricated data**: Removed hardcoded scan volume from `estimator.py`; replaced hardcoded DQC counts in `productivity.py` with actual state data
 
 ### Changed
 
@@ -37,6 +66,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Settings` added `max_fix_iterations`, `llm_max_retries`, `external_sql_path` config entries
 - `Aqueduct.dev()` added `external_sql_path` parameter
 - CLI `dev` command added `--sql-file` parameter
+- **MCP protocol compliance**: Added JSON-RPC 2.0 initialize handshake, process caching, and proper `close()` in `mcp/client.py`
+- **CI coverage threshold**: Added `--cov-fail-under=50` to CI pipeline
+- **WorkflowState sub-types**: Added `PhaseContext`, `PhaseArtifacts`, `ChangeManagementState` TypedDict sub-types for documentation
+- **workflow.py ADR**: Added Architecture Decision Record explaining core.py vs workflow.py dual-engine coexistence
+- **SECURITY.md**: Updated version table to 0.4.x and contact email to security@aqueduct.dev
+- **pyproject.toml**: Version synced from 0.3.1 to 0.4.0
 
 ## [0.3.1] - 2026-06-17
 

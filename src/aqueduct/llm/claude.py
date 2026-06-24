@@ -242,6 +242,8 @@ class ClaudeLLM(BaseLLM):
         max_retries: int = 2,
     ) -> LLMResponse:
         """带重试的 CLI 调用实现。"""
+        from ..config.settings import get_settings
+
         # 拼接所有消息为单个 prompt（system 消息作为前缀）
         parts = []
         for msg in messages:
@@ -263,9 +265,8 @@ class ClaudeLLM(BaseLLM):
         # 3. stdout/stderr 通过文件句柄重定向（避免 pipe 挂起问题）
         # 4. --bare 跳过 hooks/权限检查，避免等待用户确认
 
-        # 将 prompt 和输出放到项目临时目录（路径短且安全）
-        tmp_dir = Path(__file__).resolve().parent.parent.parent.parent / ".claude_tmp"
-        tmp_dir.mkdir(exist_ok=True)
+        # 将 prompt 和输出放到系统临时目录（避免项目根目录残留临时文件）
+        tmp_dir = Path(tempfile.mkdtemp(prefix="aqueduct_claude_"))
 
         timeout = 600  # 单次超时时间（秒）
         last_error: Exception | None = None
@@ -317,7 +318,7 @@ class ClaudeLLM(BaseLLM):
                         stdout=stdout_file,
                         stderr=stderr_file,
                         timeout=timeout,
-                        cwd=Path(__file__).resolve().parent.parent.parent.parent,
+                        cwd=str(get_settings().project_root),
                     )
 
                 # 从临时文件读取输出（UTF-8 编码）
@@ -390,6 +391,14 @@ class ClaudeLLM(BaseLLM):
                             os.unlink(path)
                     except OSError:
                         pass
+
+        # 清理临时目录
+        try:
+            import shutil
+
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
 
         # 所有重试均失败
         raise last_error  # type: ignore[misc]

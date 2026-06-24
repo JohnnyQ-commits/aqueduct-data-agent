@@ -7,6 +7,20 @@
 - 兼容 LangGraph StateGraph API（后续可无缝迁移）
 - 节点无 Prompt、无业务逻辑
 - 支持错误恢复和重试
+
+---
+
+### 架构决策记录 (ADR-001): workflow.py vs core.py 双引擎共存
+
+- **状态**: 已决定（deferred）
+- **背景**: 项目同时存在两个执行引擎：
+  - `core.py` 线性管道 `_run_pipeline()`：实际运行所有 Phase
+  - `workflow.py` DAG 引擎 `StateGraph`：功能完整但未被调用
+- **决策**: 保留 `workflow.py` 作为未来扩展点，当前不接入核心管道。
+  线性管道已满足 7 Phase 串行需求，DAG 引擎的价值在于未来引入
+  并行 Phase 和条件分支（如 Phase 4.5 审查→修复循环的 DAG 化）。
+- **后果**: 两份引擎代码需同步维护。如 Phase 3 周期内决定删除，
+  需同时清理 `tests/test_workflow.py` 和 `state.py` 的相关引用。
 """
 
 from __future__ import annotations
@@ -15,7 +29,7 @@ import logging
 from collections import deque
 from collections.abc import Callable
 
-from ..exceptions import WorkflowError
+from ..exceptions import WorkflowError, WorkflowHaltError
 from .recovery import RecoveryStrategy
 from .state import WorkflowState
 
@@ -166,9 +180,14 @@ class CompiledWorkflow:
 
             # 执行节点
             if node_name in self._nodes:
-                state = self._execute_node(node_name, state)
+                try:
+                    state = self._execute_node(node_name, state)
+                except WorkflowHaltError as e:
+                    state.setdefault("errors", []).append(str(e))
+                    logger.warning("工作流因致命错误终止于节点 '%s': %s", node_name, e)
+                    break
 
-                # 检查是否有致命错误导致终止
+                # 降级辅助检查：节点未抛 WorkflowHaltError 但错误消息含终止标记
                 if state.get("errors"):
                     last_error = state["errors"][-1]
                     if "终止" in last_error or "halt" in last_error.lower():
@@ -218,6 +237,8 @@ class CompiledWorkflow:
             try:
                 logger.debug("执行节点 '%s'（第 %d 次）", node_name, attempt)
                 return node_func(state)
+            except WorkflowHaltError:
+                raise  # 致命错误不重试，直接传播
             except Exception as e:
                 result = self._recovery.recover(node_name, e, attempt)
 

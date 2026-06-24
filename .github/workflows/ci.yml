@@ -50,7 +50,7 @@ jobs:
 
       - name: Run tests with coverage
         run: |
-          python -m pytest tests/ --cov=src/aqueduct --cov-report=xml --cov-report=term-missing -v
+          python -m pytest tests/ --cov=src/aqueduct --cov-report=xml --cov-report=term-missing --cov-fail-under=50 -v
 
       - name: Upload coverage to GitHub
         if: matrix.python-version == '3.10'

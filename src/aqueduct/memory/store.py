@@ -261,6 +261,6 @@ class MemoryStore:
                 if kw in metric_text:
                     total_matches += 2
 
-        # 归一化到 0.0 ~ 1.0
-        max_possible = total_keywords * 3  # 最大可能匹配数
-        return total_matches / max_possible if max_possible > 0 else 0.0
+        # 归一化到 0.0 ~ 1.0（同一关键词可匹配多个实体/属性，实际分数可超过 max_possible）
+        max_possible = total_keywords * 3  # 单关键词单次匹配最大权重
+        return min(1.0, total_matches / max_possible) if max_possible > 0 else 0.0

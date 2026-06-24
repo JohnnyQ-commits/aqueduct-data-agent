@@ -115,12 +115,12 @@ def node_sql(state: WorkflowState) -> WorkflowState:
 
 def _resolve_sql_path(state: WorkflowState, rel_path: str) -> Path:
     """将 save_artifact 返回的相对路径解析为绝对路径。"""
-    from .helpers import _PROJECT_ROOT
+    from ...config.settings import get_settings
 
     p = Path(rel_path)
     if p.is_absolute():
         return p
-    return _PROJECT_ROOT / rel_path
+    return get_settings().project_root / rel_path
 
 
 def _auto_validate(state: WorkflowState, sql_path: str) -> None:
@@ -139,11 +139,13 @@ def _auto_validate(state: WorkflowState, sql_path: str) -> None:
 
         validator = get_tool("validator")
         validation_result = validator.execute(sql_file=str(abs_path))
-        state["validation_result"] = validation_result.data
 
         if validation_result.data is None:
             logger.warning("SQL 校验返回空结果: %s", validation_result.error)
+            state["validation_result"] = {}
             return
+
+        state["validation_result"] = validation_result.data
 
         vr = validation_result.data
         report_lines = [
@@ -223,11 +225,13 @@ def _auto_cost_estimate(state: WorkflowState, sql_path: str) -> None:
 
         cost_tool = get_tool("estimator")
         cost_result = cost_tool.execute(sql_file=str(abs_path))
-        state["cost_result"] = cost_result.data
 
         if cost_result.data is None:
             logger.warning("成本预估返回空结果: %s", cost_result.error)
+            state["cost_result"] = {}
             return
+
+        state["cost_result"] = cost_result.data
 
         report_md = cost_result.data.get("report", "")
         if report_md:

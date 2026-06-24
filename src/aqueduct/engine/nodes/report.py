@@ -37,9 +37,9 @@ def node_report(state: WorkflowState) -> WorkflowState:
             "sql_file": state.get("sql_file", ""),
             "review_result": state.get("review_result", ""),
             "dqc_result": state.get("dqc_result", ""),
-            "validation_result": state.get("validation_result", {}),
-            "lineage_result": state.get("lineage_result", {}),
-            "cost_result": state.get("cost_result", {}),
+            "validation_result": state.get("validation_result") or {},
+            "lineage_result": state.get("lineage_result") or {},
+            "cost_result": state.get("cost_result") or {},
             "artifacts": state.get("artifacts", []),
             "domain_context": state.get("domain_context", ""),
         }
@@ -66,7 +66,14 @@ def node_report(state: WorkflowState) -> WorkflowState:
         # 生成提效看板
         try:
             prod_tool = get_tool("productivity")
-            prod_result = prod_tool.execute()
+            dqc_results = state.get("dqc_result") or {}
+            dqc_data = dqc_results.get("results", []) if isinstance(dqc_results, dict) else []
+            prod_result = prod_tool.execute(
+                dqc_tests_run=len(dqc_data),
+                dqc_auto_fixes=sum(
+                    1 for r in dqc_data if r.get("status") == "PASSED"
+                ),
+            )
             if prod_result.success:
                 board_content = prod_result.data.get("report", "")
                 if board_content:
@@ -101,8 +108,8 @@ def _generate_delivery_report(state: WorkflowState) -> str:
     req_name = state.get("metadata", {}).get("requirement_name", "unknown")
     artifacts = state.get("artifacts", [])
     errors = state.get("errors", [])
-    vr = state.get("validation_result", {})
-    lr = state.get("lineage_result", {})
+    vr = state.get("validation_result") or {}
+    lr = state.get("lineage_result") or {}
 
     lines = [
         f"# {req_name} - 项目交付总报告",
@@ -193,8 +200,9 @@ def _generate_delivery_report(state: WorkflowState) -> str:
         "Phase6-知识沉淀.md",
         "Phase6-提效看板.md",
     ]:
-        if not any(expected in a for a in artifacts):
-            lines.append(f"| {expected} | 产出物 | 已完成 |")
+        found = any(expected in a for a in artifacts)
+        status = "已完成" if found else "缺失"
+        lines.append(f"| {expected} | 产出物 | {status} |")
     lines.append("")
 
     if errors:

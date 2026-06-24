@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import subprocess
 from typing import Any
@@ -26,6 +27,10 @@ class MCPClient:
 
     通过 stdio 协议连接到用户配置的 MCP Server，
     调用远程工具获取表结构、执行 SQL 等。
+
+    实现细节:
+    - 进程缓存：同一 Server 共享子进程，避免每次调用新建
+    - JSON-RPC 2.0 握手：首次调用前发送 initialize + initialized 通知
     """
 
     def __init__(self, config: MCPConfig | None = None, server_name: str | None = None) -> None:
@@ -47,6 +52,79 @@ class MCPClient:
         if self.server_config is None:
             raise RuntimeError(f"Server '{self.server_name}' 配置不存在。")
 
+        # 进程缓存和初始化状态
+        self._process: subprocess.Popen | None = None
+        self._initialized: bool = False
+
+    def _get_env(self) -> dict[str, str]:
+        """获取当前环境变量。"""
+        import os
+
+        return dict(os.environ)
+
+    def _ensure_process(self) -> subprocess.Popen:
+        """确保子进程已启动，未启动则创建。"""
+        if self._process is not None and self._process.poll() is None:
+            return self._process
+
+        command = self.server_config.get("command", "")
+        args = self.server_config.get("args", [])
+        env = {**self._get_env(), **self.server_config.get("env", {})}
+
+        self._process = subprocess.Popen(
+            [command] + args,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            text=True,
+        )
+        self._initialized = False
+        return self._process
+
+    def _send_request(self, request: dict[str, Any]) -> dict[str, Any]:
+        """发送 JSON-RPC 请求并解析响应。"""
+        process = self._ensure_process()
+        assert process.stdin and process.stdout
+
+        process.stdin.write(json.dumps(request) + "\n")
+        process.stdin.flush()
+
+        response_line = process.stdout.readline()
+        if not response_line:
+            raise RuntimeError("MCP Server 进程已终止")
+
+        return json.loads(response_line)
+
+    def initialize(self) -> None:
+        """执行 MCP 初始化握手。
+
+        发送 initialize 请求，收到响应后发送 initialized 通知。
+        """
+        init_request = {
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-03-26",
+                "capabilities": {},
+                "clientInfo": {"name": "aqueduct", "version": "0.4.0"},
+            },
+        }
+        self._send_request(init_request)
+
+        # 发送 initialized 通知（无 id，无返回值）
+        notification = {
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+        }
+        process = self._ensure_process()
+        assert process.stdin
+        process.stdin.write(json.dumps(notification) + "\n")
+        process.stdin.flush()
+
+        self._initialized = True
+
     def _run_mcp_tool(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         """调用 MCP Server 的工具（同步版本）。
 
@@ -57,9 +135,9 @@ class MCPClient:
         Returns:
             工具返回结果。
         """
-        command = self.server_config.get("command", "")
-        args = self.server_config.get("args", [])
-        env = self.server_config.get("env", {})
+        # 首次调用前自动初始化
+        if not self._initialized:
+            self.initialize()
 
         # 构建 MCP 工具调用请求（JSON-RPC 格式）
         request = {
@@ -72,31 +150,25 @@ class MCPClient:
             },
         }
 
-        # 通过 subprocess 调用 MCP Server
-        # 注意：这是简化实现，实际应使用 mcp SDK 的 Client 类
-        process = subprocess.run(
-            [command] + args,
-            input=json.dumps(request),
-            capture_output=True,
-            text=True,
-            env={**self._get_env(), **env},
-            timeout=60,
-        )
-
-        if process.returncode != 0:
-            raise RuntimeError(f"MCP 工具调用失败: {process.stderr}")
-
-        response = json.loads(process.stdout)
+        response = self._send_request(request)
         if "error" in response:
             raise RuntimeError(f"MCP 工具返回错误: {response['error']}")
 
         return response.get("result", {})
 
-    def _get_env(self) -> dict[str, str]:
-        """获取当前环境变量。"""
-        import os
-
-        return dict(os.environ)
+    def close(self) -> None:
+        """关闭子进程，释放资源。"""
+        if self._process is not None:
+            with contextlib.suppress(Exception):
+                self._process.stdin.close()
+            try:
+                self._process.terminate()
+                self._process.wait(timeout=5)
+            except Exception:
+                with contextlib.suppress(Exception):
+                    self._process.kill()
+            self._process = None
+            self._initialized = False
 
     async def get_table_schema(self, database: str, table: str) -> TableSchema:
         """查询表结构。"""
@@ -223,5 +295,6 @@ class SyncMCPClient:
         )
 
     def close(self) -> None:
-        """关闭事件循环。"""
+        """关闭事件循环和 MCP 子进程。"""
+        self._client.close()
         self._loop.close()

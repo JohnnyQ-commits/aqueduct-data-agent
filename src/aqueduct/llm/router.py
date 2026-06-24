@@ -43,6 +43,8 @@ HEAVY_TASKS = frozenset(
         "sql_gen",  # SQL 生成
         "sql_review",  # SQL 质检
         "code_review",  # 代码审查
+        "sql_fix",  # 审查→修复循环
+        "lineage",  # 字段级血缘生成
     ]
 )
 
@@ -68,9 +70,18 @@ class ModelRouter:
             sonnet_model: Sonnet 档模型实例。未指定时自动创建。
             opus_model: Opus 档模型实例。未指定时自动创建。
         """
-        self._haiku = haiku_model or ClaudeLLM()
-        self._sonnet = sonnet_model or ClaudeLLM()
-        self._opus = opus_model or ClaudeLLM()
+        from ..config.settings import get_settings
+
+        settings = get_settings()
+        self._haiku = haiku_model or ClaudeLLM(
+            model_id=settings.default_analysis_model or None,
+        )
+        self._sonnet = sonnet_model or ClaudeLLM(
+            model_id=settings.default_medium_model or None,
+        )
+        self._opus = opus_model or ClaudeLLM(
+            model_id=settings.default_heavy_model or None,
+        )
 
     def route(self, task_type: str) -> BaseLLM:
         """根据任务类型路由到合适的模型。

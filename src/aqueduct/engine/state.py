@@ -2,6 +2,11 @@
 
 使用 TypedDict 定义 LangGraph DAG 节点间传递的状态结构。
 所有节点只负责参数组装和状态透传，无 Prompt、无业务逻辑。
+
+状态按职责拆分为子类型（文档与类型提示用途，WorkflowState 保持扁平兼容）:
+    PhaseContext        — 输入上下文（业务域、需求摘要）
+    PhaseArtifacts      — 产出物（SQL、DDL、审查结果）
+    ChangeManagementState — 变更管理专用字段
 """
 
 from __future__ import annotations
@@ -13,6 +18,57 @@ if sys.version_info >= (3, 11):
     from typing import NotRequired
 else:
     from typing_extensions import NotRequired
+
+
+# === 子类型：输入上下文 ===
+
+
+class PhaseContext(TypedDict, total=False):
+    """输入上下文 — 由 Phase 1 需求理解阶段写入。"""
+
+    domain_id: str  # 匹配的业务域 ID
+    domain_context: str  # 业务域本体模型上下文
+    requirement_summary: str  # 需求摘要
+
+
+# === 子类型：产出物 ===
+
+
+class PhaseArtifacts(TypedDict, total=False):
+    """产出物 — 由 Phase 2-6 各节点写入。"""
+
+    design_scheme: str
+    ddl_content: str
+    sql_content: str
+    sql_file: str
+    review_result: str
+    dqc_result: str
+    validation_result: dict
+    lineage_result: dict
+    cost_result: dict
+    fix_iterations: int
+
+
+# === 子类型：变更管理 ===
+
+
+class ChangeManagementState(TypedDict, total=False):
+    """变更管理专用字段 — 仅在 change 模式下使用。"""
+
+    original_requirement: str
+    new_requirement: str
+    change_description: str
+    change_identification: str
+    change_requirement_doc: str
+    change_sql: str
+    change_review: str
+    change_merge_report: str
+    change_archive: str
+    cr_number: str
+    cr_dir: str
+
+
+# === 主状态（向后兼容，保持扁平结构） ===
 
 
 class WorkflowState(TypedDict):
@@ -29,6 +85,7 @@ class WorkflowState(TypedDict):
         artifacts:   产出文件路径列表
 
     可选字段: 由各个 Phase 节点按需写入。
+    子类型定义见 PhaseContext / PhaseArtifacts / ChangeManagementState。
     """
 
     # === 必填输入 ===
@@ -37,9 +94,9 @@ class WorkflowState(TypedDict):
     errors: list[str]  # 错误消息列表
     artifacts: list[str]  # 产出文件路径列表
 
-    # === 可选：上下文 ===
-    domain_id: NotRequired[str]  # 匹配的业务域 ID
-    domain_context: NotRequired[str]  # 业务域本体模型上下文
+    # === 可选：上下文（见 PhaseContext） ===
+    domain_id: NotRequired[str]
+    domain_context: NotRequired[str]
 
     # === 可选：Phase 2 设计方案 ===
     design_scheme: NotRequired[str]
@@ -70,7 +127,7 @@ class WorkflowState(TypedDict):
     online_sql: NotRequired[str]
     changed_sql: NotRequired[str]
 
-    # === 可选：变更管理 ===
+    # === 可选：变更管理（见 ChangeManagementState） ===
     original_requirement: NotRequired[str]
     new_requirement: NotRequired[str]
     change_description: NotRequired[str]
