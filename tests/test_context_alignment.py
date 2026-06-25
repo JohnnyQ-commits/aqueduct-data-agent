@@ -154,8 +154,8 @@ class TestDeadVariableCleanup:
 
         assert result.success
         prompt = result.data["prompt"]
-        # coding_style 已被移除，模板中不应出现空的"编码风格:"行
-        assert "编码风格:" not in prompt or "编码风格: \n" not in prompt
+        # coding_style 已被移除，模板中不应出现"编码风格:"标签
+        assert "编码风格:" not in prompt
 
 
 class TestPhase1Standardization:
@@ -206,7 +206,7 @@ class TestPhase1Standardization:
 
         assert result.success
         prompt = result.data["prompt"]
-        assert "已知源表:" not in prompt or "已知源表: \n" not in prompt
+        assert "已知源表:" not in prompt
 
 
 class TestPhase6Redundancy:
