@@ -201,3 +201,63 @@ class TestPhase1Standardization:
         assert result.success
         prompt = result.data["prompt"]
         assert "已知源表:" not in prompt or "已知源表: \n" not in prompt
+
+
+class TestPhase6Redundancy:
+    """Phase 6 冗余传递清理测试。"""
+
+    @staticmethod
+    def _make_state() -> dict:
+        return {
+            "requirement": "需求文档",
+            "requirement_summary": "需求摘要",
+            "design_scheme": "设计方案",
+            "ddl_content": "CREATE TABLE t (id bigint)",
+            "ddl_file": "output/ddl.sql",
+            "sql_content": "SELECT 1",
+            "sql_file": "output/sql.sql",
+            "review_result": "审查通过",
+            "dqc_result": "DQC 通过",
+            "validation_result": {"issues": []},
+            "lineage_result": {"mermaid": "graph LR"},
+            "cost_result": {"total_cost": 0.1},
+            "domain_context": "域上下文",
+            "metadata": {"requirement_name": "test"},
+            "errors": [],
+            "artifacts": ["output/test.sql"],
+        }
+
+    def test_report_node_only_passes_used_keys(self):
+        """report 节点应只传递 Skill 实际读取的键。"""
+        state = self._make_state()
+        captured_input = {}
+
+        original_execute = ReportDeliverySkill.execute
+
+        def capture_execute(self_skill, context: SkillContext):
+            inp = context.input if isinstance(context.input, dict) else {}
+            captured_input.update(inp)
+            return original_execute(self_skill, context)
+
+        with patch.object(ReportDeliverySkill, "execute", capture_execute):
+            with patch("src.aqueduct.engine.nodes.report.wait_for_lineage"):
+                with patch("src.aqueduct.engine.nodes.report.call_llm", return_value="报告"):
+                    with patch("src.aqueduct.engine.nodes.report.save_artifact", return_value=""):
+                        with patch("src.aqueduct.tools.registry.get_tool"):
+                            node_report(state)
+
+        # Skill 实际使用的键
+        expected_keys = {
+            "requirement_name", "design_scheme", "ddl_content",
+            "sql_content", "dqc_result", "lineage_result", "domain_context",
+        }
+        # 不应传递的冗余键
+        redundant_keys = {
+            "requirement_doc", "ddl_file", "sql_file",
+            "review_result", "validation_result", "cost_result", "artifacts",
+        }
+
+        for key in redundant_keys:
+            assert key not in captured_input, f"冗余键 {key} 不应被传递"
+        for key in expected_keys:
+            assert key in captured_input, f"必要键 {key} 缺失"

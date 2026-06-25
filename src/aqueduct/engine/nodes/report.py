@@ -32,19 +32,11 @@ def node_report(state: WorkflowState) -> WorkflowState:
     try:
         inp = {
             "requirement_name": state.get("metadata", {}).get("requirement_name", ""),
-            "requirement_summary": state.get("requirement_summary", ""),
-            "requirement_doc": state.get("requirement", ""),
             "design_scheme": state.get("design_scheme", ""),
             "ddl_content": state.get("ddl_content", ""),
-            "ddl_file": state.get("ddl_file", ""),
             "sql_content": state.get("sql_content", ""),
-            "sql_file": state.get("sql_file", ""),
-            "review_result": state.get("review_result", ""),
             "dqc_result": state.get("dqc_result", ""),
-            "validation_result": state.get("validation_result") or {},
             "lineage_result": state.get("lineage_result") or {},
-            "cost_result": state.get("cost_result") or {},
-            "artifacts": state.get("artifacts", []),
             "domain_context": state.get("domain_context", ""),
         }
 
