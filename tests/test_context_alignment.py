@@ -50,10 +50,12 @@ class TestPhase45RequirementDesc:
             captured_input.update(inp)
             return original_execute(self_skill, context)
 
-        with patch.object(CodeReviewSkill, "execute", capture_execute):
-            with patch("src.aqueduct.engine.nodes.helpers.call_llm", return_value="审查结果"):
-                with patch("src.aqueduct.engine.nodes.helpers.save_artifact", return_value="output/test.md"):
-                    node_review(state)
+        with (
+            patch.object(CodeReviewSkill, "execute", capture_execute),
+            patch("src.aqueduct.engine.nodes.helpers.call_llm", return_value="审查结果"),
+            patch("src.aqueduct.engine.nodes.helpers.save_artifact", return_value="output/test.md"),
+        ):
+            node_review(state)
 
         # 核心断言：requirement_desc 必须是摘要而非完整文档
         assert "requirement_desc" in captured_input, "review 节点必须传递 requirement_desc"
@@ -94,14 +96,16 @@ class TestTargetTableExtraction:
             "artifacts": [],
         }
 
-        with patch("src.aqueduct.engine.nodes.requirement._recall_domain_knowledge"):
-            with patch("src.aqueduct.engine.nodes.requirement.get_skill") as mock_skill:
-                mock_skill.return_value.execute.return_value = type(
-                    "R", (), {"success": True, "data": {"prompt": ""}, "error": ""}
-                )()
-                with patch("src.aqueduct.engine.nodes.requirement.call_llm", return_value="摘要"):
-                    with patch("src.aqueduct.engine.nodes.requirement.save_artifact", return_value=""):
-                        node_requirement(state)
+        with (
+            patch("src.aqueduct.engine.nodes.requirement._recall_domain_knowledge"),
+            patch("src.aqueduct.engine.nodes.requirement.get_skill") as mock_skill,
+            patch("src.aqueduct.engine.nodes.requirement.call_llm", return_value="摘要"),
+            patch("src.aqueduct.engine.nodes.requirement.save_artifact", return_value=""),
+        ):
+            mock_skill.return_value.execute.return_value = type(
+                "R", (), {"success": True, "data": {"prompt": ""}, "error": ""}
+            )()
+            node_requirement(state)
 
         assert state.get("target_table") == "dw_report.city_order_stats"
 
@@ -179,12 +183,14 @@ class TestPhase1Standardization:
             captured_input["value"] = context.input
             return original_execute(self_skill, context)
 
-        with patch.object(RequirementClarifySkill, "execute", capture_execute):
-            with patch("src.aqueduct.engine.nodes.requirement._recall_domain_knowledge"):
-                with patch("src.aqueduct.engine.nodes.requirement._extract_target_table", return_value=""):
-                    with patch("src.aqueduct.engine.nodes.requirement.call_llm", return_value="摘要"):
-                        with patch("src.aqueduct.engine.nodes.requirement.save_artifact", return_value=""):
-                            node_requirement(state)
+        with (
+            patch.object(RequirementClarifySkill, "execute", capture_execute),
+            patch("src.aqueduct.engine.nodes.requirement._recall_domain_knowledge"),
+            patch("src.aqueduct.engine.nodes.requirement._extract_target_table", return_value=""),
+            patch("src.aqueduct.engine.nodes.requirement.call_llm", return_value="摘要"),
+            patch("src.aqueduct.engine.nodes.requirement.save_artifact", return_value=""),
+        ):
+            node_requirement(state)
 
         assert captured_input["type"] == "dict", f"input 应为 dict，实际为 {captured_input['type']}"
 
@@ -239,12 +245,14 @@ class TestPhase6Redundancy:
             captured_input.update(inp)
             return original_execute(self_skill, context)
 
-        with patch.object(ReportDeliverySkill, "execute", capture_execute):
-            with patch("src.aqueduct.engine.nodes.report.wait_for_lineage"):
-                with patch("src.aqueduct.engine.nodes.report.call_llm", return_value="报告"):
-                    with patch("src.aqueduct.engine.nodes.report.save_artifact", return_value=""):
-                        with patch("src.aqueduct.tools.registry.get_tool"):
-                            node_report(state)
+        with (
+            patch.object(ReportDeliverySkill, "execute", capture_execute),
+            patch("src.aqueduct.engine.nodes.report.wait_for_lineage"),
+            patch("src.aqueduct.engine.nodes.report.call_llm", return_value="报告"),
+            patch("src.aqueduct.engine.nodes.report.save_artifact", return_value=""),
+            patch("src.aqueduct.tools.registry.get_tool"),
+        ):
+            node_report(state)
 
         # Skill 实际使用的键
         expected_keys = {
@@ -291,13 +299,15 @@ class TestPhase4Redundancy:
             captured_input.update(inp)
             return original_execute(self_skill, context)
 
-        with patch.object(SQLDevelopSkill, "execute", capture_execute):
-            with patch("src.aqueduct.engine.nodes.helpers.call_llm", return_value="```sql\nSELECT 1\n```"):
-                with patch("src.aqueduct.engine.nodes.helpers.extract_sql_block", return_value="SELECT 1"):
-                    with patch("src.aqueduct.engine.nodes.helpers.save_artifact", return_value=""):
-                        with patch("src.aqueduct.engine.nodes.helpers.is_valid_sql", return_value=True):
-                            with patch("src.aqueduct.tools.registry.get_tool"):
-                                node_sql(state)
+        with (
+            patch.object(SQLDevelopSkill, "execute", capture_execute),
+            patch("src.aqueduct.engine.nodes.helpers.call_llm", return_value="```sql\nSELECT 1\n```"),
+            patch("src.aqueduct.engine.nodes.helpers.extract_sql_block", return_value="SELECT 1"),
+            patch("src.aqueduct.engine.nodes.helpers.save_artifact", return_value=""),
+            patch("src.aqueduct.engine.nodes.helpers.is_valid_sql", return_value=True),
+            patch("src.aqueduct.tools.registry.get_tool"),
+        ):
+            node_sql(state)
 
         # 不应传递完整需求文档
         assert "requirement_doc" not in captured_input, "不应传递 requirement_doc"
