@@ -104,3 +104,27 @@ class TestTargetTableExtraction:
                         node_requirement(state)
 
         assert state.get("target_table") == "dw_report.city_order_stats"
+
+
+class TestPhase5DomainContext:
+    """Phase 5 domain_context 键名对齐测试。"""
+
+    def test_dqc_skill_uses_domain_context(self):
+        """dqc_quality Skill 应将 domain_context 传入 prompt 模板。"""
+        skill = DQCQualitySkill()
+        context = SkillContext(
+            input={
+                "ddl_content": "CREATE TABLE test (id bigint) PARTITIONED BY (inc_day string)",
+                "sql_content": "SELECT id FROM source WHERE inc_day = '20260101'",
+                "domain_context": "实体: Order (order_id, city, amount). 规则: 金额必须大于 0",
+            },
+            state={},
+        )
+
+        result = skill.execute(context)
+
+        assert result.success
+        prompt = result.data["prompt"]
+        # 核心断言：domain_context 的内容必须出现在 prompt 中
+        assert "实体: Order" in prompt, "domain_context 内容应出现在 DQC prompt 中"
+        assert "金额必须大于 0" in prompt, "业务规则应出现在 DQC prompt 中"

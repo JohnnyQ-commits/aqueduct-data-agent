@@ -24,8 +24,7 @@
 
 - 目标表结构: {ddl_content}
 - 核心 SQL: {sql_content}
-- 业务规则: {business_rules}
-- 语义模型公理: {domain_axioms}
+- 业务域上下文: {domain_context}
 
 ---
 
@@ -70,7 +69,7 @@ select ...
 请按以下步骤思考（不要输出思考过程，只输出测试用例）：
 
 1. **解析目标表结构**：识别主键、分区字段、核心业务字段
-2. **提取业务规则**：从 business_rules 和 domain_axioms 中提取不变式
+2. **提取业务规则**：从 domain_context 中提取不变式和业务规则
 3. **设计唯一性测试**：
    - 主键是否重复？
    - 核心字段是否为 NULL？
@@ -141,8 +140,7 @@ select ...
 
 ```
 ddl_content: "CREATE TABLE order_stats (order_id string, city string, amount decimal) PARTITIONED BY (inc_day string)"
-business_rules: "金额必须大于 0，订单状态必须为有效"
-domain_axioms: "order_id 是主键，city 不能为空"
+domain_context: "实体: Order (order_id, city, amount). 规则: 金额必须大于 0，订单状态必须为有效。order_id 是主键，city 不能为空"
 ```
 
 ### 输出

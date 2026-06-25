@@ -24,7 +24,7 @@ class DQCQualitySkill(BaseSkill):
 
         步骤:
           1. 读取目标表 DDL + 核心 SQL
-          2. 从语义模型提取 business_rules + axioms
+          2. 读取业务域上下文（domain_context）
           3. 生成 5 大测试类别用例
           4. 输出 DQC SQL 文件（含权重标注）
         """
@@ -32,15 +32,13 @@ class DQCQualitySkill(BaseSkill):
 
         ddl_content = inp.get("ddl_content") or context.state.get("ddl_content", "")
         sql_content = inp.get("sql_content") or context.state.get("sql_content", "")
-        business_rules = inp.get("business_rules") or context.state.get("business_rules", "")
-        domain_axioms = inp.get("domain_axioms") or context.state.get("domain_axioms", "")
+        domain_context = inp.get("domain_context") or context.state.get("domain_context", "")
 
         # 加载 Prompt 模板
         prompt = self.load_prompt_template(
             ddl_content=ddl_content,
             sql_content=sql_content,
-            business_rules=business_rules,
-            domain_axioms=domain_axioms,
+            domain_context=domain_context,
         )
 
         return SkillResult(
