@@ -98,6 +98,9 @@ class WorkflowState(TypedDict):
     domain_id: NotRequired[str]
     domain_context: NotRequired[str]
 
+    # === 可选：Phase 1 提取的目标表 ===
+    target_table: NotRequired[str]  # 从需求文档中提取的目标表名
+
     # === 可选：Phase 2 设计方案 ===
     design_scheme: NotRequired[str]
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 
 from ...config.settings import get_settings
@@ -14,6 +15,41 @@ from ..state import WorkflowState
 from .helpers import call_llm, save_artifact
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_target_table(text: str) -> str:
+    """从需求文档中提取目标表名。
+
+    匹配模式（按优先级）:
+      1. '目标表[：:] xxx' 中文提示
+      2. 'CREATE TABLE schema.table' SQL 语句
+      3. '写入/输出到 schema.table' 中文动词 + 表名
+      4. 独立的 schema.table 格式标识符
+
+    Returns:
+        提取到的表名，未找到时返回空字符串。
+    """
+    # 模式 1: 中文提示 "目标表：xxx" / "目标表: xxx"
+    m = re.search(r"目标表[：:]\s*(\S+)", text)
+    if m:
+        return m.group(1).strip("，。,.")
+
+    # 模式 2: CREATE TABLE 语句
+    m = re.search(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\S+)", text, re.IGNORECASE)
+    if m:
+        return m.group(1).strip("(，。,.")
+
+    # 模式 3: 中文动词 + 表名
+    m = re.search(r"(?:写入|输出到|存入|保存到)\s*(\w+\.\w+)", text)
+    if m:
+        return m.group(1)
+
+    # 模式 4: 独立的 schema.table 格式（至少含一个点）
+    candidates = re.findall(r"\b([a-z_]+\.[a-z_]+)\b", text, re.IGNORECASE)
+    if candidates:
+        return candidates[0]
+
+    return ""
 
 
 def _recall_domain_knowledge(state: WorkflowState) -> None:
@@ -61,6 +97,12 @@ def node_requirement(state: WorkflowState) -> WorkflowState:
 
     # 自动召回领域知识，填充 domain_context 供全流程使用
     _recall_domain_knowledge(state)
+
+    # 从需求文档中提取目标表名，供 Phase 2+3 DDL 生成使用
+    target_table = _extract_target_table(state.get("requirement", ""))
+    if target_table:
+        state["target_table"] = target_table
+        logger.info("提取目标表名: %s", target_table)
 
     try:
         skill = get_skill("requirement_clarify")

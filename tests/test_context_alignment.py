@@ -9,7 +9,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 from src.aqueduct.engine.nodes.report import node_report
-from src.aqueduct.engine.nodes.requirement import node_requirement
+from src.aqueduct.engine.nodes.requirement import _extract_target_table, node_requirement
 from src.aqueduct.engine.nodes.review import node_review
 from src.aqueduct.engine.nodes.sql import node_sql
 from src.aqueduct.skills.base import SkillContext
@@ -59,3 +59,48 @@ class TestPhase45RequirementDesc:
         assert "requirement_desc" in captured_input, "review 节点必须传递 requirement_desc"
         assert captured_input["requirement_desc"] == "需求摘要：统计每日城市订单量"
         assert len(captured_input["requirement_desc"]) < len(state["requirement"])
+
+
+class TestTargetTableExtraction:
+    """target_table 提取测试。"""
+
+    def test_extract_from_schema_dot_table(self):
+        """从 'schema.table' 格式中提取目标表名。"""
+        text = "请将数据写入 dw_report.city_daily_stats 表中"
+        assert _extract_target_table(text) == "dw_report.city_daily_stats"
+
+    def test_extract_from_create_table(self):
+        """从 CREATE TABLE 语句中提取目标表名。"""
+        text = "目标表结构如下：CREATE TABLE dw_demo.order_stats (id bigint)"
+        assert _extract_target_table(text) == "dw_demo.order_stats"
+
+    def test_extract_from_chinese_hint(self):
+        """从中文提示'目标表: xxx'中提取。"""
+        text = "目标表：dwd_order_detail"
+        assert _extract_target_table(text) == "dwd_order_detail"
+
+    def test_returns_empty_when_not_found(self):
+        """无表名时返回空字符串。"""
+        text = "这个需求没有指定具体表名"
+        assert _extract_target_table(text) == ""
+
+    def test_node_writes_target_table_to_state(self):
+        """node_requirement 应将提取的 target_table 写入 state。"""
+        state = {
+            "requirement": "统计每日各城市订单数量，写入 dw_report.city_order_stats",
+            "mode": "dev",
+            "metadata": {"requirement_name": "test"},
+            "errors": [],
+            "artifacts": [],
+        }
+
+        with patch("src.aqueduct.engine.nodes.requirement._recall_domain_knowledge"):
+            with patch("src.aqueduct.engine.nodes.requirement.get_skill") as mock_skill:
+                mock_skill.return_value.execute.return_value = type(
+                    "R", (), {"success": True, "data": {"prompt": ""}, "error": ""}
+                )()
+                with patch("src.aqueduct.engine.nodes.requirement.call_llm", return_value="摘要"):
+                    with patch("src.aqueduct.engine.nodes.requirement.save_artifact", return_value=""):
+                        node_requirement(state)
+
+        assert state.get("target_table") == "dw_report.city_order_stats"
