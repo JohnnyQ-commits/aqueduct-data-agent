@@ -23,20 +23,20 @@ class SQLDevelopSkill(BaseSkill):
         """执行 SQL 开发流程。
 
         步骤:
-          1. 读取需求文档 + DDL + 设计方案
+          1. 读取需求摘要 + DDL + 设计方案
           2. 引用语义层模型
           3. 编写 SQL（遵循模板内置编码规范）
           4. 调用 ValidatorTool 进行自动校验
         """
         inp = context.input if isinstance(context.input, dict) else {}
 
-        requirement_doc = inp.get("requirement_doc") or context.state.get("requirement", "")
+        requirement_summary = inp.get("requirement_summary") or context.state.get("requirement_summary", "")
         ddl_content = inp.get("ddl_content") or context.state.get("ddl_content", "")
         design_scheme = inp.get("design_scheme") or context.state.get("design_scheme", "")
 
         # 加载 Prompt 模板
         prompt = self.load_prompt_template(
-            requirement_doc=requirement_doc,
+            requirement_summary=requirement_summary,
             ddl_content=ddl_content,
             design_scheme=design_scheme,
             domain_context=context.state.get("domain_context", ""),

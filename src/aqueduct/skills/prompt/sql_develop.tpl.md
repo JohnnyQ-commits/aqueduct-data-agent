@@ -21,7 +21,7 @@
 
 ## 输入
 
-- 需求文档: {requirement_doc}
+- 需求摘要: {requirement_summary}
 - 目标表 DDL: {ddl_content}
 - 设计方案: {design_scheme}
 - 语义模型: {domain_context}
@@ -169,7 +169,7 @@
 ### 输入
 
 ```
-requirement_doc: "统计每日各城市订单数量，按城市分组"
+requirement_summary: "统计每日各城市订单数量，按城市分组"
 ddl_content: "CREATE TABLE city_daily_stats (city string, order_cnt bigint) PARTITIONED BY (inc_day string) STORED AS PARQUET"
 design_scheme: "源表: dwd.order_detail, 按 inc_day 分区, 按 city 分组, 统计订单数"
 domain_context: "实体: Order (order_id, city, order_status, inc_day). 指标: order_count = COUNT(order_id)"

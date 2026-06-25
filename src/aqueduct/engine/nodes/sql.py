@@ -48,7 +48,7 @@ def node_sql(state: WorkflowState) -> WorkflowState:
             skill = get_skill("sql_develop")
             context = SkillContext(
                 input={
-                    "requirement_doc": state.get("requirement", ""),
+                    "requirement_summary": state.get("requirement_summary", ""),
                     "ddl_content": state.get("ddl_content", ""),
                     "design_scheme": state.get("design_scheme", ""),
                     "domain_context": state.get("domain_context", ""),

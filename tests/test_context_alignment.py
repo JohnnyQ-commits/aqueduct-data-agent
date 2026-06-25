@@ -261,3 +261,46 @@ class TestPhase6Redundancy:
             assert key not in captured_input, f"冗余键 {key} 不应被传递"
         for key in expected_keys:
             assert key in captured_input, f"必要键 {key} 缺失"
+
+
+class TestPhase4Redundancy:
+    """Phase 4 冗余加载清理测试。"""
+
+    @staticmethod
+    def _make_state() -> dict:
+        return {
+            "requirement": "完整需求文档" * 50,
+            "requirement_summary": "需求摘要：统计每日各城市订单量",
+            "ddl_content": "CREATE TABLE stats (city string, cnt bigint) PARTITIONED BY (inc_day string)",
+            "design_scheme": "源表: dwd.order_detail, 按 city 分组, COUNT(order_id)",
+            "domain_context": "实体: Order",
+            "metadata": {"requirement_name": "test"},
+            "errors": [],
+            "artifacts": [],
+        }
+
+    def test_sql_node_passes_summary_not_full_doc(self):
+        """sql 节点应传递 requirement_summary 而非完整 requirement_doc。"""
+        state = self._make_state()
+        captured_input = {}
+
+        original_execute = SQLDevelopSkill.execute
+
+        def capture_execute(self_skill, context: SkillContext):
+            inp = context.input if isinstance(context.input, dict) else {}
+            captured_input.update(inp)
+            return original_execute(self_skill, context)
+
+        with patch.object(SQLDevelopSkill, "execute", capture_execute):
+            with patch("src.aqueduct.engine.nodes.helpers.call_llm", return_value="```sql\nSELECT 1\n```"):
+                with patch("src.aqueduct.engine.nodes.helpers.extract_sql_block", return_value="SELECT 1"):
+                    with patch("src.aqueduct.engine.nodes.helpers.save_artifact", return_value=""):
+                        with patch("src.aqueduct.engine.nodes.helpers.is_valid_sql", return_value=True):
+                            with patch("src.aqueduct.tools.registry.get_tool"):
+                                node_sql(state)
+
+        # 不应传递完整需求文档
+        assert "requirement_doc" not in captured_input, "不应传递 requirement_doc"
+        # 应传递需求摘要
+        assert "requirement_summary" in captured_input, "应传递 requirement_summary"
+        assert captured_input["requirement_summary"] == "需求摘要：统计每日各城市订单量"
