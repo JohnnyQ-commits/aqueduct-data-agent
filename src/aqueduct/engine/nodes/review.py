@@ -57,6 +57,7 @@ def node_review(state: WorkflowState) -> WorkflowState:
         skill = get_skill("code_review")
         context = SkillContext(
             input={
+                "requirement_desc": state.get("requirement_summary", ""),
                 "sql_content": state.get("sql_content", ""),
                 "domain_context": state.get("domain_context", ""),
                 "validation_result": state.get("validation_result", {}),
