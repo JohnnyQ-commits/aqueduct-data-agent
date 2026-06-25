@@ -11,23 +11,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **Phase 4.5 requirement_desc 键对齐**: review 节点未传递 `requirement_desc`，导致 code_review Skill 三级回退读取完整需求文档（500-3000 字符），改为传递 `requirement_summary`（200-800 字符）
-- **Phase 5 domain_context 键名对齐**: dqc_quality Skill 读取 `business_rules`/`domain_axioms`（永远为空），但节点传递的是 `domain_context`，统一改为 `domain_context`，使 DQC 生成能获取业务规则和语义模型信息
-- **Phase 1 target_table 硬编码**: 没有任何节点写入 `target_table`，导致 design_ddl Skill 始终使用 `dw_demo.tmp_target_table` 硬编码值，现通过正则从需求文档中提取目标表名并写入 state
+- **Phase 4.5 requirement_desc key alignment**: review node did not pass `requirement_desc`, causing code_review Skill to fall back to full requirement doc (500-3000 chars). Now passes `requirement_summary` (200-800 chars)
+- **Phase 5 domain_context key alignment**: dqc_quality Skill read `business_rules`/`domain_axioms` (always empty), but node passed `domain_context`. Unified to `domain_context` so DQC generation can access business rules and semantic model info
+- **Phase 1 target_table hardcoded default**: No node wrote `target_table` to state, causing design_ddl Skill to always use hardcoded `dw_demo.tmp_target_table`. Now extracts target table name from requirement doc via regex and writes to state
 
 ### Changed
 
-- **Phase 1 SkillContext input 标准化**: 将 `SkillContext.input` 从 raw string 改为 dict，与其他 Phase 保持一致
-- **Phase 4 需求文档精简**: 用 `requirement_summary` 替代完整 `requirement_doc` 传入 SQL 开发 Skill，预计节省 300-2200 字符/次运行
-- **Phase 6 冗余传递清理**: report 节点传递 15 个键但 Skill 只使用 7 个，移除 8 个冗余键（`requirement_doc`, `ddl_file`, `sql_file`, `review_result` 等）
+- **Phase 1 SkillContext input standardization**: Changed `SkillContext.input` from raw string to dict, consistent with other phases
+- **Phase 4 requirement doc trimming**: Replaced full `requirement_doc` with `requirement_summary` in SQL develop Skill input, saving ~300-2200 chars per run
+- **Phase 6 redundant key cleanup**: report node passed 15 keys but Skill only used 7. Removed 8 redundant keys (`requirement_doc`, `ddl_file`, `sql_file`, `review_result`, etc.)
 
 ### Removed
 
-- **死变量清理**: 移除 3 个从未被任何节点写入 state 的变量：`coding_style`、`known_tables`、`field_mapping`，及其对应模板占位符
+- **Dead variable cleanup**: Removed 3 variables never written to state by any node: `coding_style`, `known_tables`, `field_mapping`, along with their template placeholders
 
 ### Added
 
-- **上下文对齐回归测试**: 新增 `tests/test_context_alignment.py`，19 个测试覆盖 Phase 1-6 所有节点→Skill 键传递验证，确保后续修改不会破坏键名对齐
+- **Context alignment regression tests**: New `tests/test_context_alignment.py` with 19 tests covering Phase 1-6 node→Skill key passing, ensuring future changes won't break key alignment
 
 ## [0.4.0] - 2026-06-24
 
