@@ -304,3 +304,25 @@ class TestPhase4Redundancy:
         # 应传递需求摘要
         assert "requirement_summary" in captured_input, "应传递 requirement_summary"
         assert captured_input["requirement_summary"] == "需求摘要：统计每日各城市订单量"
+
+
+class TestDDLGenerateCleanup:
+    """ddl_generate 死变量清理测试。"""
+
+    def test_ddl_generate_no_field_mapping(self):
+        """ddl_generate Skill 的 prompt 不应包含空的 field_mapping。"""
+        skill = DDLGenerateSkill()
+        context = SkillContext(
+            input={
+                "design_scheme": "源表: orders, 按 city 分组",
+                "target_table": "test_table",
+            },
+            state={},
+        )
+
+        result = skill.execute(context)
+
+        assert result.success
+        prompt = result.data["prompt"]
+        # field_mapping 应已被移除（模板中不再包含"字段映射"标签）
+        assert "字段映射:" not in prompt, "field_mapping 占位符应已从模板中移除"

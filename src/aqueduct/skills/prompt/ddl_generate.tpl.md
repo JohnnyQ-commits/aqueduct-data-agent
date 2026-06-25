@@ -21,7 +21,6 @@
 ## 输入
 
 - 设计方案: {design_scheme}
-- 字段映射: {field_mapping}
 - 目标表名: {target_table}
 
 ---

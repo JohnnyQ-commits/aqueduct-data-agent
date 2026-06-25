@@ -24,14 +24,12 @@ class DDLGenerateSkill(BaseSkill):
 
         步骤:
           1. 读取设计方案
-          2. 解析字段映射
-          3. 生成 CREATE TABLE 语句
-          4. 校验 DDL 规范（分区、存储格式、注释）
+          2. 生成 CREATE TABLE 语句
+          3. 校验 DDL 规范（分区、存储格式、注释）
         """
         inp = context.input if isinstance(context.input, dict) else {}
 
         design_scheme = inp.get("design_scheme") or context.state.get("design_scheme", "")
-        field_mapping = inp.get("field_mapping") or context.state.get("field_mapping", "")
         target_table = inp.get("target_table") or context.state.get(
             "target_table", "dw_demo.tmp_target_table"
         )
@@ -39,7 +37,6 @@ class DDLGenerateSkill(BaseSkill):
         # 加载 Prompt 模板
         prompt = self.load_prompt_template(
             design_scheme=design_scheme,
-            field_mapping=field_mapping,
             target_table=target_table,
         )
 
