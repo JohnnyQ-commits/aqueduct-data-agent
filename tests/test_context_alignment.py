@@ -152,3 +152,52 @@ class TestDeadVariableCleanup:
         prompt = result.data["prompt"]
         # coding_style 已被移除，模板中不应出现空的"编码风格:"行
         assert "编码风格:" not in prompt or "编码风格: \n" not in prompt
+
+
+class TestPhase1Standardization:
+    """Phase 1 上下文标准化测试。"""
+
+    @staticmethod
+    def _make_state() -> dict:
+        return {
+            "requirement": "统计每日各城市订单数量",
+            "mode": "dev",
+            "metadata": {"requirement_name": "test"},
+            "errors": [],
+            "artifacts": [],
+        }
+
+    def test_phase1_passes_dict_input(self):
+        """Phase 1 应向 Skill 传递 dict 类型的 input。"""
+        state = self._make_state()
+        captured_input = {}
+
+        original_execute = RequirementClarifySkill.execute
+
+        def capture_execute(self_skill, context: SkillContext):
+            captured_input["type"] = type(context.input).__name__
+            captured_input["value"] = context.input
+            return original_execute(self_skill, context)
+
+        with patch.object(RequirementClarifySkill, "execute", capture_execute):
+            with patch("src.aqueduct.engine.nodes.requirement._recall_domain_knowledge"):
+                with patch("src.aqueduct.engine.nodes.requirement._extract_target_table", return_value=""):
+                    with patch("src.aqueduct.engine.nodes.requirement.call_llm", return_value="摘要"):
+                        with patch("src.aqueduct.engine.nodes.requirement.save_artifact", return_value=""):
+                            node_requirement(state)
+
+        assert captured_input["type"] == "dict", f"input 应为 dict，实际为 {captured_input['type']}"
+
+    def test_phase1_no_known_tables_in_prompt(self):
+        """Phase 1 prompt 不应包含空的 known_tables。"""
+        skill = RequirementClarifySkill()
+        context = SkillContext(
+            input={"requirement_doc": "统计每日订单量", "domain_context": ""},
+            state={},
+        )
+
+        result = skill.execute(context)
+
+        assert result.success
+        prompt = result.data["prompt"]
+        assert "已知源表:" not in prompt or "已知源表: \n" not in prompt

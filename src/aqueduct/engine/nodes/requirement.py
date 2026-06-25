@@ -107,7 +107,10 @@ def node_requirement(state: WorkflowState) -> WorkflowState:
     try:
         skill = get_skill("requirement_clarify")
         context = SkillContext(
-            input=state.get("requirement"),
+            input={
+                "requirement_doc": state.get("requirement", ""),
+                "domain_context": state.get("domain_context", ""),
+            },
             state=state,
         )
         result = skill.execute(context)

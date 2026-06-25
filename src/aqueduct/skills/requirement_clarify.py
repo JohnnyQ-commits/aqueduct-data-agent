@@ -57,7 +57,6 @@ class RequirementClarifySkill(BaseSkill):
         prompt = self.load_prompt_template(
             requirement_doc=requirement_doc,
             domain_context=context.state.get("domain_context", ""),
-            known_tables=", ".join(context.state.get("known_tables", [])),
         )
 
         return SkillResult(
