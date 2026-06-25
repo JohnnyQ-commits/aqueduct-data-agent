@@ -256,13 +256,23 @@ class TestPhase6Redundancy:
 
         # Skill 实际使用的键
         expected_keys = {
-            "requirement_name", "design_scheme", "ddl_content",
-            "sql_content", "dqc_result", "lineage_result", "domain_context",
+            "requirement_name",
+            "design_scheme",
+            "ddl_content",
+            "sql_content",
+            "dqc_result",
+            "lineage_result",
+            "domain_context",
         }
         # 不应传递的冗余键
         redundant_keys = {
-            "requirement_doc", "ddl_file", "sql_file",
-            "review_result", "validation_result", "cost_result", "artifacts",
+            "requirement_doc",
+            "ddl_file",
+            "sql_file",
+            "review_result",
+            "validation_result",
+            "cost_result",
+            "artifacts",
         }
 
         for key in redundant_keys:
@@ -301,7 +311,9 @@ class TestPhase4Redundancy:
 
         with (
             patch.object(SQLDevelopSkill, "execute", capture_execute),
-            patch("src.aqueduct.engine.nodes.helpers.call_llm", return_value="```sql\nSELECT 1\n```"),
+            patch(
+                "src.aqueduct.engine.nodes.helpers.call_llm", return_value="```sql\nSELECT 1\n```"
+            ),
             patch("src.aqueduct.engine.nodes.helpers.extract_sql_block", return_value="SELECT 1"),
             patch("src.aqueduct.engine.nodes.helpers.save_artifact", return_value=""),
             patch("src.aqueduct.engine.nodes.helpers.is_valid_sql", return_value=True),

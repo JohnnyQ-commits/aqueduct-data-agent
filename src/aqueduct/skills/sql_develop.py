@@ -30,7 +30,9 @@ class SQLDevelopSkill(BaseSkill):
         """
         inp = context.input if isinstance(context.input, dict) else {}
 
-        requirement_summary = inp.get("requirement_summary") or context.state.get("requirement_summary", "")
+        requirement_summary = inp.get("requirement_summary") or context.state.get(
+            "requirement_summary", ""
+        )
         ddl_content = inp.get("ddl_content") or context.state.get("ddl_content", "")
         design_scheme = inp.get("design_scheme") or context.state.get("design_scheme", "")
 
