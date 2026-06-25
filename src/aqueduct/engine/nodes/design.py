@@ -98,8 +98,7 @@ def node_design(state: WorkflowState) -> WorkflowState:
             )
         else:
             logger.warning(
-                "[task=%s, phase=2] 合并调用未产出有效 DDL（%d 字符），"
-                "将由 Phase 3 节点独立生成",
+                "[task=%s, phase=2] 合并调用未产出有效 DDL（%d 字符），将由 Phase 3 节点独立生成",
                 req_name,
                 len(ddl_content),
             )

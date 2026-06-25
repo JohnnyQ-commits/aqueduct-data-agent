@@ -387,7 +387,9 @@ class TestNodeDdlSkip:
         }
 
         with (
-            patch("src.aqueduct.engine.nodes.ddl.call_llm", return_value="CREATE TABLE test (id INT)"),
+            patch(
+                "src.aqueduct.engine.nodes.ddl.call_llm", return_value="CREATE TABLE test (id INT)"
+            ),
             patch(
                 "src.aqueduct.engine.nodes.ddl.save_artifact",
                 side_effect=lambda s, n, c: f"output/{n}",
