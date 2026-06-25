@@ -25,7 +25,6 @@
 - 目标表 DDL: {ddl_content}
 - 设计方案: {design_scheme}
 - 语义模型: {domain_context}
-- 编码风格: {coding_style}
 
 ---
 

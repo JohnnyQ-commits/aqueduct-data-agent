@@ -128,3 +128,27 @@ class TestPhase5DomainContext:
         # 核心断言：domain_context 的内容必须出现在 prompt 中
         assert "实体: Order" in prompt, "domain_context 内容应出现在 DQC prompt 中"
         assert "金额必须大于 0" in prompt, "业务规则应出现在 DQC prompt 中"
+
+
+class TestDeadVariableCleanup:
+    """死变量清理验证测试。"""
+
+    def test_sql_develop_no_coding_style(self):
+        """sql_develop Skill 的 prompt 不应包含空的 coding_style。"""
+        skill = SQLDevelopSkill()
+        context = SkillContext(
+            input={
+                "requirement_doc": "统计每日订单量",
+                "ddl_content": "CREATE TABLE t (id bigint)",
+                "design_scheme": "源表: orders, 按 city 分组",
+                "domain_context": "",
+            },
+            state={},
+        )
+
+        result = skill.execute(context)
+
+        assert result.success
+        prompt = result.data["prompt"]
+        # coding_style 已被移除，模板中不应出现空的"编码风格:"行
+        assert "编码风格:" not in prompt or "编码风格: \n" not in prompt

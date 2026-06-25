@@ -25,7 +25,7 @@ class SQLDevelopSkill(BaseSkill):
         步骤:
           1. 读取需求文档 + DDL + 设计方案
           2. 引用语义层模型
-          3. 编写 SQL（遵循 coding-style.md）
+          3. 编写 SQL（遵循模板内置编码规范）
           4. 调用 ValidatorTool 进行自动校验
         """
         inp = context.input if isinstance(context.input, dict) else {}
@@ -33,7 +33,6 @@ class SQLDevelopSkill(BaseSkill):
         requirement_doc = inp.get("requirement_doc") or context.state.get("requirement", "")
         ddl_content = inp.get("ddl_content") or context.state.get("ddl_content", "")
         design_scheme = inp.get("design_scheme") or context.state.get("design_scheme", "")
-        coding_style = inp.get("coding_style") or context.state.get("coding_style", "")
 
         # 加载 Prompt 模板
         prompt = self.load_prompt_template(
@@ -41,7 +40,6 @@ class SQLDevelopSkill(BaseSkill):
             ddl_content=ddl_content,
             design_scheme=design_scheme,
             domain_context=context.state.get("domain_context", ""),
-            coding_style=coding_style,
         )
 
         return SkillResult(
