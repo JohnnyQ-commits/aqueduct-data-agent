@@ -326,3 +326,116 @@ class TestDDLGenerateCleanup:
         prompt = result.data["prompt"]
         # field_mapping 应已被移除（模板中不再包含"字段映射"标签）
         assert "字段映射:" not in prompt, "field_mapping 占位符应已从模板中移除"
+
+
+class TestAllPhaseKeyAlignment:
+    """所有 Phase 节点→Skill 键对齐的快照测试。
+
+    确保每个节点传递的键与对应 Skill 读取的键完全匹配。
+    """
+
+    def test_phase1_keys(self):
+        """Phase 1: requirement node → requirement_clarify skill。"""
+        skill = RequirementClarifySkill()
+        context = SkillContext(
+            input={"requirement_doc": "需求", "domain_context": "域知识"},
+            state={"domain_context": "域知识"},
+        )
+        result = skill.execute(context)
+        assert result.success
+        prompt = result.data["prompt"]
+        assert "需求" in prompt
+        assert "域知识" in prompt
+
+    def test_phase2_3_keys(self):
+        """Phase 2+3: design node → design_ddl skill。"""
+        skill = DesignDDLSkill()
+        context = SkillContext(
+            input={
+                "requirement_doc": "需求",
+                "domain_context": "域知识",
+            },
+            state={
+                "requirement_summary": "摘要",
+                "domain_context": "域知识",
+                "target_table": "dw.test_table",
+            },
+        )
+        result = skill.execute(context)
+        assert result.success
+        prompt = result.data["prompt"]
+        assert "需求" in prompt
+        assert "dw.test_table" in prompt
+
+    def test_phase4_keys(self):
+        """Phase 4: sql node → sql_develop skill。"""
+        skill = SQLDevelopSkill()
+        context = SkillContext(
+            input={
+                "requirement_summary": "摘要",
+                "ddl_content": "CREATE TABLE t (id bigint)",
+                "design_scheme": "设计方案",
+                "domain_context": "",
+            },
+            state={},
+        )
+        result = skill.execute(context)
+        assert result.success
+        prompt = result.data["prompt"]
+        assert "摘要" in prompt
+        assert "CREATE TABLE" in prompt
+
+    def test_phase4_5_keys(self):
+        """Phase 4.5: review node → code_review skill。"""
+        skill = CodeReviewSkill()
+        context = SkillContext(
+            input={
+                "requirement_desc": "需求摘要",
+                "sql_content": "SELECT 1",
+                "domain_context": "",
+                "validation_result": {"issues": []},
+            },
+            state={},
+        )
+        result = skill.execute(context)
+        assert result.success
+        prompt = result.data["prompt"]
+        assert "需求摘要" in prompt
+        assert "SELECT 1" in prompt
+
+    def test_phase5_keys(self):
+        """Phase 5: dqc node → dqc_quality skill。"""
+        skill = DQCQualitySkill()
+        context = SkillContext(
+            input={
+                "ddl_content": "CREATE TABLE t (id bigint)",
+                "sql_content": "SELECT 1",
+                "domain_context": "业务规则: 金额>0",
+            },
+            state={},
+        )
+        result = skill.execute(context)
+        assert result.success
+        prompt = result.data["prompt"]
+        assert "业务规则: 金额>0" in prompt
+
+    def test_phase6_keys(self):
+        """Phase 6: report node → report_delivery skill。"""
+        skill = ReportDeliverySkill()
+        context = SkillContext(
+            input={
+                "requirement_name": "测试需求",
+                "design_scheme": "设计方案",
+                "ddl_content": "CREATE TABLE t (id bigint)",
+                "sql_content": "SELECT 1",
+                "dqc_result": "DQC 通过",
+                "lineage_result": {"mermaid": "graph LR"},
+                "domain_context": "域知识",
+            },
+            state={"metadata": {"requirement_name": "测试需求"}},
+        )
+        result = skill.execute(context)
+        assert result.success
+        prompt = result.data["prompt"]
+        assert "测试需求" in prompt
+        assert "graph LR" in prompt
