@@ -267,7 +267,7 @@ class TestLLMIntegration:
 
         template = PromptTemplate(
             id="test_integration",
-            system="你是一个 {role}",
+            system="你是一个 $role",
             variables=["role"],
         )
         register_prompt(template)
@@ -282,8 +282,8 @@ class TestLLMIntegration:
 
         template = PromptTemplate(
             id="test_render",
-            system="需求: {requirement}",
-            user="请参考 {table_name}",
+            system="需求: $requirement",
+            user="请参考 $table_name",
             variables=["requirement", "table_name"],
         )
         messages = template.render(requirement="测试需求", table_name="users")

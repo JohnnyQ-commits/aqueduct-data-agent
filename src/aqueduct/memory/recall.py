@@ -7,11 +7,25 @@
 from __future__ import annotations
 
 import logging
+import re
 
+from ..exceptions import AqueductMemoryError
 from .domain import DomainModel
 from .store import MemoryStore
 
 logger = logging.getLogger(__name__)
+
+
+def _keyword_in_text(keyword: str, text: str) -> bool:
+    """检查关键词是否在文本中匹配。
+
+    英文关键词使用词边界匹配（\\b），避免子串误匹配
+    （如 "order" 匹配 "border"）。
+    中文关键词使用子串匹配（中文无词边界概念）。
+    """
+    if re.search(r"[a-zA-Z]", keyword):
+        return bool(re.search(rf"\b{re.escape(keyword)}\b", text, re.IGNORECASE))
+    return keyword in text
 
 
 class KnowledgeRecall:
@@ -48,6 +62,9 @@ class KnowledgeRecall:
             - entities: 相关实体列表（按相关性排序，Top-K）
             - metrics: 相关指标列表（按相关性排序，Top-K）
             - mermaid: 关系图谱（Mermaid）
+
+        Raises:
+            AqueductMemoryError: 知识库加载或解析失败时抛出。
         """
         result: dict[str, str] = {
             "domain_id": "",
@@ -57,8 +74,13 @@ class KnowledgeRecall:
             "mermaid": "",
         }
 
-        # 1. 召回最相关的业务域
-        domain = self._store.match_domain(requirement)
+        try:
+            # 1. 召回最相关的业务域
+            domain = self._store.match_domain(requirement)
+        except Exception as e:
+            logger.error("知识召回失败（业务域匹配）: %s", e)
+            raise AqueductMemoryError(f"知识召回失败: {e}") from e
+
         if not domain:
             logger.info("需求无匹配业务域")
             return result
@@ -76,10 +98,12 @@ class KnowledgeRecall:
             matched_attrs = []
             # 关键词匹配加分
             for kw in keywords:
-                if kw in entity_name.lower():
+                if _keyword_in_text(kw, entity_name.lower()):
                     score += 3
                 for attr in entity.attributes:
-                    if kw in attr.name.lower() or kw in (attr.description or "").lower():
+                    if _keyword_in_text(kw, attr.name.lower()) or _keyword_in_text(
+                        kw, (attr.description or "").lower()
+                    ):
                         score += 1
                         if attr not in matched_attrs:
                             matched_attrs.append(attr)
@@ -101,11 +125,11 @@ class KnowledgeRecall:
         for _mid, metric in domain.metrics.items():
             score = 0
             for kw in keywords:
-                if kw in metric.name.lower():
+                if _keyword_in_text(kw, metric.name.lower()):
                     score += 3
-                if kw in (metric.description or "").lower():
+                if _keyword_in_text(kw, (metric.description or "").lower()):
                     score += 1
-                if kw in (metric.expression or "").lower():
+                if _keyword_in_text(kw, (metric.expression or "").lower()):
                     score += 1
             scored_metrics.append((score, metric.name, metric.expression, metric.unit))
 

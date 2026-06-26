@@ -20,7 +20,7 @@
 
 ## 输入
 
-- ETL SQL: {sql_content}
+- ETL SQL: $sql_content
 
 ---
 

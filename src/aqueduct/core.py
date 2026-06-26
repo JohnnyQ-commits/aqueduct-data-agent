@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections.abc import Callable
 from pathlib import Path
@@ -32,6 +33,7 @@ from .engine.nodes import (
     node_review,
     node_sql,
 )
+from .engine.recovery import ErrorSeverity, RecoveryStrategy
 from .engine.state import WorkflowState
 from .exceptions import WorkflowHaltError
 from .utils.task_logger import remove_task_handler, setup_task_logging
@@ -72,7 +74,10 @@ def _is_halt_error(error_msg: str) -> bool:
     此函数仅作降级辅助：当节点未抛出 WorkflowHaltError 但错误消息
     明确包含终止标记时，仍然终止工作流。
     """
-    return "终止" in error_msg or "halt" in error_msg.lower()
+    lowered = error_msg.lower()
+    # 精确匹配终止标记，避免误判（如"终止符"、"terminated"等非致命场景）
+    halt_markers = ["[终止]", "终止工作流", "halt", "fatal"]
+    return any(marker in lowered for marker in halt_markers)
 
 
 def _run_fix_loop(state: WorkflowState) -> WorkflowState:
@@ -192,6 +197,7 @@ def _run_pipeline(
     """
     total = len(phases)
     halted = False
+    errors: list[str] = []
 
     # 设置任务级日志
     req_name = state.get("metadata", {}).get("requirement_name", "unknown")
@@ -199,12 +205,16 @@ def _run_pipeline(
     output_dir_name = metadata.get("output_dir") or req_name
     from .config.settings import get_settings
 
+    settings = get_settings()
     out_dir = Path(output_dir_name)
     if not out_dir.is_absolute():
-        out_dir = get_settings().project_root / "output" / out_dir
+        out_dir = settings.project_root / "output" / out_dir
     task_handler = setup_task_logging(req_name, out_dir)
 
     logger.info("[task=%s] 管道启动: phases=%d", req_name, total)
+
+    # 初始化错误恢复策略
+    recovery = RecoveryStrategy()
 
     i = 0
     while i < len(phases):
@@ -215,32 +225,73 @@ def _run_pipeline(
         if on_progress:
             on_progress(phase_name, idx, total, state)
 
-        try:
-            state = node_func(state)
-        except WorkflowHaltError as e:
-            state.setdefault("errors", []).append(f"{phase_name}: {e!s}")
-            logger.warning("[task=%s] 管道终止: phase=%s, 原因=%s", req_name, phase_name, e)
-            halted = True
-            break
-        except Exception as e:
-            state.setdefault("errors", []).append(f"{phase_name}: {e!s}")
-            logger.error("阶段 '%s' 异常: %s", phase_name, e, exc_info=True)
+        # 带恢复策略的节点执行（临时错误可重试）
+        attempt = 0
+        max_retries = recovery._policy.max_retries
 
-        # 检查是否有致命错误需要终止
+        while attempt <= max_retries:
+            attempt += 1
+            try:
+                state = node_func(state)
+                break
+            except WorkflowHaltError as e:
+                state.setdefault("errors", []).append(f"{phase_name}: {e!s}")
+                logger.warning("[task=%s] 管道终止: phase=%s, 原因=%s", req_name, phase_name, e)
+                halted = True
+                break
+            except Exception as e:
+                severity = recovery.classify_error(e)
+
+                if severity == ErrorSeverity.TRANSIENT and attempt < max_retries:
+                    result = recovery.recover(phase_name, e, attempt)
+                    logger.warning(
+                        "[task=%s] 阶段 '%s' 临时错误，第 %d/%d 次重试 (%.1fs): %s",
+                        req_name,
+                        phase_name,
+                        attempt,
+                        max_retries,
+                        result.delay_seconds,
+                        e,
+                    )
+                    recovery.wait_and_retry(result)
+                    continue
+
+                # 非临时错误或已达重试上限
+                if severity == ErrorSeverity.VALIDATION:
+                    result = recovery.recover(phase_name, e, attempt)
+                    state.setdefault("errors", []).append(f"{phase_name}: {result.message}")
+                    logger.warning(
+                        "[task=%s] 阶段 '%s' 校验错误，跳过: %s",
+                        req_name,
+                        phase_name,
+                        e,
+                    )
+                    break
+
+                # 致命错误
+                state.setdefault("errors", []).append(f"{phase_name}: {e!s}")
+                logger.error("阶段 '%s' 异常: %s", phase_name, e, exc_info=True)
+                break
+
+        if halted:
+            break
+
+        # 检查是否有致命错误需要终止（基于错误消息中的终止标记）
         errors = state.get("errors", [])
         if errors and _is_halt_error(errors[-1]):
             logger.warning(
-                "[task=%s] 管道终止: phase=%s, 原因=%s", req_name, phase_name, errors[-1]
+                "[task=%s] 管道终止: phase=%s, 原因=%s",
+                req_name,
+                phase_name,
+                errors[-1],
             )
             halted = True
             break
 
         # 审查→修复回环
         if phase_name == "review" and state.get("_needs_fix_loop"):
-            from .config.settings import get_settings
-
             fix_iterations = state.get("fix_iterations", 0)
-            max_fix_iterations = get_settings().max_fix_iterations
+            max_fix_iterations = settings.max_fix_iterations
             if fix_iterations >= max_fix_iterations:
                 logger.warning(
                     "[task=%s] 修复循环: 已达最大迭代次数 %d/%d，跳过回环，继续后续阶段",
@@ -283,6 +334,14 @@ def _run_pipeline(
         len(state.get("artifacts", [])),
         len(errors),
     )
+
+    # 清理后台线程资源（防止线程泄漏）
+    lineage_executor = state.get("_lineage_executor")
+    if lineage_executor is not None:
+        with contextlib.suppress(Exception):
+            lineage_executor.shutdown(wait=False)
+        state.pop("_lineage_executor", None)
+        state.pop("_lineage_future", None)
 
     # 清理任务日志处理器
     remove_task_handler(task_handler)

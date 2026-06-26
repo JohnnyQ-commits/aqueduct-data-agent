@@ -20,13 +20,13 @@
 
 ## 输入
 
-- 需求名称: {requirement_name}
-- 设计方案: {design_scheme}
-- 目标表 DDL: {ddl_content}
-- 核心 SQL: {sql_content}
-- DQC 结果: {dqc_result}
-- 语义模型: {domain_context}
-- 血缘图: {lineage_mermaid}
+- 需求名称: $requirement_name
+- 设计方案: $design_scheme
+- 目标表 DDL: $ddl_content
+- 核心 SQL: $sql_content
+- DQC 结果: $dqc_result
+- 语义模型: $domain_context
+- 血缘图: $lineage_mermaid
 
 ---
 

@@ -32,8 +32,10 @@ class TestMemoryStore:
             pytest.skip("Domain file not found")
 
     def test_load_nonexistent_domain_raises(self):
+        from src.aqueduct.exceptions import DomainNotFoundError
+
         store = MemoryStore()
-        with pytest.raises(FileNotFoundError):
+        with pytest.raises(DomainNotFoundError):
             store.load("nonexistent_domain_xyz")
 
 

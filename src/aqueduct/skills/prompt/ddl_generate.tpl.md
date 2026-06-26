@@ -20,8 +20,8 @@
 
 ## 输入
 
-- 设计方案: {design_scheme}
-- 目标表名: {target_table}
+- 设计方案: $design_scheme
+- 目标表名: $target_table
 
 ---
 

@@ -38,6 +38,7 @@ class TestExecutorHealthCheck:
     def test_health_check_with_mock_config(self):
         """Mock adapter 存在时 health_check 返回 ok。"""
         tool = get_tool("executor")
+        _ = tool._tool  # 触发延迟初始化
         mock_adapter = MagicMock()
         mock_adapter.execute_hive_query.return_value = {
             "status": "success",
@@ -68,6 +69,7 @@ class TestExecutorExecute:
     def test_execute_with_mock(self):
         """Mock adapter 时 execute 返回成功结果。"""
         tool = get_tool("executor")
+        _ = tool._tool  # 触发延迟初始化
         mock_adapter = MagicMock()
         mock_adapter.execute_hive_query.return_value = {
             "status": "success",
@@ -101,6 +103,7 @@ class TestExecutorBatch:
     def test_execute_batch_partial_fail(self):
         """部分失败不中断，结果包含每条状态。"""
         tool = get_tool("executor")
+        _ = tool._tool  # 触发延迟初始化
         mock_adapter = MagicMock()
         mock_adapter.execute_hive_query.side_effect = [
             {"status": "success", "data": [{"dup": 0}], "row_count": 1},

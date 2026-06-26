@@ -166,6 +166,13 @@ class BatchQueryTool(BaseTool):
     description = "批量元数据查询 — 根据表名列表查询结构、分区、字段等元数据"
 
     def execute(self, **kwargs: Any) -> ToolResult:
+        """批量查询表元数据。
+
+        TODO: 接入 MCP Client 实现真正的元数据查询。
+        当前为占位实现 — 仅返回表名列表和待查询状态。
+        实际使用时，应通过 MCP get_table_schema 工具逐个查询，
+        并使用 build_ddl_from_mcp_result() 将结果转为 DDL。
+        """
         tables = kwargs.get("tables", [])
         if not tables:
             return ToolResult(
@@ -173,7 +180,7 @@ class BatchQueryTool(BaseTool):
                 error="缺少必填参数: tables",
             )
 
-        # 批量查询元数据（占位实现，实际需调用 MCP 工具）
+        # TODO: 接入 MCP Client 实现真正的元数据查询
         results = []
         for table_name in tables:
             results.append(

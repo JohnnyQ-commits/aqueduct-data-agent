@@ -22,10 +22,10 @@
 
 ## 输入
 
-- 需求文档: {requirement_doc}
-- 需求理解摘要: {requirement_summary}
-- 语义模型: {domain_context}
-- 目标表名: {target_table}
+- 需求文档: $requirement_doc
+- 需求理解摘要: $requirement_summary
+- 语义模型: $domain_context
+- 目标表名: $target_table
 
 ---
 
@@ -174,7 +174,7 @@ domain_context: "实体: Order (order_id, city, amount, inc_day). 指标: order_
 ## 取数逻辑
 
 - 数据来源: dwd.order_detail
-- 过滤条件: inc_day = '${{bizdate}}'（分区过滤）
+- 过滤条件: inc_day = '${bizdate}'（分区过滤）
 - 关联关系: 无（单表聚合）
 
 ## 字段映射

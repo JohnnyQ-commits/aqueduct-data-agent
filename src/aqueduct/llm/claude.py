@@ -76,8 +76,18 @@ class ClaudeLLM(BaseLLM):
         # CLI 路径（_detect_backend 可能设置）
         self._claude_cli_path: str | None = None
 
+        # SDK 客户端缓存（_chat_sdk 中延迟初始化）
+        self._sdk_client: Any = None
+
         # 检测后端能力
         self._backend = self._detect_backend()
+
+    def __repr__(self) -> str:
+        """脱敏表示，防止 API Key 泄露到日志/异常。"""
+        return (
+            f"ClaudeLLM(model={self._model_id!r}, tier={self._tier!r}, "
+            f"backend={self._backend!r}, api_key=***)"
+        )
 
     def _find_claude_cli(self) -> str | None:
         """查找 claude CLI 的绝对路径。"""
@@ -160,13 +170,20 @@ class ClaudeLLM(BaseLLM):
         messages: list[LLMMessage],
         kwargs: dict[str, Any],
     ) -> LLMResponse:
-        """通过 Anthropic SDK 调用。"""
+        """通过 Anthropic SDK 调用。
+
+        支持超时重试（指数退避，最多 max_retries 次）。
+        """
         from anthropic import Anthropic
 
-        client = Anthropic(
-            api_key=self._api_key if self._api_key else None,
-            base_url=self._base_url if self._base_url else None,
-        )
+        # 缓存客户端实例，复用 HTTP 连接池
+        if not hasattr(self, "_sdk_client") or self._sdk_client is None:
+            self._sdk_client = Anthropic(
+                api_key=self._api_key if self._api_key else None,
+                base_url=self._base_url if self._base_url else None,
+                timeout=600.0,
+            )
+        client = self._sdk_client
 
         # 分离 system 消息（如果有）
         system_msg = None
@@ -179,6 +196,49 @@ class ClaudeLLM(BaseLLM):
 
         max_tokens = kwargs.pop("max_tokens", 32768)
 
+        # 超时重试（指数退避）
+        max_retries = 2
+        last_error: Exception | None = None
+        for attempt in range(max_retries + 1):
+            try:
+                return self._do_sdk_stream(client, user_messages, system_msg, max_tokens, kwargs)
+            except Exception as e:
+                last_error = e
+                error_type = type(e).__name__
+                if attempt < max_retries:
+                    delay = 2**attempt
+                    logger.warning(
+                        "SDK 调用失败 (attempt=%d/%d, error=%s: %s), %ds 后重试",
+                        attempt + 1,
+                        max_retries + 1,
+                        error_type,
+                        str(e)[:200],
+                        delay,
+                    )
+                    time.sleep(delay)
+                else:
+                    logger.error(
+                        "SDK 调用最终失败 (%d 次重试后): %s: %s",
+                        max_retries + 1,
+                        error_type,
+                        str(e)[:200],
+                    )
+
+        raise (
+            LLMTimeoutError(f"SDK 调用失败（{max_retries + 1} 次尝试后）: {last_error}")
+            if last_error
+            else LLMTimeoutError("SDK 调用失败（未知错误）")
+        )
+
+    def _do_sdk_stream(
+        self,
+        client: Any,
+        user_messages: list[dict[str, str]],
+        system_msg: str | None,
+        max_tokens: int,
+        kwargs: dict[str, Any],
+    ) -> LLMResponse:
+        """执行 SDK 流式调用并解析结果。"""
         stream = client.messages.stream(
             model=self._model_id,
             messages=user_messages,
@@ -425,6 +485,3 @@ class ClaudeLLM(BaseLLM):
         other_chars = len(text) - chinese_chars
 
         return int(chinese_chars * 1.5 + other_chars * 0.25)
-
-    def __repr__(self) -> str:
-        return f"<ClaudeLLM model={self._model_id} tier={self._tier} backend={self._backend} context={self.max_context}>"

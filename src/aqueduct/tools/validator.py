@@ -12,7 +12,7 @@ from typing import Any, TypedDict
 
 from ..tools.base import BaseTool, ToolResult
 from ..tools.registry import register_tool
-from ..utils.regex import RE_COMMENT
+from ..utils.regex import PARTITION_FIELD_PATTERNS, RE_COMMENT, RE_JOIN, RE_ON
 
 logger = logging.getLogger(__name__)
 
@@ -35,20 +35,8 @@ _RE_DIV_PROTECT = re.compile(
     re.IGNORECASE,
 )
 _RE_WHEN_ZERO = re.compile(r"when\s+.+?>\s*0", re.IGNORECASE)
-_RE_JOIN = re.compile(
-    r"\b(left\s+join|right\s+join|inner\s+join|full\s+join|join)\b",
-    re.IGNORECASE,
-)
-_RE_ON = re.compile(r"\bon\b", re.IGNORECASE)
 _RE_SUM_NVL = re.compile(r"\bSUM\s*\(\s*(nvl|coalesce|case)", re.IGNORECASE)
 _RE_SUM_RAW = re.compile(r"\bSUM\s*\(\s*[a-zA-Z_]", re.IGNORECASE)
-
-# 分区字段正则列表
-_PARTITION_PATTERNS = [
-    re.compile(r"\binc_day\s*(=|in|between)", re.IGNORECASE),
-    re.compile(r"\bday\s*(=|in|between)", re.IGNORECASE),
-    re.compile(r"\bdata_day\s*(=|in|between)", re.IGNORECASE),
-]
 
 
 class Validator:
@@ -103,7 +91,7 @@ class Validator:
                 continue
             if _RE_WHERE.search(line):
                 has_where = True
-            for pat in _PARTITION_PATTERNS:
+            for pat in PARTITION_FIELD_PATTERNS:
                 if pat.search(line):
                     has_partition = True
                     break
@@ -161,16 +149,16 @@ class Validator:
         for i, line in enumerate(self.lines, 1):
             if RE_COMMENT.match(line):
                 continue
-            if _RE_JOIN.search(line):
-                if _RE_ON.search(line):
+            if RE_JOIN.search(line):
+                if RE_ON.search(line):
                     continue
                 found_on = False
                 for j in range(i, min(i + 10, len(self.lines))):
                     next_line = self.lines[j]
-                    if _RE_ON.search(next_line):
+                    if RE_ON.search(next_line):
                         found_on = True
                         break
-                    if _RE_JOIN.search(next_line) and j > i:
+                    if RE_JOIN.search(next_line) and j > i:
                         break
                 if not found_on:
                     self._log("WARN", "JOIN 语句缺少 ON 条件", i)

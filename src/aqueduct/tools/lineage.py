@@ -173,6 +173,7 @@ class LineageTool(BaseTool):
         parser = LineageParser(sql_file)
         parser.load_sql()
         parser.parse_table_lineage()
+        parser.parse_field_lineage()
 
         logger.info(
             "血缘解析完成: target=%s, sources=%d",

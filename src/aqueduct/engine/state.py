@@ -12,7 +12,7 @@
 from __future__ import annotations
 
 import sys
-from typing import TypedDict
+from typing import Any, TypedDict
 
 if sys.version_info >= (3, 11):
     from typing import NotRequired
@@ -129,6 +129,14 @@ class WorkflowState(TypedDict):
     cost_result: NotRequired[dict]
     online_sql: NotRequired[str]
     changed_sql: NotRequired[str]
+
+    # === 可选：审查→修复循环内部字段 ===
+    _needs_fix_loop: NotRequired[bool]  # 审查节点标记是否需要修复循环
+    _review_issues: NotRequired[list]  # 审查发现的问题列表
+
+    # === 可选：后台任务资源（异步血缘生成） ===
+    _lineage_future: NotRequired[Any]  # concurrent.futures.Future
+    _lineage_executor: NotRequired[Any]  # concurrent.futures.ThreadPoolExecutor
 
     # === 可选：变更管理（见 ChangeManagementState） ===
     original_requirement: NotRequired[str]

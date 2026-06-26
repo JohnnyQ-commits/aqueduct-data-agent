@@ -21,8 +21,27 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
 
-# 项目根目录（src/aqueduct/config/settings.py → 上溯 4 级）
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+
+def _find_project_root() -> Path:
+    """查找项目根目录。
+
+    策略：从当前文件向上搜索，找到包含 pyproject.toml 的目录。
+    如未找到，回退到固定层级（src/aqueduct/config/settings.py → 上溯 4 级）。
+    """
+    # 从当前文件向上搜索 pyproject.toml
+    current = Path(__file__).resolve().parent
+    for _ in range(10):  # 最多向上 10 级
+        if (current / "pyproject.toml").exists():
+            return current
+        parent = current.parent
+        if parent == current:  # 到达文件系统根目录
+            break
+        current = parent
+    # 回退：固定层级
+    return Path(__file__).resolve().parent.parent.parent.parent
+
+
+_PROJECT_ROOT = _find_project_root()
 
 
 class Settings(BaseSettings):
@@ -36,7 +55,7 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(
         env_prefix="AQUEDUCT_",  # 环境变量前缀
-        env_file=".env",  # 可选的 .env 文件
+        env_file=str(_PROJECT_ROOT / ".env"),  # 从项目根目录解析 .env
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -86,17 +105,17 @@ class Settings(BaseSettings):
 
     default_analysis_model: str = Field(
         default="claude-haiku-4-5-20251001",
-        description="轻量分析任务模型（Haiku 档）。可通过环境变量 ANTHROPIC_DEFAULT_HAIKU_MODEL 覆盖。",
+        description="轻量分析任务模型（Haiku 档）。可通过环境变量 AQUEDUCT_DEFAULT_ANALYSIS_MODEL 覆盖。",
     )
 
     default_medium_model: str = Field(
         default="claude-sonnet-4-6-20250514",
-        description="中等生成任务模型（Sonnet 档）。可通过环境变量 ANTHROPIC_DEFAULT_SONNET_MODEL 覆盖。",
+        description="中等生成任务模型（Sonnet 档）。可通过环境变量 AQUEDUCT_DEFAULT_MEDIUM_MODEL 覆盖。",
     )
 
     default_heavy_model: str = Field(
         default="claude-opus-4-7-20250514",
-        description="重度生成任务模型（Opus 档）。可通过环境变量 ANTHROPIC_DEFAULT_OPUS_MODEL 覆盖。",
+        description="重度生成任务模型（Opus 档）。可通过环境变量 AQUEDUCT_DEFAULT_HEAVY_MODEL 覆盖。",
     )
 
     # === 工作流配置 ===
@@ -177,6 +196,28 @@ class Settings(BaseSettings):
             path: Path = getattr(self, field_name)
             if not path.is_absolute():
                 setattr(self, field_name, root / path)
+        return self
+
+    @model_validator(mode="after")
+    def _validate_config(self) -> Settings:
+        """配置合法性校验。"""
+        from ..exceptions import ConfigError
+
+        # 校验日志级别
+        valid_levels = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        if self.log_level.upper() not in valid_levels:
+            raise ConfigError(
+                f"无效的日志级别: {self.log_level!r}，可选值: {', '.join(sorted(valid_levels))}"
+            )
+
+        # 校验执行参数
+        if self.execution_max_rows <= 0:
+            raise ConfigError(f"execution_max_rows 必须为正整数，当前值: {self.execution_max_rows}")
+        if self.execution_timeout_seconds <= 0:
+            raise ConfigError(
+                f"execution_timeout_seconds 必须为正数，当前值: {self.execution_timeout_seconds}"
+            )
+
         return self
 
     @model_validator(mode="after")

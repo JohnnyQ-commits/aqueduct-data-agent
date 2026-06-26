@@ -11,6 +11,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
+from string import Template
 from typing import Any
 
 
@@ -18,7 +19,7 @@ from typing import Any
 class SkillContext:
     """传递给 Skill 的执行上下文。
 
-    包含输入数据、当前工作流状态，以及可选的 LLM 实例。
+    包含输入数据和当前工作流状态。
     """
 
     input: Any = None
@@ -30,7 +31,9 @@ class SkillResult:
     """任意 Skill 执行的标准结果。"""
 
     success: bool
-    artifacts: list[str] = field(default_factory=list)  # 产出文件路径列表
+    artifacts: list[str] = field(
+        default_factory=list
+    )  # 产出文件路径列表（预留，当前通过 state["artifacts"] 传递）
     data: Any = None
     error: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)  # 附加元数据
@@ -43,7 +46,7 @@ class BaseSkill(ABC):
     需求澄清、方案设计、SQL 开发等。
 
     子类必须定义 `name`、`description` 和 `execute()`。
-    Prompt 从 `prompt_template_path` 指定的 Jinja2 .tpl.md 模板加载。
+    Prompt 从 `prompt_template_path` 指定的模板加载。
     """
 
     name: str = ""  # Skill 唯一标识（注册键）
@@ -65,8 +68,8 @@ class BaseSkill(ABC):
     def load_prompt_template(self, template_dir: Path | None = None, **variables: Any) -> str:
         """加载并渲染 Prompt 模板。
 
-        使用简单的字符串格式化（{变量} 占位符）。
-        如需 Jinja2 模板支持，子类可覆盖此方法。
+        使用 string.Template（$variable 语法）进行变量替换，
+        避免 str.format() 与 SQL 花括号冲突的风险。
 
         Args:
             template_dir: Prompt 模板目录。默认 skills/prompt/。
@@ -78,15 +81,15 @@ class BaseSkill(ABC):
         if template_dir is None:
             template_dir = Path(__file__).resolve().parent.parent / "skills" / "prompt"
 
+        if not self.prompt_template_path:
+            raise ValueError(f"Skill '{self.name}' 未配置 prompt_template_path，无法加载模板。")
+
         template_path = template_dir / self.prompt_template_path
         if not template_path.exists():
             raise FileNotFoundError(f"Prompt 模板不存在: {template_path}")
 
         content = template_path.read_text(encoding="utf-8")
-        try:
-            return content.format(**variables)
-        except KeyError as e:
-            raise KeyError(f"模板变量缺失 {e}，位于 {self.prompt_template_path}") from e
+        return Template(content).safe_substitute(**variables)
 
     def validate_input(self, context: SkillContext) -> list[str]:
         """执行前校验 Skill 输入。
@@ -95,6 +98,28 @@ class BaseSkill(ABC):
             错误消息列表。空列表表示校验通过。
         """
         return []
+
+    @staticmethod
+    def resolve_field(
+        name: str,
+        context: SkillContext,
+        default: str = "",
+    ) -> str:
+        """从 context.input 或 context.state 中解析字段值。
+
+        查找顺序：input dict → state dict → default。
+        消除各 Skill execute() 中重复的 ``inp.get(...) or state.get(...)`` 模式。
+
+        Args:
+            name: 字段名。
+            context: Skill 执行上下文。
+            default: 两处都未找到时的默认值。
+
+        Returns:
+            字段值。
+        """
+        inp = context.input if isinstance(context.input, dict) else {}
+        return inp.get(name) or context.state.get(name, default)
 
     def __repr__(self) -> str:
         return f"<Skill name={self.name!r} v={self.version}>"

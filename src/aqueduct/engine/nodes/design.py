@@ -90,7 +90,7 @@ def node_design(state: WorkflowState) -> WorkflowState:
             ddl_path = save_artifact(state, "Phase3-表结构.sql", ddl_content)
             state["ddl_content"] = ddl_content
             state["ddl_file"] = ddl_path
-            state["metadata"] = {**state["metadata"], "ddl_done": "true"}
+            state["metadata"] = {**state.get("metadata", {}), "ddl_done": "true"}
             logger.info(
                 "[task=%s, phase=2] DDL 已在合并调用中生成: ddl=%d 字符",
                 req_name,

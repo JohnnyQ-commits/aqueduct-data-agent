@@ -39,7 +39,14 @@ class SQLExecutorTool(BaseTool):
     )
 
     def __init__(self) -> None:
-        self._hive_tool = HiveExecuteTool()
+        self._hive_tool: HiveExecuteTool | None = None
+
+    @property
+    def _tool(self) -> HiveExecuteTool:
+        """延迟初始化 HiveExecuteTool，避免导入时失败影响全层。"""
+        if self._hive_tool is None:
+            self._hive_tool = HiveExecuteTool()
+        return self._hive_tool
 
     def execute(self, **kwargs: Any) -> ToolResult:
         """根据 action 参数分发到具体方法。"""
@@ -68,7 +75,7 @@ class SQLExecutorTool(BaseTool):
                 },
             )
 
-        result = self._hive_tool.health_check()
+        result = self._tool.health_check()
         is_ok = result["status"] == "ok"
         return ToolResult(
             success=is_ok,
@@ -96,7 +103,7 @@ class SQLExecutorTool(BaseTool):
 
         for idx, sql in enumerate(sqls):
             start = time.time()
-            qr = self._hive_tool.execute(sql)
+            qr = self._tool.execute(sql)
             elapsed_ms = int((time.time() - start) * 1000)
 
             if qr.success:
@@ -144,7 +151,7 @@ class SQLExecutorTool(BaseTool):
             )
 
         start = time.time()
-        qr = self._hive_tool.execute(sql, limit=settings.execution_max_rows)
+        qr = self._tool.execute(sql, limit=settings.execution_max_rows)
         elapsed_ms = int((time.time() - start) * 1000)
 
         if not qr.success:

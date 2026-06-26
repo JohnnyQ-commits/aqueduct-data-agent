@@ -2,12 +2,13 @@
 
 替代原有的 Markdown 提示词文件硬编码方式。
 每个 Prompt 模板是结构化的，包含 system prompt 和可选的 user prompt，
-支持 {变量} 占位符动态渲染。
+支持 $变量 占位符动态渲染（使用 string.Template 避免 SQL 花括号冲突）。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from string import Template
 from typing import Any
 
 from .base import LLMMessage
@@ -21,10 +22,13 @@ class PromptTemplate:
         template = PromptTemplate(
             id="sql_develop",
             system="你是一名资深数据仓库开发工程师...",
-            user="请根据以下需求编写 SQL：{requirement_doc}",
+            user="请根据以下需求编写 SQL：$requirement_doc",
             variables=["requirement_doc", "ddl_content"],
         )
         messages = template.render(requirement_doc="需求内容...", ddl_content="DDL内容...")
+
+    注意: 模板使用 string.Template 语法（$variable），而非 str.format()（{variable}），
+    以避免与 SQL 中的花括号冲突。
     """
 
     id: str  # 模板唯一标识
@@ -36,6 +40,9 @@ class PromptTemplate:
     def render(self, **kwargs: Any) -> list[LLMMessage]:
         """渲染模板为 LLM 消息列表。
 
+        使用 string.Template.safe_substitute() 进行变量替换，
+        避免 str.format() 与 SQL 花括号冲突的风险。
+
         Args:
             **kwargs: 模板变量值。
 
@@ -45,21 +52,19 @@ class PromptTemplate:
         Raises:
             KeyError: 缺少必需变量时抛出。
         """
-        try:
-            system_text = self.system.format(**kwargs)
-        except KeyError as e:
+        # 检查必需变量
+        missing = [v for v in self.variables if v not in kwargs]
+        if missing:
             raise KeyError(
-                f"Prompt 模板 '{self.id}' 缺少变量 {e}。必需变量: {self.variables}"
-            ) from e
+                f"Prompt 模板 '{self.id}' 缺少变量 {missing}。必需变量: {self.variables}"
+            )
 
+        system_text = Template(self.system).safe_substitute(**kwargs)
         messages = [LLMMessage(role="system", content=system_text)]
 
         if self.user:
-            try:
-                user_text = self.user.format(**kwargs)
-                messages.append(LLMMessage(role="user", content=user_text))
-            except KeyError as e:
-                raise KeyError(f"Prompt 模板 '{self.id}' user 部分缺少变量 {e}。") from e
+            user_text = Template(self.user).safe_substitute(**kwargs)
+            messages.append(LLMMessage(role="user", content=user_text))
 
         return messages
 

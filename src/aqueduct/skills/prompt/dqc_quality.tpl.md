@@ -22,9 +22,9 @@
 
 ## 输入
 
-- 目标表结构: {ddl_content}
-- 核心 SQL: {sql_content}
-- 业务域上下文: {domain_context}
+- 目标表结构: $ddl_content
+- 核心 SQL: $sql_content
+- 业务域上下文: $domain_context
 
 ---
 
@@ -124,7 +124,7 @@ select ...
 
 - 每个测试必须可独立运行
 - 不依赖其他测试的结果
-- 不依赖外部参数（除 `${{bizdate}}` 等标准变量）
+- 不依赖外部参数（除 `${bizdate}` 等标准变量）
 
 ### 可读性
 
@@ -152,7 +152,7 @@ select
     order_id,
     count(*) as cnt
 from order_stats
-where inc_day = '${{bizdate}}'
+where inc_day = '${bizdate}'
 group by order_id
 having count(*) > 1
 ;
@@ -163,7 +163,7 @@ having count(*) > 1
 select 
     count(*) as null_count
 from order_stats
-where inc_day = '${{bizdate}}'
+where inc_day = '${bizdate}'
   and order_id is null
 ;
 -- 预期: 0（主键不应为 NULL）
@@ -173,7 +173,7 @@ where inc_day = '${{bizdate}}'
 select 
     count(*) as invalid_count
 from order_stats
-where inc_day = '${{bizdate}}'
+where inc_day = '${bizdate}'
   and amount <= 0
 ;
 -- 预期: 0（金额必须为正）
@@ -181,8 +181,8 @@ where inc_day = '${{bizdate}}'
 -- [跨表一致性-总量对比] 与源表总量对比
 -- 权重: Medium
 select 
-    (select count(*) from order_stats where inc_day = '${{bizdate}}') as target_count,
-    (select count(*) from source_order where inc_day = '${{bizdate}}') as source_count
+    (select count(*) from order_stats where inc_day = '${bizdate}') as target_count,
+    (select count(*) from source_order where inc_day = '${bizdate}') as source_count
 ;
 -- 预期: target_count = source_count（或差异在可接受范围内）
 
@@ -191,7 +191,7 @@ select
 select 
     count(*) as empty_count
 from order_stats
-where inc_day = '${{bizdate}}'
+where inc_day = '${bizdate}'
   and (city is null or city = '')
 ;
 -- 预期: 0（city 不应为空）
@@ -199,8 +199,8 @@ where inc_day = '${{bizdate}}'
 -- [波动监控-总量环比] 与昨日总量对比
 -- 权重: Low
 select 
-    (select count(*) from order_stats where inc_day = '${{bizdate}}') as today_count,
-    (select count(*) from order_stats where inc_day = date_sub('${{bizdate}}', 1)) as yesterday_count
+    (select count(*) from order_stats where inc_day = '${bizdate}') as today_count,
+    (select count(*) from order_stats where inc_day = date_sub('${bizdate}', 1)) as yesterday_count
 ;
 -- 预期: 波动率 < 50%（突增突降需关注）
 ```

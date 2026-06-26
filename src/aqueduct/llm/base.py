@@ -8,14 +8,14 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 
 
 @dataclass
 class LLMMessage:
     """对话中的单条消息。"""
 
-    role: str  # "system" | "user" | "assistant"
+    role: Literal["system", "user", "assistant"]  # 消息角色
     content: str
 
 
@@ -92,10 +92,11 @@ class BaseLLM(ABC):
         不超过 max_context。子类可覆盖实现更精细的截断策略。
         """
         total = sum(self.estimate_tokens(m.content) for m in messages)
-        while messages and total > self.max_context:
-            removed = messages.pop(0)
-            total -= self.estimate_tokens(removed.content)
-        return messages
+        idx = 0
+        while idx < len(messages) and total > self.max_context:
+            total -= self.estimate_tokens(messages[idx].content)
+            idx += 1
+        return messages[idx:]
 
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__} model={self.model_id} context={self.max_context}>"

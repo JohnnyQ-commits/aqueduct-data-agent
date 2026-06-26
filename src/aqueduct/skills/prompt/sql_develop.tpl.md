@@ -21,10 +21,10 @@
 
 ## 输入
 
-- 需求摘要: {requirement_summary}
-- 目标表 DDL: {ddl_content}
-- 设计方案: {design_scheme}
-- 语义模型: {domain_context}
+- 需求摘要: $requirement_summary
+- 目标表 DDL: $ddl_content
+- 设计方案: $design_scheme
+- 语义模型: $domain_context
 
 ---
 
@@ -61,17 +61,17 @@
 |------|------|
 | 关键字小写 | `select`, `from`, `where`, `group by`, `left join` |
 | 字段垂直排列，4 空格缩进 | `select\n    col_a,\n    col_b` |
-| WHERE 紧凑（<=3 个条件内联） | `where inc_day = '${{bizdate}}' and status = 'active'` |
+| WHERE 紧凑（<=3 个条件内联） | `where inc_day = '${bizdate}' and status = 'active'` |
 | WHERE 多行（AND 前置，2 空格缩进） | `where cond_a\n  and cond_b\n  and cond_c` |
 | 函数内逗号后无空格 | `coalesce(a,0)`, `in('a','b','c')` |
 | JOIN 和 ON 独占一行 | `left join table_b\n    on a.id = b.id` |
 | 复杂逻辑用 CTE | `with cte as (...) select * from cte` |
 
-注：`${{bizdate}}` 表示 Hive SQL 中的分区日期变量（通常是运行时参数）。
+注：`${bizdate}` 表示 Hive SQL 中的分区日期变量（通常是运行时参数）。
 
 ### 业务规则
 
-- 源表必须包含分区过滤（`inc_day = '${{bizdate}}'` 或类似条件）
+- 源表必须包含分区过滤（`inc_day = '${bizdate}'` 或类似条件）
 - 可空数值字段使用 `coalesce()` 兜底
 - 除法运算前使用 `nullif(divisor, 0)` 保护
 - 禁止 `SELECT *` —— 必须列出所有字段
@@ -85,7 +85,7 @@
 🚫 **禁止在 WHERE 中对分区字段做函数转换**（如 `where year(inc_day) = '2026'`）  
 🚫 **禁止在 JOIN 条件中使用 OR** —— 会导致全表扫描  
 🚫 **禁止嵌套超过 2 层子查询** —— 用 CTE 替代  
-🚫 **禁止遗漏分区过滤** —— 每个源表必须有 `inc_day = '${{bizdate}}'` 或类似分区条件  
+🚫 **禁止遗漏分区过滤** —— 每个源表必须有 `inc_day = '${bizdate}'` 或类似分区条件  
 🚫 **禁止使用笛卡尔积（CROSS JOIN）** —— 除非明确需要且数据量可控  
 🚫 **禁止字段名与 SQL 关键字冲突**（如 `order`, `group`, `select`）  
 🚫 **禁止字符串比较大小写不一致** —— 统一用 `lower()` 或 `upper()`  
@@ -187,12 +187,12 @@ domain_context: "实体: Order (order_id, city, order_status, inc_day). 指标: 
 -- 描述: 每日各城市订单数量统计
 -- ============================================================
 
-insert overwrite table city_daily_stats partition (inc_day = '${{bizdate}}')
+insert overwrite table city_daily_stats partition (inc_day = '${bizdate}')
 select
     city,
     count(order_id) as order_cnt
 from dwd.order_detail
-where inc_day = '${{bizdate}}'
+where inc_day = '${bizdate}'
     and order_type = 'scatter'
 group by city
 ;

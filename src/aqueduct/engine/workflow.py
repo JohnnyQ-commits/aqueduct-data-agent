@@ -196,6 +196,24 @@ class CompiledWorkflow:
 
             executed.add(node_name)
 
+            # 审查→修复回环：review 节点后检查是否需要修复并重新审查
+            if node_name == "review" and state.get("_needs_fix_loop"):
+                fix_iterations = state.get("fix_iterations", 0)
+                max_fix_iterations = state.get("_max_fix_iterations", 2)
+                if fix_iterations < max_fix_iterations:
+                    from ..core import _run_fix_loop
+
+                    logger.info("工作流: 审查→修复回环（第 %d 次）", fix_iterations + 1)
+                    state = _run_fix_loop(state)
+                    # 重新执行 review 节点
+                    if "review" in self._nodes:
+                        try:
+                            state = self._execute_node("review", state)
+                        except WorkflowHaltError as e:
+                            state.setdefault("errors", []).append(str(e))
+                            logger.warning("修复后审查终止: %s", e)
+                            break
+
             # 后继节点入度减 1，入度为 0 则入队
             for next_node in adj.get(node_name, []):
                 in_degree[next_node] -= 1

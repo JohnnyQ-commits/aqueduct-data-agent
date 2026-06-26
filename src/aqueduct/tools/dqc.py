@@ -12,6 +12,43 @@ from typing import Any
 
 from ..tools.base import BaseTool, ToolResult
 from ..tools.registry import register_tool
+from ..utils.regex import extract_tables
+
+
+def _mock_run_tests(test_cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """共享的 mock 测试执行逻辑 — 90% 通过率，带分类修复建议。"""
+    import random
+
+    results = []
+    for case in test_cases:
+        is_success = random.random() > 0.1
+        case["status"] = "PASSED" if is_success else "FAILED"
+        case["value"] = "0" if is_success else str(random.randint(1, 100))
+        case["exec_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        if case["status"] == "FAILED":
+            full_test_id = f"{case.get('category', '')}-{case.get('name', '')}"
+            if "唯一性" in full_test_id or "主键" in full_test_id:
+                case["fix_suggestion"] = (
+                    "**严重**: 检查上游数据是否存在重复，或关联逻辑是否产生笛卡尔积。"
+                )
+            elif "反证" in full_test_id:
+                case["fix_suggestion"] = (
+                    "**逻辑**: 检查关联条件(Join)或过滤条件(Where)是否包含非预期数据。"
+                )
+            elif "时效性" in full_test_id:
+                case["fix_suggestion"] = "**链路**: 检查调度任务是否延迟，或源表数据同步是否中断。"
+            elif "一致性" in full_test_id:
+                case["fix_suggestion"] = (
+                    "**标准**: 检查字段长度补齐(lpad)或主维表数据是否存在缺失。"
+                )
+            else:
+                case["fix_suggestion"] = "请人工介入分析业务规则。"
+        else:
+            case["fix_suggestion"] = "-"
+
+        results.append(case)
+    return results
 
 
 def _parse_test_cases(dqc_sql: str) -> list[dict[str, Any]]:
@@ -128,8 +165,7 @@ class DQCTool(BaseTool):
         dqc_content = dqc_path.read_text(encoding="utf-8")
 
         # 提取涉及的表
-        table_matches = re.findall(r"\b([a-zA-Z_]\w*\.[a-zA-Z_]\w*)\b", dqc_content)
-        involved_tables = sorted(list(set(table_matches)))
+        involved_tables = extract_tables(dqc_content)
 
         # 解析测试用例
         test_cases = _parse_test_cases(dqc_content)
@@ -142,16 +178,8 @@ class DQCTool(BaseTool):
         # 执行测试
         results = []
         if execution_enabled:
-            # TODO: 接入数据平台实际执行 DQC SQL（当前未实现）
-            # 暂用模拟执行：90% 通过率，与实际 DQCExecuter.run_tests_mock() 一致
-            import random
-
-            for case in test_cases:
-                is_success = random.random() > 0.1
-                case["status"] = "PASSED" if is_success else "FAILED"
-                case["value"] = "0" if is_success else str(random.randint(1, 100))
-                case["fix_suggestion"] = "-" if is_success else "请人工介入分析"
-                results.append(case)
+            # 暂用模拟执行（与 DQCExecuter.run_tests_mock() 共享逻辑）
+            results = _mock_run_tests(test_cases)
         else:
             # 执行能力关闭：标记为 SKIPPED
             for case in test_cases:
@@ -219,48 +247,14 @@ class DQCExecuter:
             content = f.read()
 
         # 提取涉及的表 (库.表 格式)
-        table_matches = re.findall(r"\b([a-zA-Z_]\w*\.[a-zA-Z_]\w*)\b", content)
-        self.involved_tables = sorted(list(set(table_matches)))
+        self.involved_tables = extract_tables(content)
 
         # 优化解析逻辑：支持带分类、预期结果的测试项
         self.test_cases = _parse_test_cases(content)
 
     def run_tests_mock(self) -> None:
-        """模拟测试执行逻辑。"""
-        import random
-
-        for case in self.test_cases:
-            # 模拟执行结果：90% 概率成功
-            is_success = random.random() > 0.1
-            case["status"] = "PASSED" if is_success else "FAILED"
-            case["value"] = "0" if is_success else str(random.randint(1, 100))
-            case["exec_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-            # 增加修复建议
-            if case["status"] == "FAILED":
-                full_test_id = f"{case['category']}-{case['name']}"
-                if "唯一性" in full_test_id or "主键" in full_test_id:
-                    case["fix_suggestion"] = (
-                        "**严重**: 检查上游数据是否存在重复，或关联逻辑是否产生笛卡尔积。"
-                    )
-                elif "反证" in full_test_id:
-                    case["fix_suggestion"] = (
-                        "**逻辑**: 检查关联条件(Join)或过滤条件(Where)是否包含非预期数据。"
-                    )
-                elif "时效性" in full_test_id:
-                    case["fix_suggestion"] = (
-                        "**链路**: 检查调度任务是否延迟，或源表数据同步是否中断。"
-                    )
-                elif "一致性" in full_test_id:
-                    case["fix_suggestion"] = (
-                        "**标准**: 检查字段长度补齐(lpad)或主维表数据是否存在缺失。"
-                    )
-                else:
-                    case["fix_suggestion"] = "请人工介入分析业务规则。"
-            else:
-                case["fix_suggestion"] = "-"
-
-            self.results.append(case)
+        """模拟测试执行逻辑（委托给共享的 _mock_run_tests）。"""
+        self.results = _mock_run_tests(self.test_cases)
 
     def generate_dqc_report_md(self) -> str:
         """生成 DQC 报告 Markdown。"""

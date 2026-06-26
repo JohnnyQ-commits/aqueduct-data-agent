@@ -22,8 +22,8 @@
 
 ## 输入
 
-- 需求文档: {requirement_doc}
-- 业务域上下文: {domain_context}
+- 需求文档: $requirement_doc
+- 业务域上下文: $domain_context
 
 ---
 

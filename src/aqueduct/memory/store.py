@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from ..exceptions import DomainNotFoundError
 from .domain import Attribute, DomainModel, Metric
 
 logger = logging.getLogger(__name__)
@@ -47,12 +48,12 @@ class MemoryStore:
             DomainModel 实例。
 
         Raises:
-            FileNotFoundError: 业务域文件不存在。
+            DomainNotFoundError: 业务域文件不存在。
         """
         if domain_id not in self._cache:
             path = self._domains_dir / f"{domain_id}.json"
             if not path.exists():
-                raise FileNotFoundError(f"业务域 '{domain_id}' 不存在: {path}")
+                raise DomainNotFoundError(f"业务域 '{domain_id}' 不存在: {path}")
 
             self._cache[domain_id] = DomainModel.from_json(path)
             logger.debug(
@@ -104,7 +105,7 @@ class MemoryStore:
         for domain_id in self.list_domains():
             try:
                 domain = self.load(domain_id)
-            except FileNotFoundError:
+            except DomainNotFoundError:
                 continue
 
             score = self._score_domain(domain, keywords)

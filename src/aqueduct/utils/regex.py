@@ -13,7 +13,7 @@ import re
 
 # 匹配 库.表 格式的表名（用于提取所有数据源表）
 RE_TABLE_NAME = re.compile(
-    r"\b([a-zA-Z_][a-zA-Z0-9_]*)\.([a-zA-Z_][a-zA-Z0-9_]*)\b",
+    r"\b([a-zA-Z_][a-zA-Z0-9_]*)\.([\w.]+)",
 )
 
 # JOIN 关键字匹配（支持 left/right/inner/full join）

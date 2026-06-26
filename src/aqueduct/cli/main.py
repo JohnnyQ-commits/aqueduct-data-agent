@@ -18,6 +18,7 @@ import argparse
 import io
 import logging
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 # Windows GBK 编码兼容：强制 UTF-8 输出
@@ -44,7 +45,7 @@ from ..exceptions import AqueductError
 logger = logging.getLogger(__name__)
 
 
-def _make_progress_callback() -> callable:
+def _make_progress_callback() -> Callable:
     """创建进度回调函数，用于实时打印阶段信息。"""
 
     def on_progress(phase_name: str, idx: int, total: int, state: WorkflowState) -> None:
@@ -53,7 +54,7 @@ def _make_progress_callback() -> callable:
     return on_progress
 
 
-def _make_confirm_callback() -> callable:
+def _make_confirm_callback() -> Callable:
     """创建确认回调函数，用于 Phase 1 后的用户交互确认。"""
 
     def on_confirm(state: WorkflowState) -> bool:
@@ -87,20 +88,21 @@ def _make_confirm_callback() -> callable:
         print("  [N] 停止，需要修改需求文档", flush=True)
         print("  [Q] 退出", flush=True)
         try:
-            choice = input("\nYour choice (Y/n/q): ").strip().lower()
+            choice = input("\nYour choice (y/N/q): ").strip().lower()
         except (EOFError, KeyboardInterrupt):
-            choice = "y"  # Ctrl+C / Ctrl+D 默认继续
+            choice = "n"  # Ctrl+C / Ctrl+D 默认停止（安全优先）
 
-        if choice in ("n",):
+        if choice in ("y", "yes"):
+            return True
+        elif choice in ("q",):
+            print("\n[INFO] Exit.", flush=True)
+            return False
+        else:
             print(
                 "\n[INFO] Stopping workflow. Please update requirement doc.",
                 flush=True,
             )
             return False
-        elif choice in ("q",):
-            print("\n[INFO] Exit.", flush=True)
-            return False
-        return True
 
     return on_confirm
 

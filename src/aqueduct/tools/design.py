@@ -57,9 +57,9 @@ def _parse_source_tables(sql: str) -> list[dict[str, str]]:
         if is_snapshot:
             partition_info = "快照表(无分区)"
         else:
-            table_pos = sql.lower().find(table.lower())
-            if table_pos >= 0:
-                context = sql[table_pos : table_pos + 1000]
+            m_table = re.search(re.escape(table.lower()), sql.lower())
+            if m_table:
+                context = sql[m_table.start() : m_table.start() + 1000]
                 m = RE_INC_DAY_FILTER.search(context)
                 if m:
                     partition_info = m.group(1) or "inc_day 有过滤"

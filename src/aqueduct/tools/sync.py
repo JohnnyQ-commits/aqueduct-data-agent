@@ -64,11 +64,17 @@ class SyncTool(BaseTool):
             success=True,
             data={
                 "ddl": ddl_content,
-                "table_name": re.search(
-                    r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\S+)", ddl_content, re.IGNORECASE
-                ).group(1)
-                if create_match
-                else "unknown",
+                "table_name": (
+                    m.group(1)
+                    if (
+                        m := re.search(
+                            r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\S+)",
+                            ddl_content,
+                            re.IGNORECASE,
+                        )
+                    )
+                    else "unknown"
+                ),
             },
             metadata={"status": "synced"},
         )

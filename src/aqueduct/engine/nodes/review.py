@@ -23,6 +23,7 @@ def _parse_review_issues(review_result: str) -> list[dict[str, str]]:
     - **Critical**: ...
     """
     issues: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
 
     # 匹配 [Critical] / [Warning] / [INFO] 格式
     bracket_pattern = re.compile(
@@ -36,9 +37,15 @@ def _parse_review_issues(review_result: str) -> list[dict[str, str]]:
     )
 
     for m in bracket_pattern.finditer(review_result):
-        issues.append({"severity": m.group(1), "message": m.group(2).strip()})
+        key = (m.group(1).lower(), m.group(2).strip())
+        if key not in seen:
+            seen.add(key)
+            issues.append({"severity": m.group(1), "message": m.group(2).strip()})
     for m in bold_pattern.finditer(review_result):
-        issues.append({"severity": m.group(1), "message": m.group(2).strip()})
+        key = (m.group(1).lower(), m.group(2).strip())
+        if key not in seen:
+            seen.add(key)
+            issues.append({"severity": m.group(1), "message": m.group(2).strip()})
 
     return issues
 

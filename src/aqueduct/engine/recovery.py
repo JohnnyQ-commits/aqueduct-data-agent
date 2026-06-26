@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import random
+import re
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -113,38 +114,37 @@ class RecoveryStrategy:
         if isinstance(error, WorkflowError):
             return ErrorSeverity.VALIDATION
 
-        # Fallback：字符串关键词匹配
+        # Fallback：字符串关键词匹配（使用词边界避免误匹配）
         error_msg = str(error).lower()
 
         # 临时错误：网络相关、超时、限流
-        transient_keywords = [
-            "timeout",
-            "rate limit",
-            "429",
-            "connection",
-            "retry",
-            "network",
-            "unreachable",
-            "reset",
-            "temporarily",
-            "overloaded",
-            "throttl",
+        transient_patterns = [
+            r"\btimeout\b",
+            r"\brate\s+limit\b",
+            r"\b429\b",
+            r"\bconnection(?:ed|refused|reset)?\b",
+            r"\bretry\b",
+            r"\bnetwork\b",
+            r"\bunreachable\b",
+            r"\btemporarily\b",
+            r"\boverloaded\b",
+            r"\bthrottl\w*\b",
         ]
-        if any(kw in error_msg for kw in transient_keywords):
+        if any(re.search(pat, error_msg) for pat in transient_patterns):
             return ErrorSeverity.TRANSIENT
 
         # 校验错误：参数缺失、格式错误
-        validation_keywords = [
-            "missing",
-            "invalid",
-            "format",
-            "not found",
-            "未注册",
-            "校验失败",
-            "参数错误",
-            "required",
+        validation_patterns = [
+            r"\bmissing\b",
+            r"\binvalid\b",
+            r"\bformat\s+error\b",
+            r"\bnot\s+found\b",
+            r"未注册",
+            r"校验失败",
+            r"参数错误",
+            r"\brequired\b",
         ]
-        if any(kw in error_msg for kw in validation_keywords):
+        if any(re.search(pat, error_msg) for pat in validation_patterns):
             return ErrorSeverity.VALIDATION
 
         # 其他为致命错误

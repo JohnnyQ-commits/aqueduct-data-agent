@@ -13,7 +13,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import os
 import sys
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
@@ -43,6 +45,7 @@ def setup_logging(
     log_dir: Path | None = None,
     log_file: str = "aqueduct.log",
     console: bool = True,
+    log_format: str = "",
 ) -> None:
     """配置全局日志系统。
 
@@ -51,6 +54,7 @@ def setup_logging(
         log_dir: 日志文件目录。默认项目根目录 logs/。
         log_file: 日志文件名。
         console: 是否输出到控制台。
+        log_format: 日志格式字符串。为空时使用内置默认格式。
     """
     root_logger = logging.getLogger()
 
@@ -65,8 +69,9 @@ def setup_logging(
     if console:
         console_handler = logging.StreamHandler(sys.stdout)
         console_handler.setLevel(log_level)
+        console_fmt_str = log_format or "%(asctime)s %(levelname)s %(name)s: %(message)s"
         console_fmt = _ColorFormatter(
-            fmt="%(asctime)s %(levelname)s %(name)s: %(message)s",
+            fmt=console_fmt_str,
             datefmt="%H:%M:%S",
         )
         console_handler.setFormatter(console_fmt)
@@ -78,6 +83,12 @@ def setup_logging(
         log_dir = Path(__file__).resolve().parent.parent.parent.parent / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / log_file
+
+    # 设置日志文件权限为仅所有者可读写（保护敏感查询数据）
+    if not log_path.exists():
+        log_path.touch()
+    with contextlib.suppress(OSError):
+        os.chmod(log_path, 0o600)
 
     file_handler = TimedRotatingFileHandler(
         filename=log_path,

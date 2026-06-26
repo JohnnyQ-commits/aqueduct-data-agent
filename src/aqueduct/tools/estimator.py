@@ -6,13 +6,12 @@
 from __future__ import annotations
 
 import logging
-import re
 from pathlib import Path
 from typing import Any
 
 from ..tools.base import BaseTool, ToolResult
 from ..tools.registry import register_tool
-from ..utils.regex import RE_JOIN, RE_TABLE_NAME
+from ..utils.regex import RE_JOIN, RE_ON, RE_TABLE_NAME
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +57,7 @@ class CostEstimator:
 
         # 风险 2: 潜在笛卡尔积
         join_count = len(RE_JOIN.findall(self.sql_content))
-        on_count = len(re.findall(r"\bon\b", self.sql_content, re.IGNORECASE))
+        on_count = len(RE_ON.findall(self.sql_content))
         if join_count > on_count:
             self.risks.append("高风险: 检测到 JOIN 数量多于 ON 条件数量，疑似存在笛卡尔积。")
 

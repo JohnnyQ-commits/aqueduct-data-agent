@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
-import random
+import secrets
 import string
 import time
 from typing import Any
@@ -39,14 +39,27 @@ class DataPlatformAdapter:
                 f"请在 .env 文件或系统环境变量中配置。"
             )
 
+        # 安全检查：Cookie 不应通过明文 HTTP 传输
+        if not self.base_url.startswith("https://"):
+            logger.warning(
+                "DP_BASE_URL 未使用 HTTPS，Cookie 凭证可能明文传输: %s",
+                self.base_url,
+            )
+
         self.client = httpx.Client(
             base_url=self.base_url,
             headers={"Cookie": self.cookie},
             timeout=60.0,
         )
 
+    def __repr__(self) -> str:
+        """脱敏表示，防止凭证泄露到日志/异常。"""
+        return (
+            f"DataPlatformAdapter(base_url={self.base_url!r}, cookie=***, user_id={self.user_id!r})"
+        )
+
     def _generate_window_id(self) -> str:
-        return f"copilot_{''.join(random.choices(string.ascii_lowercase + string.digits, k=8))}"
+        return f"copilot_{''.join(secrets.choice(string.ascii_lowercase + string.digits) for _ in range(8))}"
 
     def execute_hive_query(self, sql: str) -> dict[str, Any]:
         """执行 Hive SQL 查询（提交 -> 轮询 -> 取结果）。"""

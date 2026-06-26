@@ -21,6 +21,26 @@ from .helpers import call_llm, get_output_dir
 logger = logging.getLogger(__name__)
 
 
+def _sanitize_filename(name: str, max_length: int = 50) -> str:
+    """清理文件名，移除文件系统不允许的字符。
+
+    Args:
+        name: 原始文件名。
+        max_length: 最大长度限制。
+
+    Returns:
+        安全的文件名字符串。
+    """
+    # 移除文件系统不允许的字符
+    sanitized = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name)
+    # 移除首尾空白和点
+    sanitized = sanitized.strip().strip(".")
+    # 截断到安全长度
+    if len(sanitized) > max_length:
+        sanitized = sanitized[:max_length]
+    return sanitized or "unnamed"
+
+
 def _get_changes_dir(state: WorkflowState) -> Path:
     """获取变更目录: output/{需求名}/changes/"""
     output_dir = get_output_dir(state)
@@ -126,7 +146,7 @@ def node_change_document(state: WorkflowState) -> WorkflowState:
         change_summary = state.get("change_description", "变更")
 
         # 创建 CR 目录
-        cr_dir_name = f"CR-{cr_number}_{change_summary[:20]}"
+        cr_dir_name = f"CR-{cr_number}_{_sanitize_filename(change_summary, 20)}"
         cr_dir = changes_dir / cr_dir_name
         cr_dir.mkdir(parents=True, exist_ok=True)
 

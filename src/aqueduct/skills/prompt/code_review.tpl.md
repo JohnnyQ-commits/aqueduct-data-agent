@@ -21,12 +21,12 @@
 
 ## 输入
 
-- 需求描述: {requirement_desc}
-- 线上版本 SQL: {online_sql}
-- 变更版本 SQL: {changed_sql}
-- 核心 SQL（开发模式）: {sql_content}
-- 业务域上下文: {domain_context}
-- 校验结果: {validation_result}
+- 需求描述: $requirement_desc
+- 线上版本 SQL: $online_sql
+- 变更版本 SQL: $changed_sql
+- 核心 SQL（开发模式）: $sql_content
+- 业务域上下文: $domain_context
+- 校验结果: $validation_result
 
 ---
 
@@ -154,7 +154,7 @@ sql_content: "SELECT * FROM source_table WHERE status = 'active'"
 
 | 问题类型 | 位置 | 描述 | 修复建议 | 严重级别 |
 |---------|------|------|---------|---------|
-| missing_filter | WHERE 子句 | source_table 缺少分区过滤 | 添加 `where inc_day = '${{bizdate}}'` | Critical |
+| missing_filter | WHERE 子句 | source_table 缺少分区过滤 | 添加 `where inc_day = '${bizdate}'` | Critical |
 | select_star | SELECT 子句 | 使用了 SELECT * | 列出需要的字段 | Warning |
 | missing_header | 文件头 | 缺少文件头注释 | 添加需求、目标表、作者等元数据 | Warning |
 

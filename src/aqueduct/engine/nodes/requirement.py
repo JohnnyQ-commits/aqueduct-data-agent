@@ -44,10 +44,10 @@ def _extract_target_table(text: str) -> str:
     if m:
         return m.group(1)
 
-    # 模式 4: 独立的 schema.table 格式（至少含一个点）
-    candidates = re.findall(r"\b([a-z_]+\.[a-z_]+)\b", text, re.IGNORECASE)
+    # 模式 4: 独立的 schema.table 格式（两段均 ≥2 字符，排除 e.g. / i.e. 等缩写）
+    candidates = re.findall(r"\b([a-z_]{2,})\.([a-z_]{2,})\b", text, re.IGNORECASE)
     if candidates:
-        return candidates[0]
+        return f"{candidates[0][0]}.{candidates[0][1]}"
 
     return ""
 

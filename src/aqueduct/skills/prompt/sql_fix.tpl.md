@@ -20,8 +20,8 @@
 
 ## 输入
 
-- 原始 SQL: {sql_content}
-- 审查发现的问题: {issues_formatted}
+- 原始 SQL: $sql_content
+- 审查发现的问题: $issues_formatted
 
 ---
 

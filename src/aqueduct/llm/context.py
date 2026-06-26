@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -49,6 +50,7 @@ class ContextManager:
         self._model = model
         self._budget = budget or ContextBudget(max_tokens=self._model.max_context)
         self._messages: list[LLMMessage] = []
+        self._cached_token_count: int | None = None
 
     @property
     def messages(self) -> list[LLMMessage]:
@@ -57,13 +59,21 @@ class ContextManager:
 
     @property
     def token_count(self) -> int:
-        """当前上下文的 Token 总数。"""
-        return sum(self._model.estimate_tokens(m.content) for m in self._messages)
+        """当前上下文的 Token 总数（带缓存）。"""
+        if self._cached_token_count is None:
+            self._cached_token_count = sum(
+                self._model.estimate_tokens(m.content) for m in self._messages
+            )
+        return self._cached_token_count
 
     @property
     def remaining_tokens(self) -> int:
         """剩余可用 Token 数。"""
         return self._budget.available - self.token_count
+
+    def _invalidate_cache(self) -> None:
+        """标记缓存失效。"""
+        self._cached_token_count = None
 
     def add(self, message: LLMMessage) -> bool:
         """添加一条消息到上下文。
@@ -77,6 +87,7 @@ class ContextManager:
             True 表示添加成功，False 表示消息因空间不足被丢弃。
         """
         self._messages.append(message)
+        self._invalidate_cache()
         # 如果超出预算，自动截断
         if self.token_count > self._budget.available:
             old_count = len(self._messages)
@@ -94,10 +105,12 @@ class ContextManager:
     def clear(self) -> None:
         """清空上下文，保留系统提示词。"""
         self._messages = [m for m in self._messages if m.role == "system"]
+        self._invalidate_cache()
 
     def reset(self) -> None:
         """完全重置上下文。"""
         self._messages = []
+        self._invalidate_cache()
 
     def _truncate(self) -> None:
         """截断消息使其适配上下文窗口。
@@ -109,16 +122,30 @@ class ContextManager:
         """
         # 分离系统消息和普通消息
         system_msgs = [m for m in self._messages if m.role == "system"]
-        other_msgs = [m for m in self._messages if m.role != "system"]
+        other_msgs: deque[LLMMessage] = deque(m for m in self._messages if m.role != "system")
 
-        # 从最旧的开始移除
+        # 从最旧的开始移除（deque.popleft() 是 O(1)）
         while other_msgs:
-            other_msgs.pop(0)
-            total = sum(self._model.estimate_tokens(m.content) for m in system_msgs + other_msgs)
+            other_msgs.popleft()
+            total = sum(self._model.estimate_tokens(m.content) for m in system_msgs) + sum(
+                self._model.estimate_tokens(m.content) for m in other_msgs
+            )
             if total <= self._budget.available:
                 break
 
-        self._messages = system_msgs + other_msgs
+        # 系统消息自身已超出预算，无法继续截断
+        if not other_msgs:
+            system_tokens = sum(self._model.estimate_tokens(m.content) for m in system_msgs)
+            if system_tokens > self._budget.available:
+                from ..exceptions import LLMContextExceededError
+
+                raise LLMContextExceededError(
+                    f"系统消息 ({system_tokens} tokens) 已超出上下文预算 "
+                    f"({self._budget.available} tokens)，无法截断至可用空间。"
+                )
+
+        self._messages = system_msgs + list(other_msgs)
+        self._invalidate_cache()
 
     def compress(
         self,
@@ -148,6 +175,7 @@ class ContextManager:
 
         summary = compressor(history)
         self._messages = system_msgs + [summary] + recent
+        self._invalidate_cache()
 
     @staticmethod
     def _default_compressor(messages: list[LLMMessage]) -> LLMMessage:
