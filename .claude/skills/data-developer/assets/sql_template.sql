@@ -1,17 +1,154 @@
 -- ============================================================
--- Requirement: {{requirement_name}}
--- Target Table: {{target_table}}
--- Source Tables: {{source_tables}}
--- Author: aqueduct
--- Date: {{date}}
--- Description: {{description}}
+-- 需求：{{requirement_name}}
+-- 目标表：{{target_table}}
+-- 源表：{{source_tables}}
+-- 作者：aqueduct
+-- 日期：{{date}}
+-- 描述：{{description}}
 -- ============================================================
 
-INSERT OVERWRITE TABLE {{target_table}} PARTITION (inc_day = '${bizdate}')
-SELECT
-    {{columns}}
-FROM {{source_table}}
-WHERE inc_day = '${bizdate}'
-    {{additional_filters}}
-{{group_by}}
-;
+-- ============================================================
+-- 示例 1：简单场景（≤3 张源表）— 子查询方式
+-- ============================================================
+-- insert overwrite table dw_demo.dws_emp_tool_daily_di partition (inc_day = '${bizdate}')
+-- select
+--     a.emp_code,
+--     a.emp_name,
+--     coalesce(b.dept_name,'') as dept_name,
+--     coalesce(a.tool_total_num,0) as tool_total_num
+-- from (
+--     select
+--         emp_code,
+--         emp_name,
+--         tool_total_num
+--     from dwd.emp_info_di
+--     where inc_day = '${bizdate}'
+--         and employ_status = '在职'
+-- ) a
+-- left join (
+--     select
+--         emp_code,
+--         dept_name
+--     from dwd.dim_dept_info_df
+--     where inc_day = '${bizdate}'
+-- ) b
+-- on a.emp_code = b.emp_code
+-- ;
+
+-- ============================================================
+-- 示例 2：复杂场景（4-6 张源表）— CTE 方式
+-- ============================================================
+-- CTE 优势：逻辑从上到下读，比嵌套括号清晰
+-- CTE 局限：中间结果不落地，数据问题排查时需手动拆出 CTE 单独跑
+-- with emp_base as (
+--     select
+--         emp_code,
+--         emp_name,
+--         dept_code,
+--         area_code,
+--         employ_status
+--     from dwd.emp_info_di
+--     where inc_day = '${bizdate}'
+--         and employ_status = '在职'
+--         and position_attr_tx = '一线'
+-- ),
+-- tool_agg as (
+--     select
+--         emp_code,
+--         count(tool_name) as tool_cnt,
+--         coalesce(sum(tool_total_num),0) as tool_total
+--     from dwd.emp_tool_di
+--     where inc_day = '${bizdate}'
+--     group by emp_code
+-- ),
+-- order_agg as (
+--     select
+--         emp_code,
+--         count(order_id) as order_cnt,
+--         coalesce(sum(pay_amount),0) as gmv
+--     from dwd.dwd_order_detail_di
+--     where inc_day = '${bizdate}'
+--         and order_status >= '20'
+--     group by emp_code
+-- )
+-- insert overwrite table dw_demo.dws_emp_daily_di partition (inc_day = '${bizdate}')
+-- select
+--     e.emp_code,
+--     e.emp_name,
+--     coalesce(t.tool_cnt,0) as tool_cnt,
+--     t.tool_total,
+--     coalesce(o.order_cnt,0) as order_cnt,
+--     o.gmv,
+--     round(o.gmv / nullif(o.order_cnt,0), 2) as avg_order_amount
+-- from emp_base e
+-- left join tool_agg t
+--     on e.emp_code = t.emp_code
+-- left join order_agg o
+--     on e.emp_code = o.emp_code
+-- ;
+
+-- ============================================================
+-- 示例 3：更复杂场景（≥7 张源表或 60+ 字段）— 分层建表
+-- ============================================================
+-- 中间表：tmp_{库名}.tmp_{需求简称}_{聚合主题}
+-- create table tmp_demo.tmp_order_daily_stat_city as
+-- select
+--     o.inc_day,
+--     o.city,
+--     c.city_name,
+--     count(distinct o.order_id) as order_cnt,
+--     sum(o.pay_amount) as gmv,
+--     count(distinct o.customer_id) as customer_cnt,
+--     coalesce(sum(case when o.order_type = 'scatter' then o.pay_amount end), 0) as scatter_gmv,
+--     coalesce(sum(case when o.order_type = 'delivery' then o.pay_amount end), 0) as delivery_gmv
+-- from dwd.dwd_order_detail_di o
+-- left join dwd.dim_city_info_df c
+--     on o.city = c.city_code and c.inc_day = '${bizdate}'
+-- left join dwd.dim_customer_info_df cu
+--     on o.customer_id = cu.customer_id and cu.inc_day = '${bizdate}'
+-- left join dwd.dim_product_info_df p
+--     on o.product_id = p.product_id and p.inc_day = '${bizdate}'
+-- left join dwd.dim_shop_info_df s
+--     on o.shop_id = s.shop_id and s.inc_day = '${bizdate}'
+-- left join dwd.dim_category_info_df cat
+--     on o.category_id = cat.category_id and cat.inc_day = '${bizdate}'
+-- left join dwd.dim_payment_info_df pay
+--     on o.payment_id = pay.payment_id and pay.inc_day = '${bizdate}'
+-- left join dwd.dim_logistics_info_df log
+--     on o.logistics_id = log.logistics_id and log.inc_day = '${bizdate}'
+-- where o.inc_day = '${bizdate}'
+--     and o.order_status >= '20'
+-- group by
+--     o.inc_day,
+--     o.city,
+--     c.city_name
+-- ;
+--
+-- 最终表：从中间表取数
+-- insert overwrite table ads_demo.ads_order_daily_stat_di partition (inc_day = '${bizdate}')
+-- select
+--     city,
+--     city_name,
+--     order_cnt,
+--     customer_cnt,
+--     gmv,
+--     scatter_gmv,
+--     delivery_gmv,
+--     round(gmv / nullif(order_cnt,0), 2) as avg_order_amount,
+--     round(gmv / nullif(customer_cnt,0), 2) as avg_customer_amount
+-- from tmp_demo.tmp_order_daily_stat_city
+-- where inc_day = '${bizdate}'
+-- ;
+
+-- ============================================================
+-- 编码规范速查
+-- ============================================================
+-- 1. 关键字小写：select, from, where, group by, left join
+-- 2. 字段竖排：4 空格缩进，每个字段独占一行
+-- 3. WHERE 紧凑：≤3 个条件写一行，>3 个换行（and 前置 2 空格）
+-- 4. 函数逗号无空格：coalesce(a,0), in('a','b')
+-- 5. GROUP BY 灵活：≤3 字段紧凑，>3 字段竖排
+-- 6. JOIN 与 ON 分行：left join table\n    on condition
+-- 7. 简单场景用子查询：≤3 张源表用 from (select) alias
+-- 8. 复杂场景用 CTE：4-6 张源表用 with ... as（逻辑清晰，但中间结果不落地）
+-- 9. 更复杂场景分层建表：≥7 张源表或 60+ 字段按 ODS/DWD/DWS/ADS 分层（中间结果落盘，便于排查）
