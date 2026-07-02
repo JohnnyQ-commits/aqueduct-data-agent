@@ -145,6 +145,27 @@ def _dev_mode(args: argparse.Namespace) -> int:
     print(f"[INFO] Reading requirement: {args.requirement}", flush=True)
     print("[INFO] Starting development mode workflow...", flush=True)
 
+    # 加载外部插件（skill / tool）
+    if args.skill_dir:
+        from ..skills.registry import load_plugins
+
+        try:
+            new_skills = load_plugins(args.skill_dir)
+            print(f"[INFO] Loaded {len(new_skills)} external skill(s): {new_skills}", flush=True)
+        except FileNotFoundError as e:
+            print(f"[ERROR] {e}", flush=True)
+            return 1
+
+    if args.tool_dir:
+        from ..tools.registry import load_plugins
+
+        try:
+            new_tools = load_plugins(args.tool_dir)
+            print(f"[INFO] Loaded {len(new_tools)} external tool(s): {new_tools}", flush=True)
+        except FileNotFoundError as e:
+            print(f"[ERROR] {e}", flush=True)
+            return 1
+
     # 外部 SQL 文件路径
     external_sql_path = getattr(args, "sql_file", None)
     if external_sql_path:
@@ -329,6 +350,14 @@ def create_parser() -> argparse.ArgumentParser:
     dev_parser.add_argument(
         "--sql-file",
         help="External SQL file path (skip LLM SQL generation in Phase 4)",
+    )
+    dev_parser.add_argument(
+        "--skill-dir",
+        help="External skill plugin directory path",
+    )
+    dev_parser.add_argument(
+        "--tool-dir",
+        help="External tool plugin directory path",
     )
 
     # review 命令

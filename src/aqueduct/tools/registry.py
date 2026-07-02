@@ -2,9 +2,13 @@
 
 工具通过 `@register_tool` 装饰器注册。
 使用 `get_tool(name)` 按名称获取工具实例。
+支持 `load_plugins()` 从外部目录动态加载。
 """
 
 from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
 
 from ..exceptions import ToolNotFoundError
 from .base import BaseTool
@@ -66,3 +70,38 @@ def list_tools() -> list[str]:
 def is_tool_registered(name: str) -> bool:
     """检查工具是否已注册。"""
     return name in _TOOL_REGISTRY
+
+
+def load_plugins(plugin_dir: str | Path) -> list[str]:
+    """从外部目录动态加载 Tool。
+
+    扫描指定目录下所有 .py 文件（跳过 __init__.py），
+    执行 import 触发 @register_tool 装饰器注册。
+
+    Args:
+        plugin_dir: 外部 tool 目录路径
+
+    Returns:
+        本次新注册的 tool 名称列表
+
+    Raises:
+        FileNotFoundError: 目录不存在
+    """
+    plugin_dir = Path(plugin_dir)
+    if not plugin_dir.is_dir():
+        raise FileNotFoundError(f"Plugin directory not found: {plugin_dir}")
+
+    previous_tools = set(_TOOL_REGISTRY.keys())
+
+    for py_file in sorted(plugin_dir.glob("*.py")):
+        if py_file.name.startswith("__"):
+            continue
+        module_name = f"aqueduct_external_tool_{py_file.stem}"
+        spec = importlib.util.spec_from_file_location(module_name, py_file)
+        if spec is None or spec.loader is None:
+            continue
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+    new_tools = set(_TOOL_REGISTRY.keys()) - previous_tools
+    return sorted(new_tools)
