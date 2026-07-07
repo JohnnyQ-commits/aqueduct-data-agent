@@ -11,10 +11,42 @@
       "env": {
         "DATA_PLATFORM_URL": "https://数据平台地址",
         "API_TOKEN": "用户Token"
+      },
+      "toolMapping": {
+        "get_table_schema": {
+          "name": "actual_tool_name",
+          "search_first": {
+            "name": "search_tool",
+            "arguments": {"keywords": "$table"},
+            "extract_id_path": "data.records[0].id",
+            "id_param_name": "id"
+          }
+        }
+      },
+      "responseMapping": {
+        "get_table_schema": {
+          "columns_path": "data.columnList",
+          "column_name_path": "columnName",
+          "column_type_path": "columnType",
+          "column_comment_path": "comment"
+        }
       }
     }
   }
 }
+
+toolMapping: 将 Aqueduct 标准工具名映射到 MCP Server 实际工具名。
+  - name: 实际工具名
+  - search_first: 可选，某些工具需要先搜索获取 ID 再查详情
+    - arguments: 搜索参数，$table/$database/$keyword 会被替换为实际值
+    - extract_id_path: 从搜索结果中提取 ID 的路径
+    - id_param_name: 传给详情工具的 ID 参数名
+
+responseMapping: 将 MCP Server 响应格式映射到 Aqueduct 标准格式。
+  - columns_path: 字段列表在响应中的路径（如 "data.columnList"）
+  - column_name_path: 字段名在每条记录中的路径
+  - column_type_path: 字段类型在每条记录中的路径
+  - column_comment_path: 字段注释在每条记录中的路径
 """
 
 from __future__ import annotations
@@ -81,6 +113,34 @@ class MCPConfig:
             有配置返回 True，否则 False。
         """
         return len(self.servers) > 0
+
+    def get_tool_mapping(self, server_name: str) -> dict[str, Any]:
+        """获取指定 Server 的工具名映射配置。
+
+        Args:
+            server_name: Server 名称。
+
+        Returns:
+            工具映射字典，未配置时返回空字典。
+        """
+        server = self.get_server(server_name)
+        if server is None:
+            return {}
+        return server.get("toolMapping", {})
+
+    def get_response_mapping(self, server_name: str) -> dict[str, Any]:
+        """获取指定 Server 的响应格式映射配置。
+
+        Args:
+            server_name: Server 名称。
+
+        Returns:
+            响应映射字典，未配置时返回空字典。
+        """
+        server = self.get_server(server_name)
+        if server is None:
+            return {}
+        return server.get("responseMapping", {})
 
     def validate_server(self, name: str) -> list[str]:
         """验证 MCP Server 配置是否完整。

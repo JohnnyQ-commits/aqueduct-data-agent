@@ -2,6 +2,14 @@
 
 封装标准 MCP Client 的连接、工具调用、生命周期管理。
 用户通过 .mcp.json 配置连接自己的 MCP Server。
+
+工具名映射：
+  通过 .mcp.json 中的 toolMapping 配置，将 Aqueduct 标准工具名
+  映射到 MCP Server 实际提供的工具名。未配置时直接使用标准名。
+
+响应格式映射：
+  通过 .mcp.json 中的 responseMapping 配置，将 MCP Server 的响应
+  字段路径映射到 Aqueduct 标准格式。未配置时使用标准字段名。
 """
 
 from __future__ import annotations
@@ -10,8 +18,11 @@ import asyncio
 import contextlib
 import json
 import logging
-import selectors
+import os
+import re
+import shutil
 import subprocess
+import sys
 from typing import Any
 
 from .config import MCPConfig
@@ -31,6 +42,9 @@ _DEFAULT_TIMEOUT = 30.0
 # MCP 协议版本（可通过环境变量 AQUEDUCT_MCP_PROTOCOL_VERSION 覆盖）
 _MCP_PROTOCOL_VERSION = "2025-03-26"
 
+# Windows 检测
+_IS_WINDOWS = sys.platform == "win32"
+
 
 class MCPClient:
     """MCP Client 实现。
@@ -41,6 +55,8 @@ class MCPClient:
     实现细节:
     - 进程缓存：同一 Server 共享子进程，避免每次调用新建
     - JSON-RPC 2.0 握手：首次调用前发送 initialize + initialized 通知
+    - 工具名映射：通过 toolMapping 配置适配不同 MCP Server
+    - 响应映射：通过 responseMapping 配置适配不同响应格式
     """
 
     def __init__(self, config: MCPConfig | None = None, server_name: str | None = None) -> None:
@@ -62,6 +78,10 @@ class MCPClient:
         if self.server_config is None:
             raise RuntimeError(f"Server '{self.server_name}' 配置不存在。")
 
+        # 工具名映射和响应映射
+        self._tool_mapping: dict[str, Any] = self.config.get_tool_mapping(self.server_name)
+        self._response_mapping: dict[str, Any] = self.config.get_response_mapping(self.server_name)
+
         # 进程缓存和初始化状态
         self._process: subprocess.Popen | None = None
         self._initialized: bool = False
@@ -69,8 +89,6 @@ class MCPClient:
 
     def _get_env(self) -> dict[str, str]:
         """获取当前环境变量。"""
-        import os
-
         return dict(os.environ)
 
     def _ensure_process(self) -> subprocess.Popen:
@@ -94,13 +112,24 @@ class MCPClient:
                     ", ".join(sorted(overridden)),
                 )
 
+        # Windows 兼容性：解析完整路径
+        resolved_command = command
+        if not os.path.isabs(command):
+            resolved = shutil.which(command)
+            if resolved:
+                resolved_command = resolved
+            else:
+                logger.warning("无法解析命令路径: %s，尝试直接使用", command)
+
         self._process = subprocess.Popen(
-            [command] + args,
+            [resolved_command] + args,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         self._initialized = False
         return self._process
@@ -124,17 +153,22 @@ class MCPClient:
         process.stdin.write(json.dumps(request) + "\n")
         process.stdin.flush()
 
-        # 使用 selectors 实现超时读取，避免 readline() 永久阻塞
-        sel = selectors.DefaultSelector()
-        try:
-            sel.register(process.stdout, selectors.EVENT_READ)
-            if not sel.select(timeout):
-                raise TimeoutError(f"MCP Server '{self.server_name}' 响应超时 ({timeout}s)")
-        finally:
-            sel.unregister(process.stdout)
-            sel.close()
+        # Windows 兼容性：pipe 不支持 selectors，使用 readline + threading 超时
+        if _IS_WINDOWS:
+            response_line = self._readline_with_timeout(process.stdout, timeout)
+        else:
+            import selectors
 
-        response_line = process.stdout.readline()
+            sel = selectors.DefaultSelector()
+            try:
+                sel.register(process.stdout, selectors.EVENT_READ)
+                if not sel.select(timeout):
+                    raise TimeoutError(f"MCP Server '{self.server_name}' 响应超时 ({timeout}s)")
+            finally:
+                sel.unregister(process.stdout)
+                sel.close()
+            response_line = process.stdout.readline()
+
         if not response_line:
             raise RuntimeError("MCP Server 进程已终止")
 
@@ -148,6 +182,28 @@ class MCPClient:
                 e,
             )
             raise RuntimeError(f"MCP Server '{self.server_name}' 返回非法 JSON: {e}") from e
+
+    def _readline_with_timeout(self, stdout: Any, timeout: float) -> str:
+        """Windows 兼容的行读取（带超时）。
+
+        Windows pipe 不支持 selectors，使用 threading 实现超时。
+        """
+        import queue
+        import threading
+
+        result_queue: queue.Queue[str] = queue.Queue()
+
+        def _read() -> None:
+            line = stdout.readline()
+            result_queue.put(line)
+
+        thread = threading.Thread(target=_read, daemon=True)
+        thread.start()
+
+        try:
+            return result_queue.get(timeout=timeout)
+        except queue.Empty:
+            raise TimeoutError(f"MCP Server '{self.server_name}' 响应超时 ({timeout}s)") from None
 
     def initialize(self) -> None:
         """执行 MCP 初始化握手。
@@ -211,6 +267,177 @@ class MCPClient:
 
         return response.get("result", {})
 
+    # ----------------------------------------------------------------
+    # 工具名映射 & 响应解析
+    # ----------------------------------------------------------------
+
+    def _resolve_tool(self, standard_name: str) -> tuple[str, dict[str, Any]]:
+        """解析标准工具名到实际工具名和映射配置。
+
+        Args:
+            standard_name: Aqueduct 标准工具名（如 get_table_schema）。
+
+        Returns:
+            (actual_tool_name, mapping_config) 元组。
+            无映射时返回 (standard_name, {})。
+        """
+        mapping = self._tool_mapping.get(standard_name)
+        if mapping is None:
+            return standard_name, {}
+        return mapping["name"], mapping
+
+    def _transform_args(
+        self,
+        template: dict[str, Any],
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """将参数模板中的变量替换为实际值。
+
+        支持 $table, $database, $keyword 等变量。
+
+        Args:
+            template: 参数模板，如 {"keywords": "$table", "size": 50}。
+            **kwargs: 变量值，如 table="users", database="default"。
+
+        Returns:
+            替换后的参数字典。
+        """
+        result = {}
+        for key, value in template.items():
+            if isinstance(value, str) and value.startswith("$"):
+                var_name = value[1:]
+                result[key] = kwargs.get(var_name, value)
+            else:
+                result[key] = value
+        return result
+
+    @staticmethod
+    def _extract_by_path(data: Any, path: str, default: Any = None) -> Any:
+        """从嵌套数据结构中按路径提取值。
+
+        支持点号分隔的字段名和方括号数组索引。
+        示例: "data.columnList", "data.records[0].tblId"
+
+        Args:
+            data: 嵌套字典/列表。
+            path: 提取路径。
+            default: 路径不存在时的默认值。
+
+        Returns:
+            提取到的值，或 default。
+        """
+        if not path:
+            return data if data is not None else default
+
+        # 解析路径：data.records[0].tblId → ["data", "records", "0", "tblId"]
+        parts: list[str] = []
+        for segment in path.split("."):
+            # 处理数组索引: records[0] → ["records", "0"]
+            match = re.match(r"^(\w+)\[(\d+)]$", segment)
+            if match:
+                parts.append(match.group(1))
+                parts.append(match.group(2))
+            else:
+                parts.append(segment)
+
+        current = data
+        for part in parts:
+            if isinstance(current, dict):
+                current = current.get(part)
+            elif isinstance(current, list):
+                try:
+                    current = current[int(part)]
+                except (IndexError, ValueError):
+                    return default
+            else:
+                return default
+            if current is None:
+                return default
+
+        return current
+
+    def _parse_table_schema(self, result: dict[str, Any], database: str, table: str) -> TableSchema:
+        """使用 responseMapping 解析表结构响应为 TableSchema。
+
+        支持两种模式：
+        1. 配置了 responseMapping → 按路径提取字段
+        2. 未配置 → 使用标准格式（columns/name/type/comment）
+
+        Args:
+            result: MCP Server 返回的原始结果。
+            database: 数据库名。
+            table: 表名。
+
+        Returns:
+            TableSchema 实例。
+        """
+        mapping = self._response_mapping.get("get_table_schema", {})
+
+        # 路径配置（带默认值）
+        columns_path = mapping.get("columns_path", "columns")
+        name_path = mapping.get("column_name_path", "name")
+        type_path = mapping.get("column_type_path", "type")
+        comment_path = mapping.get("column_comment_path", "comment")
+        partition_path = mapping.get("column_is_partition_path", "is_partition")
+
+        # 提取 MCP 工具返回内容（兼容 content 包装和直接返回）
+        raw_data = self._unwrap_mcp_content(result)
+
+        # 提取字段列表
+        raw_columns = self._extract_by_path(raw_data, columns_path, [])
+        if not isinstance(raw_columns, list):
+            raw_columns = []
+
+        columns = []
+        for col in raw_columns:
+            columns.append(
+                ColumnInfo(
+                    name=str(self._extract_by_path(col, name_path, "")),
+                    type=str(self._extract_by_path(col, type_path, "string")),
+                    comment=str(self._extract_by_path(col, comment_path, "")),
+                    is_partition=bool(self._extract_by_path(col, partition_path, False)),
+                )
+            )
+
+        # 提取表级信息
+        comment = str(self._extract_by_path(raw_data, "comment", ""))
+        partition_columns_raw = self._extract_by_path(raw_data, "partition_columns", [])
+        partition_columns = partition_columns_raw if isinstance(partition_columns_raw, list) else []
+
+        return TableSchema(
+            database=database,
+            table=table,
+            columns=columns,
+            partition_columns=partition_columns,
+            comment=comment,
+        )
+
+    @staticmethod
+    def _unwrap_mcp_content(result: dict[str, Any]) -> dict[str, Any]:
+        """解包 MCP 工具的 content 包装。
+
+        MCP 工具返回格式可能是：
+        1. {"content": [{"type": "text", "text": "{json}"}]}  — 标准 MCP 格式
+        2. 直接返回数据字典
+
+        Args:
+            result: MCP 工具原始返回。
+
+        Returns:
+            解包后的数据字典。
+        """
+        content = result.get("content")
+        if isinstance(content, list) and len(content) > 0:
+            first = content[0]
+            if isinstance(first, dict) and first.get("type") == "text":
+                text = first.get("text", "")
+                try:
+                    return json.loads(text)
+                except json.JSONDecodeError:
+                    logger.warning("MCP content text 不是有效 JSON: %s", text[:200])
+                    return result
+        return result
+
     def close(self) -> None:
         """关闭子进程，释放资源。"""
         if self._process is not None:
@@ -225,76 +452,102 @@ class MCPClient:
             self._process = None
             self._initialized = False
 
+    # ----------------------------------------------------------------
+    # 标准接口实现
+    # ----------------------------------------------------------------
+
     async def get_table_schema(self, database: str, table: str) -> TableSchema:
-        """查询表结构。"""
-        result = self._run_mcp_tool(
-            "get_table_schema",
-            {
-                "database": database,
-                "table": table,
-            },
-        )
+        """查询表结构。
 
-        if result.get("error"):
-            raise TableNotFoundError(database, table)
+        通过 toolMapping 配置适配不同 MCP Server：
+        - 无映射：直接调用 get_table_schema(database, table)
+        - 有映射 + search_first：先搜索获取 ID，再查详情
+        - 有映射无 search_first：直接调用映射后的工具
+        """
+        actual_tool, mapping = self._resolve_tool("get_table_schema")
+        search_cfg = mapping.get("search_first")
 
-        columns = []
-        for col in result.get("columns", []):
-            columns.append(
-                ColumnInfo(
-                    name=col.get("name", ""),
-                    type=col.get("type", "string"),
-                    comment=col.get("comment", ""),
-                    is_partition=col.get("is_partition", False),
-                )
+        if search_cfg:
+            # 两步调用：先搜索获取 ID，再查详情
+            search_args = self._transform_args(
+                search_cfg.get("arguments", {"keywords": "$table"}),
+                table=table,
+                database=database,
             )
+            search_result = self._run_mcp_tool(search_cfg["name"], search_args)
+            search_data = self._unwrap_mcp_content(search_result)
 
-        return TableSchema(
-            database=database,
-            table=table,
-            columns=columns,
-            partition_columns=result.get("partition_columns", []),
-            comment=result.get("comment", ""),
-        )
+            # 从搜索结果中提取 ID
+            extract_path = search_cfg.get("extract_id_path", "id")
+            tbl_id = self._extract_by_path(search_data, extract_path)
+            if tbl_id is None:
+                raise TableNotFoundError(database, table)
+
+            # 用 ID 调用详情工具
+            id_param = search_cfg.get("id_param_name", "id")
+            arguments = {id_param: str(tbl_id)}
+        else:
+            arguments = {"database": database, "table": table}
+
+        result = self._run_mcp_tool(actual_tool, arguments)
+        return self._parse_table_schema(result, database, table)
 
     async def execute_sql(self, sql: str, limit: int = 100) -> QueryResult:
         """执行 SQL 查询。"""
+        actual_tool, _ = self._resolve_tool("execute_sql")
         result = self._run_mcp_tool(
-            "execute_sql",
+            actual_tool,
             {
                 "sql": sql,
                 "limit": limit,
             },
         )
 
-        if result.get("error"):
-            raise SQLError(sql, result["error"])
+        data = self._unwrap_mcp_content(result)
+
+        if data.get("error"):
+            raise SQLError(sql, data["error"])
 
         return QueryResult(
-            columns=result.get("columns", []),
-            rows=result.get("rows", []),
-            row_count=result.get("row_count", 0),
+            columns=data.get("columns", []),
+            rows=data.get("rows", []),
+            row_count=data.get("row_count", 0),
             success=True,
         )
 
     async def list_tables(self, database: str | None = None, keyword: str = "") -> list[str]:
         """列出可用的数据表。"""
-        result = self._run_mcp_tool(
-            "list_tables",
-            {
+        actual_tool, mapping = self._resolve_tool("list_tables")
+
+        if mapping:
+            # 使用映射的参数模板
+            arguments = self._transform_args(
+                mapping.get("arguments", {"keyword": "$keyword"}),
+                database=database or "",
+                keyword=keyword,
+            )
+        else:
+            arguments = {
                 "database": database,
                 "keyword": keyword,
-            },
-        )
+            }
 
-        return result.get("tables", [])
+        result = self._run_mcp_tool(actual_tool, arguments)
+        data = self._unwrap_mcp_content(result)
+
+        # 支持多种返回格式
+        tables = data.get("tables", [])
+        if isinstance(tables, list):
+            return tables
+        return []
 
     async def get_table_data(
         self, database: str, table: str, partition: str | None = None, limit: int = 10
     ) -> QueryResult:
         """查询表数据样本。"""
+        actual_tool, _ = self._resolve_tool("get_table_data")
         result = self._run_mcp_tool(
-            "get_table_data",
+            actual_tool,
             {
                 "database": database,
                 "table": table,
@@ -303,13 +556,15 @@ class MCPClient:
             },
         )
 
-        if result.get("error"):
-            raise SQLError(f"SELECT * FROM {database}.{table}", result["error"])
+        data = self._unwrap_mcp_content(result)
+
+        if data.get("error"):
+            raise SQLError(f"SELECT * FROM {database}.{table}", data["error"])
 
         return QueryResult(
-            columns=result.get("columns", []),
-            rows=result.get("rows", []),
-            row_count=result.get("row_count", 0),
+            columns=data.get("columns", []),
+            rows=data.get("rows", []),
+            row_count=data.get("row_count", 0),
             success=True,
         )
 

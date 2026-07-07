@@ -53,10 +53,18 @@ class RequirementClarifySkill(BaseSkill):
         except OSError:
             pass  # 不是有效路径，当作内容字符串处理
 
+        # 构建表结构文本（从 MCP 查询结果或空）
+        table_schemas: dict = inp.get("table_schemas", {})
+        if table_schemas:
+            table_schemas_text = "\n\n".join(table_schemas.values())
+        else:
+            table_schemas_text = "（未获取，MCP 未配置或查询失败）"
+
         # 加载 Prompt 模板
         prompt = self.load_prompt_template(
             requirement_doc=requirement_doc,
             domain_context=context.state.get("domain_context", ""),
+            table_schemas=table_schemas_text,
         )
 
         return SkillResult(

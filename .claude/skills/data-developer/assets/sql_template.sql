@@ -149,6 +149,7 @@
 -- 4. 函数逗号无空格：coalesce(a,0), in('a','b')
 -- 5. GROUP BY 灵活：≤3 字段紧凑，>3 字段竖排
 -- 6. JOIN 与 ON 分行：left join table\n    on condition
--- 7. 简单场景用子查询：≤3 张源表用 from (select) alias
--- 8. 复杂场景用 CTE：4-6 张源表用 with ... as（逻辑清晰，但中间结果不落地）
--- 9. 更复杂场景分层建表：≥7 张源表或 60+ 字段按 ODS/DWD/DWS/ADS 分层（中间结果落盘，便于排查）
+-- 7. JOIN 键预处理：行级条件决定 JOIN 键时，先子查询计算再等值关联（禁止 ON 中写 CASE）
+-- 8. 简单场景用子查询：≤3 张源表用 from (select) alias
+-- 9. 复杂场景用 CTE：4-6 张源表用 with ... as（逻辑清晰，但中间结果不落地）
+-- 10. 更复杂场景分层建表：≥7 张源表或 60+ 字段按 ODS/DWD/DWS/ADS 分层（中间结果落盘，便于排查）

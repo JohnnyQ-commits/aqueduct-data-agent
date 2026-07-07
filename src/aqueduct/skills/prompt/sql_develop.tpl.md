@@ -65,10 +65,42 @@
 | WHERE 多行（AND 前置，2 空格缩进） | `where cond_a\n  and cond_b\n  and cond_c` |
 | 函数内逗号后无空格 | `coalesce(a,0)`, `in('a','b','c')` |
 | JOIN 和 ON 独占一行 | `left join table_b\n    on a.id = b.id` |
+| JOIN 键有条件逻辑时先子查询预处理 | 见下方说明 |
 | GROUP BY 灵活（<=3 字段紧凑，>3 字段竖排） | `group by col_a,col_b` 或 `group by\n    col_a,\n    col_b,\n    col_c,\n    col_d` |
 | 复杂逻辑用 CTE | `with cte as (...) select * from cte` |
 
-注：`${bizdate}` 表示 Hive SQL 中的分区日期变量（通常是运行时参数）。
+注：分区日期变量格式由调度系统决定（如 `$[time(yyyyMMdd,-1d)]`、`${bizdate}` 等），以项目实际配置为准，不要自行假设。
+
+### JOIN 键预处理
+
+当 JOIN 键依赖行级条件（如不同岗位取不同网点字段）时，**必须先在子查询中计算出 JOIN 键**，再与右表关联。禁止在 JOIN ON 中写 CASE WHEN。
+
+```sql
+-- ✅ 正确：子查询预处理 JOIN 键
+from (
+    select
+        emp_code,
+        name,
+        case when position_name = 'delivery'
+             then coalesce(service_dept, org_code)
+             else org_code
+        end as dept_code
+    from dw_demo.dwd_courier_info_df
+    where inc_day = '$[time(yyyyMMdd,-1d)]'
+        and status = '1'
+) s
+left join dim_dept_info_df d
+    on s.dept_code = d.dept_code
+
+-- ❌ 错误：JOIN ON 中写 CASE WHEN
+from dw_demo.dwd_courier_info_df s
+left join dim_dept_info_df d
+    on (case when s.position_name = 'delivery'
+             then coalesce(s.service_dept, s.org_code)
+             else s.org_code end) = d.dept_code
+```
+
+原则：**子查询负责行级计算和基础过滤，外层 JOIN 只负责等值关联**。
 
 ### 架构选择策略
 
@@ -116,6 +148,7 @@
 🚫 **禁止使用 SELECT *** —— 必须列出所有字段  
 🚫 **禁止在 WHERE 中对分区字段做函数转换**（如 `where year(inc_day) = '2026'`）  
 🚫 **禁止在 JOIN 条件中使用 OR** —— 会导致全表扫描  
+🚫 **禁止在 JOIN ON 中使用 CASE WHEN** —— 先在子查询中预计算 JOIN 键，再等值关联  
 🚫 **禁止嵌套超过 2 层子查询** —— 用 CTE 替代  
 🚫 **禁止遗漏分区过滤** —— 每个源表必须有 `inc_day = '${bizdate}'` 或类似分区条件  
 🚫 **禁止使用笛卡尔积（CROSS JOIN）** —— 除非明确需要且数据量可控  

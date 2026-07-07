@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import re
 import time
@@ -52,6 +53,35 @@ def _extract_target_table(text: str) -> str:
     return ""
 
 
+def _extract_table_names(text: str) -> list[str]:
+    """从需求文档中提取所有可能的表名（database.table 格式）。
+
+    匹配所有 schema.table 格式的标识符，去重返回。
+
+    Returns:
+        表名列表，未找到时返回空列表。
+    """
+    # 匹配 database.table 格式（两段均 ≥2 字符）
+    candidates = re.findall(r"\b([a-z_]{2,})\.([a-z_]{2,})\b", text, re.IGNORECASE)
+    # 去重，保持顺序
+    seen: set[str] = set()
+    result: list[str] = []
+    for db, tbl in candidates:
+        full_name = f"{db}.{tbl}"
+        if full_name not in seen:
+            seen.add(full_name)
+            result.append(full_name)
+    return result
+
+
+def _parse_table_name(full_name: str) -> tuple[str, str]:
+    """将 database.table 格式拆分为 (database, table)。"""
+    parts = full_name.split(".", 1)
+    if len(parts) == 2:
+        return parts[0], parts[1]
+    return "", full_name
+
+
 def _recall_domain_knowledge(state: WorkflowState) -> None:
     """从本体知识库中召回与需求匹配的业务域上下文。
 
@@ -86,6 +116,62 @@ def _recall_domain_knowledge(state: WorkflowState) -> None:
         logger.warning("领域知识召回异常，跳过", exc_info=True)
 
 
+def _query_table_schemas(state: WorkflowState) -> dict[str, str]:
+    """尝试通过 MCP 查询需求中涉及的表结构。
+
+    MCP 未配置或查询失败时返回空字典（不阻塞流程）。
+
+    Returns:
+        {表名: 格式化的表结构文本} 字典。
+    """
+    from ...mcp.client import SyncMCPClient
+    from ...mcp.config import MCPConfig
+
+    if not MCPConfig().is_configured():
+        logger.info("MCP 未配置，跳过表结构查询")
+        return {}
+
+    requirement = state.get("requirement", "")
+    table_names = _extract_table_names(requirement)
+    if not table_names:
+        logger.info("需求文档中未找到表名，跳过表结构查询")
+        return {}
+
+    logger.info("尝试通过 MCP 查询 %d 个表的结构: %s", len(table_names), table_names)
+
+    schemas: dict[str, str] = {}
+    client: SyncMCPClient | None = None
+    try:
+        client = SyncMCPClient()
+
+        for table_name in table_names:
+            try:
+                db, tbl = _parse_table_name(table_name)
+                schema = client.get_table_schema(db, tbl)
+                # 格式化为文本供 prompt 使用
+                columns_text = "\n".join(
+                    f"  - {c.name} ({c.type}){f' — {c.comment}' if c.comment else ''}"
+                    for c in schema.columns
+                )
+                schemas[table_name] = (
+                    f"表: {schema.database}.{schema.table}\n"
+                    f"注释: {schema.comment or '无'}\n"
+                    f"字段 ({len(schema.columns)} 个):\n{columns_text}"
+                )
+                logger.info("MCP 查询表结构成功: %s (%d 字段)", table_name, len(schema.columns))
+            except Exception as e:
+                logger.warning("MCP 查询表结构失败: %s - %s", table_name, e)
+
+    except Exception as e:
+        logger.warning("MCP 客户端初始化失败，跳过表结构查询: %s", e)
+    finally:
+        if client is not None:
+            with contextlib.suppress(Exception):
+                client.close()
+
+    return schemas
+
+
 def node_requirement(state: WorkflowState) -> WorkflowState:
     """Phase 1: 需求理解节点。
 
@@ -104,12 +190,21 @@ def node_requirement(state: WorkflowState) -> WorkflowState:
         state["target_table"] = target_table
         logger.info("提取目标表名: %s", target_table)
 
+    # 尝试通过 MCP 查询表结构（失败不阻塞）
+    table_schemas = _query_table_schemas(state)
+    if table_schemas:
+        state["table_schemas"] = table_schemas
+        logger.info("MCP 查询到 %d 个表的结构", len(table_schemas))
+    else:
+        state["table_schemas"] = {}
+
     try:
         skill = get_skill("requirement_clarify")
         context = SkillContext(
             input={
                 "requirement_doc": state.get("requirement", ""),
                 "domain_context": state.get("domain_context", ""),
+                "table_schemas": table_schemas,
             },
             state=state,
         )
