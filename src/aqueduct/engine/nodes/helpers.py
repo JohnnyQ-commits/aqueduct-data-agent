@@ -14,22 +14,24 @@ import re
 import time
 from pathlib import Path
 
-from ...config.settings import get_settings
 from ...llm.base import LLMMessage
 from ...llm.router import ModelRouter
 from ..state import WorkflowState
 
 logger = logging.getLogger(__name__)
 
+# 项目根目录
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
+
 
 def get_output_dir(state: WorkflowState) -> Path:
     """获取输出目录，优先使用 metadata 中的 output_dir，否则用 output/。"""
-    project_root = get_settings().project_root
     metadata = state.get("metadata", {})
     raw_dir = metadata.get("output_dir") or metadata.get("requirement_name", "output")
-    out = Path(raw_dir.replace("\\", "/"))
+    output_dir = raw_dir.replace("\\", "/")
+    out = Path(output_dir)
     if not out.is_absolute():
-        out = project_root / "output" / out
+        out = _PROJECT_ROOT / "output" / out.name
     out.mkdir(parents=True, exist_ok=True)
     return out
 
@@ -37,16 +39,9 @@ def get_output_dir(state: WorkflowState) -> Path:
 def save_artifact(state: WorkflowState, filename: str, content: str) -> str:
     """保存产出文件到输出目录，返回相对路径。"""
     out_dir = get_output_dir(state)
-    # 防止路径穿越：只保留文件名部分
-    safe_name = Path(filename).name
-    filepath = out_dir / safe_name
+    filepath = out_dir / filename
     filepath.write_text(content, encoding="utf-8")
-    project_root = get_settings().project_root
-    try:
-        rel = str(filepath.relative_to(project_root))
-    except ValueError:
-        # 输出目录在项目根外（如不同盘符）时，使用绝对路径
-        rel = str(filepath)
+    rel = str(filepath.relative_to(_PROJECT_ROOT))
     state.setdefault("artifacts", []).append(rel)
     return rel
 

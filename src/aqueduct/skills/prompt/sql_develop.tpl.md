@@ -60,7 +60,7 @@
 | 规则 | 示例 |
 |------|------|
 | 关键字小写 | `select`, `from`, `where`, `group by`, `left join` |
-| 字段垂直排列，4 空格缩进 | `select\n    col_a,\n    col_b` |
+| 字段垂直排列（**所有 SELECT**），4 空格缩进 | 见下方说明 |
 | WHERE 紧凑（<=3 个条件内联） | `where inc_day = '${bizdate}' and status = 'active'` |
 | WHERE 多行（AND 前置，2 空格缩进） | `where cond_a\n  and cond_b\n  and cond_c` |
 | 函数内逗号后无空格 | `coalesce(a,0)`, `in('a','b','c')` |
@@ -102,15 +102,182 @@ left join dim_dept_info_df d
 
 原则：**子查询负责行级计算和基础过滤，外层 JOIN 只负责等值关联**。
 
-### 架构选择策略
+### SELECT 字段垂直排列（所有上下文）
 
-根据 SQL 复杂度选择合适的组织方式：
+**所有** `select` 后面的字段必须垂直排列、4 空格缩进、每字段独占一行——包括子查询、CTE、JOIN 子句中的 SELECT，无一例外。
 
-| 复杂度 | 源表数量 | 推荐方式 | 示例 |
-|--------|---------|---------|------|
-| **简单** | ≤3 张 | 子查询 `from (select) alias` | 两张表直接 JOIN |
-| **复杂** | 4-6 张 | CTE `with ... as` | 多步聚合、中间结果复用 |
-| **更复杂** | ≥7 张或 60+ 字段 | **维度建模分层建表** | 中间结果落 DWS/TMP 表 |
+```sql
+-- ✅ 正确：子查询中字段也竖排
+inner join (
+    select
+        dept_code,
+        dept_name,
+        division_code,
+        division_name,
+        area_code,
+        area_name
+    from dim.dim_dept_info_df
+    where inc_day = '$[time(yyyyMMdd,-1d)]'
+        and area_code in ('R01','R02','R03','R03')
+) d on s.dept_code = d.dept_code
+
+-- ❌ 错误：子查询中字段横排
+inner join (
+    select dept_code, dept_name, division_code, division_name, area_code, area_name
+    from dim.dim_dept_info_df
+    where ...
+) d on s.dept_code = d.dept_code
+```
+
+原则：**只要看到 `select`，下一个 token 必须换行并开始 4 空格缩进**。
+
+### 过滤条件下推
+
+当 WHERE 条件仅涉及右表字段时，必须将过滤条件**推入右表子查询**内部，同时将 LEFT JOIN 改为 INNER JOIN（因为右表过滤条件已经排除了 NULL 行，LEFT JOIN 语义等价于 INNER JOIN）。
+
+```sql
+-- ✅ 正确：过滤条件推入子查询，LEFT JOIN → INNER JOIN
+from staff_base s
+inner join (
+    select
+        dept_code,
+        dept_name,
+        area_code
+    from dim.dim_dept_info_df
+    where inc_day = '$[time(yyyyMMdd,-1d)]'
+        and area_code in ('R01','R02','R03','R03')
+        and dept_type_code not in ('T01','T02')
+) d on s.dept_code = d.dept_code
+
+-- ❌ 错误：过滤条件放在外层 WHERE
+from staff_base s
+left join dim.dim_dept_info_df d
+    on s.dept_code = d.dept_code
+where d.area_code in ('R01','R02','R03','R03')
+    and d.dept_type_code not in ('T01','T02')
+```
+
+原则：**子查询负责基础过滤（提前减少数据量），外层只负责 JOIN 关联**。这样做的好处：
+1. 提前减少 JOIN 数据量，提升性能
+2. 语义更清晰——INNER JOIN 明确表达"右表必须匹配"
+3. 避免 LEFT JOIN + WHERE 右表字段导致的隐式 INNER JOIN（容易误读）
+
+### LEFT JOIN vs INNER JOIN 策略
+
+两种模式使用不同的 JOIN 策略，核心区别在于**是否需要保留全量记录用于排查**：
+
+| 模式 | JOIN 策略 | 原因 |
+|------|----------|------|
+| **宽表模式**（条件字段收集） | LEFT JOIN | 保留所有基础记录，`select * from wide_table where emp_code = 'xxx'` 可回答"这个人为什么没进结果" |
+| **过滤条件下推**（属性维度关联） | INNER JOIN | 右表过滤条件推入子查询后，LEFT JOIN 语义等价于 INNER JOIN，直接用 INNER JOIN 更清晰 |
+
+**宽表模式示例**（LEFT JOIN 保留全量）：
+```sql
+-- 条件字段收集阶段：LEFT JOIN 保留所有员工，is_valid/train_status 等标记字段供 ADS 层判断
+from staff_base s
+left join dw_demo.dwd_staff_attr_dtl sf on s.emp_code = sf.emp_code      -- 不过滤，全部关联
+left join dw_demo.dwd_train_stat_di tr       on s.emp_code = tr.emp_code        -- 不过滤，全部关联
+left join dw_demo.dwd_area_config_di ac     on s.emp_code = ac.emp_code        -- 不过滤，全部关联
+```
+
+**过滤条件下推示例**（INNER JOIN 提前过滤）：
+```sql
+-- 属性维度关联：过滤条件推入子查询，LEFT JOIN → INNER JOIN
+from staff_base s
+inner join (
+    select dept_code, dept_name, area_code
+    from dim.dim_dept_info_df
+    where inc_day = '$[time(yyyyMMdd,-1d)]'
+        and area_code in ('R01','R02','R03','R03')    -- 过滤在子查询内
+) d on s.dept_code = d.dept_code
+```
+
+**判断依据**：右表字段是否出现在最终 WHERE/ADS 过滤条件中？
+- **是**（属性维度，如 area_code、dept_type_code）→ 推入子查询，INNER JOIN
+- **否**（仅作为判断标记字段，如 train_status、has_region_config）→ 保留 LEFT JOIN，条件留到 ADS
+
+### 宽表模式（★ 最常用）
+
+当有多个业务过滤条件（≥3 个）时，用**宽表 + ADS WHERE** 模式替代多层中间表逐步过滤。
+
+**三个强制原则**：
+
+1. **排查优先** — 所有判断中间字段必须暴露在宽表 SELECT 中（如 org_code、service_dept、single_region_id 等），让 `select * from wide_table where emp_code = 'xxx'` 能回答"这个人为什么没进结果/为什么进了结果"
+2. **逻辑内聚** — 每个场景标记 `is_sN` 必须**自包含**，所有相关条件（包括父子网点排除等）都写进同一个 CASE WHEN，不能依赖外层 WHERE 额外过滤
+3. **ADS 统一过滤** — 所有条件集中在最终 INSERT 的 WHERE 中，用 `is_sN = 1` 即可，不需要额外 JOIN 或子查询
+
+```sql
+-- ✅ 宽表模式：判断中间字段暴露 + 标记自包含
+-- 宽表
+s.org_code,                                                    -- 中间字段：暴露供排查
+s.service_dept,                                                -- 中间字段：暴露供排查
+ac.single_region_id,                                            -- 中间字段：暴露供排查
+pc.node                              as pc_matched_node,      -- 中间字段：父子匹配详情
+
+case when ... then 1 else 0 end        as is_s1,              -- 岗位异动
+case when ... and pc.node is null      -- 父子排除内聚在 is_s2 里
+         then 1 else 0 end             as is_s2,              -- 网点异动（自包含）
+
+-- ADS：直接用标记，不需要额外 JOIN
+where is_s1 = 1 or is_s2 = 1
+```
+
+```sql
+-- ❌ 反例：中间字段没暴露 + 逻辑分散
+-- 宽表：只 SELECT 最终字段，org_code/service_dept 看不到
+-- ADS：父子网点排除写在这里，is_s2 不完整
+left join pc_flag on ... where is_s2 = 1 and pc_flag.is_parent_child = 0
+```
+
+### 多层合并
+
+- **DWD + DWS 可合并** — 当 DWD 只是简单清洗 + 维度关联，没有复杂聚合时，直接合并到 DWS 宽表，减少中间表
+- **同表多次读取合并** — 同一张表被多次读取时，尽量在一次读取中多取需要的字段。例如 T-1 的 `service_dept` 可以直接从主查询带出，不需要单独再读一次
+- **同源表多用途子查询合并** — 当多个子查询从同一张表、相同 WHERE 条件取不同用途字段时，合并为一个子查询，用 `CASE WHEN` 条件聚合区分用途，禁止拆成多个子查询重复扫描
+
+```sql
+-- ✅ 正确：同一张表读一次，用 CASE WHEN 区分不同用途
+left join (
+    select
+        emp_code,
+        count(distinct region_id)               as region_cnt,          -- 供 is_s3 使用
+        concat_ws(',', collect_set(region_id))  as con_region_id,
+        case when count(distinct region_id) = 1
+             then max(region_id)
+        end                                          as single_region_id     -- 仅单区域有值
+    from dw_demo.dwd_area_config_di
+    where type = 8 and status = 1 and inc_day = '$[time(yyyyMMdd,-1d)]'
+    group by emp_code
+) ac on s.emp_code = ac.emp_code
+
+-- ❌ 错误：同一张表读两遍
+left join (select ... count(...) as region_cnt from same_table group by ...) ac on ...
+left join (select ... max(...) as single_region_id from same_table having count(...) = 1) ac_single on ...
+```
+
+### 架构决策树（必须按此顺序判断）
+
+**不要靠猜，按下面的顺序走：**
+
+```
+Q1: 源表 ≤3 张 且 业务过滤条件 <3 个？
+  YES → 子查询方式（from (select) alias）
+  NO  → Q2
+
+Q2: 业务过滤条件 ≥3 个 或 需要业务验收排查？
+  YES → **宽表模式**（DWD+DWS 合并 + ADS WHERE）★ 最常用
+  NO  → Q3
+
+Q3: 源表 4-6 张，无排查需求？
+  YES → CTE 方式（with ... as）
+  NO  → Q4
+
+Q4: 源表 ≥7 张或 60+ 字段？
+  YES → 分层建表（tmp_ 中间表落地）
+  NO  → CTE 方式
+```
+
+**关键判断**：条件数量决定是否用宽表模式，源表数量决定是否分层建表。
 
 **CTE 使用规则**：
 - 子查询嵌套不超过 2 层（用 CTE 替代）
@@ -149,6 +316,8 @@ left join dim_dept_info_df d
 🚫 **禁止在 WHERE 中对分区字段做函数转换**（如 `where year(inc_day) = '2026'`）  
 🚫 **禁止在 JOIN 条件中使用 OR** —— 会导致全表扫描  
 🚫 **禁止在 JOIN ON 中使用 CASE WHEN** —— 先在子查询中预计算 JOIN 键，再等值关联  
+🚫 **禁止过滤条件不推入子查询（宽表模式除外）** —— 右表过滤条件必须在子查询内完成，LEFT JOIN + WHERE 右表字段 → INNER JOIN + 子查询内过滤；宽表模式中仅作为判断标记字段（如 `case when ... then 1 else 0 end as train_status`）的 LEFT JOIN 不属于此限制  
+🚫 **禁止子查询中 SELECT 字段横排** —— 所有 select 后的字段必须垂直排列，包括子查询/CTE/JOIN 中的 SELECT  
 🚫 **禁止嵌套超过 2 层子查询** —— 用 CTE 替代  
 🚫 **禁止遗漏分区过滤** —— 每个源表必须有 `inc_day = '${bizdate}'` 或类似分区条件  
 🚫 **禁止使用笛卡尔积（CROSS JOIN）** —— 除非明确需要且数据量可控  
@@ -157,7 +326,10 @@ left join dim_dept_info_df d
 🚫 **禁止在 GROUP BY 中使用函数** —— 先转换再分组  
 🚫 **禁止遗漏除法保护** —— 所有除法必须用 `nullif(divisor, 0)` + `coalesce`  
 🚫 **禁止遗漏文件头注释**  
-🚫 **禁止跳过数仓分层** —— 复杂需求（≥7 表或 60+ 字段）必须分层建表，不能堆在一个 SQL 里  
+🚫 **禁止跳过数仓分层** —— 复杂需求（≥7 表或 60+ 字段）必须分层建表，不能堆在一个 SQL 里
+🚫 **禁止宽表隐藏判断中间字段** —— 宽表模式下，所有判断计算依赖的中间字段（org_code、service_dept、single_region_id 等）必须 SELECT 暴露，方便排查
+🚫 **禁止场景标记逻辑分散** —— 每个 is_sN 的所有判断条件必须写进同一个 CASE WHEN（含父子排除等），不能依赖外层额外过滤
+🚫 **禁止同源表多子查询重复扫描** —— 多个子查询从同一张表、相同 WHERE 条件取不同用途字段时，必须合并为一个子查询，用 CASE WHEN 条件聚合区分用途
 
 ---
 
@@ -165,19 +337,32 @@ left join dim_dept_info_df d
 
 请按以下步骤思考（不要输出思考过程，只输出最终 SQL）：
 
-1. **确认目标字段**：列出目标表 DDL 的所有字段
-2. **字段映射**：对每个字段，在 design_scheme 中找到映射规则
-3. **源字段校验**：
+1. **架构选择**：走架构决策树，确定用子查询/CTE/宽表/分层
+2. **确认目标字段**：列出目标表 DDL 的所有字段
+3. **字段映射**：对每个字段，在 design_scheme 中找到映射规则
+4. **源字段校验**：
    - 来源表是否已加载？
    - 类型是否兼容？需要 cast 吗？
    - 是否可空？需要 coalesce 吗？
-4. **过滤条件**：确定分区过滤 + 业务过滤
-5. **关联方式**：确定 JOIN 类型（inner/left/right）+ JOIN 条件
-6. **组装 SQL**：
-   - 所有字段都有来源？
-   - 所有表都有分区过滤？
-   - 所有可空数值字段都有 coalesce？
-   - 所有除法都有 nullif？
+5. **过滤条件**：确定分区过滤 + 业务过滤
+6. **关联方式**：确定 JOIN 类型（inner/left/right）+ JOIN 条件
+7. **组装 SQL**
+
+## 生成自检清单（输出前逐条确认）
+
+生成 SQL 后，**在内心**逐条检查以下清单。不通过则修正后再输出。
+
+| # | 检查项 | 常见问题 |
+|---|--------|---------|
+| 1 | 架构是否符合决策树？（该用宽表却用了多层？） | 条件≥3个却没走宽表模式 |
+| 2 | 宽表模式下，所有判断中间字段都 SELECT 暴露了吗？ | 只输出最终字段，排查时看不到中间计算 |
+| 3 | 每个 is_sN 标记是否自包含？（不依赖外层 WHERE 补充条件） | 父子排除写在 ADS 而不在 is_s2 里 |
+| 4 | 右表有过滤条件时，是否推入子查询 + INNER JOIN？（宽表条件字段除外） | LEFT JOIN + WHERE 右表字段 |
+| 5 | 所有 select（含子查询/CTE/JOIN）字段都竖排了吗？ | 子查询里字段横排 |
+| 6 | 每个源表都有分区过滤（inc_day）吗？ | 遗漏分区条件导致全表扫描 |
+| 7 | 所有可空数值字段都有 coalesce？所有除法都有 nullif？ | 遗漏空值保护 |
+| 8 | 文件头注释完整吗？ | 漏掉源表列表或描述 |
+| 9 | 同源表是否合并为一个子查询？（用 CASE WHEN 区分不同用途） | 同一张表读两遍，一个聚合计数、一个 HAVING 过滤 |
 
 ---
 
