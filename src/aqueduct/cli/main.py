@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import io
 import logging
+import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -54,6 +55,56 @@ def _make_progress_callback() -> Callable:
     return on_progress
 
 
+def _parse_questions(summary: str) -> list[str]:
+    """从需求理解摘要中提取待确认问题列表。"""
+    if "### 用户澄清" in summary:
+        return []
+    m = re.search(r"###\s*待确认问题\s*\n(.*?)(?=\n###|\Z)", summary, re.DOTALL)
+    if not m:
+        return []
+    return [q.strip() for q in re.findall(r"\d+\.\s*(.+)", m.group(1)) if q.strip()]
+
+
+def _collect_qa(questions: list[str]) -> list[dict]:
+    """逐条展示问题，收集用户回答。"""
+    print(f"\n--- 待确认问题 ({len(questions)} 条) ---", flush=True)
+    qa_pairs = []
+    for i, q in enumerate(questions, 1):
+        print(f"\nQ{i}: {q}", flush=True)
+        try:
+            answer = input(f"A{i}: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            answer = ""
+        qa_pairs.append({"question": q, "answer": answer or "(未回答)"})
+    return qa_pairs
+
+
+def _format_qa_section(qa_pairs: list[dict]) -> str:
+    """将 Q&A 列表格式化为 '### 用户澄清记录' Markdown 段落。
+
+    文件写入和 state 更新共用此函数，确保格式一致。
+    """
+    lines = ["\n\n---\n\n### 用户澄清记录\n"]
+    for i, qa in enumerate(qa_pairs, 1):
+        lines.append(f"**Q{i}**: {qa['question']}")
+        lines.append(f"**A{i}**: {qa['answer']}\n")
+    return "\n".join(lines)
+
+
+def _append_qa_to_file(state: WorkflowState, qa_pairs: list[dict]) -> None:
+    """将 Q&A 记录追加到 Phase1-需求理解摘要.md。"""
+    from ..engine.nodes.helpers import get_output_dir
+
+    filepath = get_output_dir(state) / "Phase1-需求理解摘要.md"
+    if not filepath.exists():
+        return
+
+    with open(filepath, "a", encoding="utf-8") as f:
+        f.write(_format_qa_section(qa_pairs))
+
+    print(f"\n[OK] 已追加 {len(qa_pairs)} 条澄清记录到 Phase1-需求理解摘要.md", flush=True)
+
+
 def _make_confirm_callback() -> Callable:
     """创建确认回调函数，用于 Phase 1 后的用户交互确认。"""
 
@@ -69,8 +120,6 @@ def _make_confirm_callback() -> Callable:
         print(f"{'=' * 60}", flush=True)
 
         # 检测非交互环境（如 Claude Code 子进程、CI/CD 管道等）
-        import sys
-
         if not sys.stdin.isatty():
             print(
                 "\n[WARNING] 非交互环境（stdin 不是 TTY），无法等待用户确认。",
@@ -83,6 +132,23 @@ def _make_confirm_callback() -> Callable:
             )
             return False
 
+        # --- Q&A 收集环节 ---
+        questions = _parse_questions(summary)
+        if questions:
+            print(f"\n是否要逐个回答以上 {len(questions)} 个待确认问题？(Y/n): ", flush=True)
+            try:
+                want_qa = input().strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                want_qa = "n"
+
+            if want_qa in ("", "y", "yes"):
+                qa_pairs = _collect_qa(questions)
+                _append_qa_to_file(state, qa_pairs)
+
+                # 更新 state 中的摘要，供后续 Phase 使用
+                state["requirement_summary"] = summary.rstrip() + _format_qa_section(qa_pairs)
+
+        # --- 确认环节 ---
         print("\n请确认以上内容是否正确？", flush=True)
         print("  [Y] 确认，继续后续阶段", flush=True)
         print("  [N] 停止，需要修改需求文档", flush=True)

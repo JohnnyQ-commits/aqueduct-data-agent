@@ -132,7 +132,23 @@ $ aqueduct dev requirement.md
   Target table:  dw_report.daily_order_stats
   Key metrics:   GMV, order count, avg order value
   ...
+
+### 待确认问题
+1. [歧义点] GMV 是否包含退款订单？ → 建议: 仅统计已支付订单
+2. [缺失信息] 需要补充: 是否按品类维度拆分
 ============================================================
+
+是否要逐个回答以上 2 个待确认问题？(Y/n): Y
+
+--- 待确认问题 (2 条) ---
+
+Q1: [歧义点] GMV 是否包含退款订单？ → 建议: 仅统计已支付订单
+A1: 只看已支付，不含退款
+
+Q2: [缺失信息] 需要补充: 是否按品类维度拆分
+A2: 按一级品类拆分
+
+[OK] 已追加 2 条澄清记录到 Phase1-需求理解摘要.md
 
 Confirm? [Y/n/q]: y
 
@@ -253,7 +269,7 @@ Phase 5: DQC quality tests             (5 test categories)
 Phase 6: Report delivery               (comprehensive delivery report)
 ```
 
-> Phase 1 pauses for user confirmation. Review the requirement summary before the pipeline continues.
+> Phase 1 pauses for user confirmation. Review the requirement summary, answer clarification questions (answers are recorded to the deliverable file), then confirm before the pipeline continues.
 
 ### Review mode — `aqueduct review`
 
@@ -458,8 +474,9 @@ MIT. See [LICENSE](LICENSE).
 
 | 特性 | 说明 |
 |------|------|
-| **开发模式** | 需求理解 -> 设计方案 -> DDL 生成 -> SQL 开发 -> 代码审查 -> (修复循环) -> DQC 质检 -> 报告交付 |
+| **开发模式** | 需求理解 -> 问题澄清记录 -> 设计方案 -> DDL 生成 -> SQL 开发 -> 代码审查 -> (修复循环) -> DQC 质检 -> 报告交付 |
 | **审查→修复循环** | Phase 4.5 审查发现 Critical/Warning → 自动修复 SQL → 回环到 Phase 4 重新执行 |
+| **Phase 1 问题澄清记录** | Phase 1 输出待确认问题后逐题收集用户回答，追加到摘要文件并同步 state，后续可追溯 |
 | **全链路可观测** | 每任务独立日志文件、Phase 阶段耗时、LLM 调用追踪、工具执行审计 |
 | **LLM 超时重试** | 指数退避重试（最多 2 次，timeout 翻倍），超时不再静默吞掉 |
 | **外部 SQL 输入** | `--sql-file` 参数跳过 LLM 生成，直接使用已有的 SQL 文件 |

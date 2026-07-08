@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-07-09
+
+### Added
+
+- **Phase 1 Q&A clarification recording**: After Phase 1 outputs the requirement summary, users can answer clarification questions one by one. Answers are appended to `Phase1-需求理解摘要.md` and synced to `state["requirement_summary"]` for downstream phases. New functions: `_parse_questions()`, `_collect_qa()`, `_format_qa_section()`, `_append_qa_to_file()` in `cli/main.py`
+- **Idempotent protection**: `_parse_questions()` skips if `### 用户澄清` already exists, preventing duplicate append on re-run
+
+### Fixed
+
+- **`ecommerce_staff_task.json` schema alignment**: Fixed 6 field mismatches with `DomainModel` Pydantic schema: `domain_name`→`name`, `table`→`source` (8 entities), list `primary_key`→string (2 entities), `type`→`cardinality` (5 relationships), `formula`→`expression` (5 metrics), removed entity-level `name` fields
+- **Test suite**: All 203 tests pass (was 197 passed / 6 failed before schema fix)
+
 ## [0.4.1] - 2026-06-25
 
 ### Fixed

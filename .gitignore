@@ -65,3 +65,6 @@ docs/
 
 # 废弃文件（迁移残留）
 .deprecated/
+
+# understand-anything 工具生成目录
+.understand-anything/
