@@ -383,9 +383,14 @@ def _status(args: argparse.Namespace) -> int:
         if ".git" not in str(d) and ".venv" not in str(d) and "egg-info" not in str(d)
     )
 
-    # 统计知识库
+    # 统计知识库（支持域目录模式和扁平模式）
     domains_dir = root / "knowledge/domains"
-    domains_count = len(list(domains_dir.glob("*.json"))) if domains_dir.exists() else 0
+    if domains_dir.exists():
+        nested = list(domains_dir.glob("*/domain.json"))
+        flat = list(domains_dir.glob("*.json")) if not nested else []
+        domains_count = len(nested) + len(flat)
+    else:
+        domains_count = 0
 
     print("=== Aqueduct Project Status ===")
     print(f"  Tools (tools/):                {tools_count}")

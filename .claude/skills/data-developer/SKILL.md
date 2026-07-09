@@ -120,13 +120,16 @@ version: "0.3.0"
 1. 生成 Design.md（完整设计文档）
 2. 生成交付总报告
 3. 生成知识沉淀文档
-4. 更新/创建语义模型 JSON
+4. 更新/创建业务域 JSON（`knowledge/domains/{domain_id}/domain.json`）
+5. 自动重新生成该域的 `semantic-model.md` 和总索引 `INDEX.md`
 
 **输出**:
 - `output/{需求名}/Phase6-Design.md`
 - `output/{需求名}/Phase6-交付总报告.md`
 - `output/{需求名}/Phase6-知识沉淀.md`
-- `knowledge/domains/{domain_id}.json`（新业务域时创建）
+- `knowledge/domains/{domain_id}/domain.json`（新业务域时创建）
+- `knowledge/domains/{domain_id}/semantic-model.md`（自动聚合）
+- `knowledge/INDEX.md`（总索引，自动更新）
 
 ## Smart Fix 自动修复
 
@@ -136,9 +139,27 @@ version: "0.3.0"
 - 关键字小写 → 统一大写
 - 除法未保护 → 添加 `NULLIF(divisor, 0)` + `NVL`
 
+## 知识库结构
+
+```
+knowledge/
+├── INDEX.md                         # 总入口（概览 + 导航）
+├── domains/
+│   ├── {domain_id}/
+│   │   ├── domain.json              # 机器执行（Pydantic 校验）
+│   │   └── semantic-model.md        # 单域审计文档（自动生成）
+│   └── ...
+```
+
+- **domain.json** — AI 执行用，须符合以下 schema
+- **semantic-model.md** — 人工审计用，Phase 6 自动从 JSON 聚合生成
+- **INDEX.md** — 知识库总索引，Phase 6 自动更新
+
+内部版本在 `internal/knowledge/`，结构相同，包含真实业务数据。
+
 ## 语义模型规范
 
-Phase 6 生成的 `knowledge/domains/{domain_id}.json` 须符合以下结构：
+Phase 6 生成的 `knowledge/domains/{domain_id}/domain.json` 须符合以下结构：
 
 ```json
 {

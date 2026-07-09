@@ -59,6 +59,9 @@ def node_report(state: WorkflowState) -> WorkflowState:
         knowledge_doc = _generate_knowledge_doc(state)
         save_artifact(state, "Phase6-知识沉淀.md", knowledge_doc)
 
+        # 自动更新知识库语义文档（per-domain + INDEX.md）
+        _regenerate_semantic_docs(state)
+
         # 生成提效看板
         try:
             prod_tool = get_tool("productivity")
@@ -259,3 +262,45 @@ def _generate_knowledge_doc(state: WorkflowState) -> str:
     )
 
     return "\n".join(doc)
+
+
+def _regenerate_semantic_docs(state: WorkflowState) -> None:
+    """自动更新知识库语义文档（per-domain semantic-model.md + INDEX.md）。
+
+    从 settings.knowledge_dir 加载域目录，同时更新公开版和内部版。
+    失败不阻塞管道，只记录 warning。
+    """
+    from ...config.settings import get_settings
+
+    try:
+        settings = get_settings()
+        semantic_tool = get_tool("semantic")
+
+        # 公开知识库
+        public_dir = settings.project_root / "knowledge" / "domains"
+        if public_dir.exists():
+            result = semantic_tool.execute(domains_dir=str(public_dir), mode="all")
+            if result.success:
+                logger.info(
+                    "公开知识库语义文档已更新: %d 个域, %d 个文件",
+                    result.data.get("domain_count", 0),
+                    len(result.data.get("files", [])),
+                )
+            else:
+                logger.warning("公开知识库语义文档更新失败: %s", result.error)
+
+        # 内部知识库（如果存在）
+        internal_dir = settings.project_root / "internal" / "knowledge" / "domains"
+        if internal_dir.exists():
+            result = semantic_tool.execute(domains_dir=str(internal_dir), mode="all")
+            if result.success:
+                logger.info(
+                    "内部知识库语义文档已更新: %d 个域, %d 个文件",
+                    result.data.get("domain_count", 0),
+                    len(result.data.get("files", [])),
+                )
+            else:
+                logger.warning("内部知识库语义文档更新失败: %s", result.error)
+
+    except Exception:
+        logger.warning("语义文档自动更新失败，跳过", exc_info=True)

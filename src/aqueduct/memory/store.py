@@ -1,7 +1,9 @@
 """知识存储与查询 API — MemoryStore。
 
-加载、缓存、搜索业务域本体模型（knowledge/domains/*.json）。
-支持需求阶段自动召回：根据需求描述匹配最相关的业务域。
+加载、缓存、搜索业务域本体模型。
+支持两种目录结构：
+- 域目录模式: knowledge/domains/{domain_id}/domain.json（推荐）
+- 扁平模式: knowledge/domains/{domain_id}.json（旧版兼容）
 """
 
 from __future__ import annotations
@@ -51,7 +53,11 @@ class MemoryStore:
             DomainNotFoundError: 业务域文件不存在。
         """
         if domain_id not in self._cache:
-            path = self._domains_dir / f"{domain_id}.json"
+            # 优先尝试域目录模式: {domain_id}/domain.json
+            path = self._domains_dir / domain_id / "domain.json"
+            if not path.exists():
+                # 兼容扁平模式: {domain_id}.json
+                path = self._domains_dir / f"{domain_id}.json"
             if not path.exists():
                 raise DomainNotFoundError(f"业务域 '{domain_id}' 不存在: {path}")
 
@@ -75,6 +81,12 @@ class MemoryStore:
             logger.warning("业务域目录不存在: %s", self._domains_dir)
             return []
 
+        # 优先尝试域目录模式: */domain.json
+        nested = [p.parent.name for p in self._domains_dir.glob("*/domain.json")]
+        if nested:
+            return sorted(nested)
+
+        # 兼容扁平模式: *.json
         return sorted([p.stem for p in self._domains_dir.glob("*.json")])
 
     def match_domain(self, requirement: str) -> DomainModel | None:
@@ -162,10 +174,14 @@ class MemoryStore:
     def save(self, domain: DomainModel) -> None:
         """保存业务域模型到 JSON 文件。
 
+        使用域目录模式: {domain_id}/domain.json
+
         Args:
             domain: 要保存的业务域模型。
         """
-        path = self._domains_dir / f"{domain.domain_id}.json"
+        domain_dir = self._domains_dir / domain.domain_id
+        domain_dir.mkdir(parents=True, exist_ok=True)
+        path = domain_dir / "domain.json"
         domain.to_json(path)
         # 更新缓存
         self._cache[domain.domain_id] = domain

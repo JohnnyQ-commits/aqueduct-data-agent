@@ -71,7 +71,7 @@ class Settings(BaseSettings):
 
     knowledge_dir: Path = Field(
         default=Path("knowledge/domains"),
-        description="业务域本体 JSON 文件目录。",
+        description="业务域本体目录。支持域目录模式（{domain_id}/domain.json）和扁平模式（{domain_id}.json）。",
     )
 
     prompt_dir: Path = Field(

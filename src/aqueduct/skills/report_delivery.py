@@ -31,8 +31,8 @@ class ReportDeliverySkill(BaseSkill):
           2. 生成 Design.md（按 templates/design.md）
           3. 生成 交付总报告.md（按 templates/report.md）
           4. 生成 知识沉淀.md
-          5. 更新 knowledge/domains/{domain_id}.json
-          6. 运行 gen_semantic_doc.py 同步 semantic-model.md
+          5. 更新 knowledge/domains/{domain_id}/domain.json
+          6. 自动重新生成 semantic-model.md + INDEX.md（由 report 节点调用 SemanticTool）
         """
         inp = context.input if isinstance(context.input, dict) else {}
         metadata = context.state.get("metadata", {})
