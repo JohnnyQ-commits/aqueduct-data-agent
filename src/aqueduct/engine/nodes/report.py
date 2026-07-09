@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from datetime import datetime
+from pathlib import Path
 
 from ...skills.base import SkillContext
 from ...skills.registry import get_skill
@@ -58,6 +60,9 @@ def node_report(state: WorkflowState) -> WorkflowState:
 
         knowledge_doc = _generate_knowledge_doc(state)
         save_artifact(state, "Phase6-知识沉淀.md", knowledge_doc)
+
+        # 自动更新 domain.json（从 DDL/SQL 提取增量数据，dict-level 合并）
+        _update_domain_json(state)
 
         # 自动更新知识库语义文档（per-domain + INDEX.md）
         _regenerate_semantic_docs(state)
@@ -262,6 +267,86 @@ def _generate_knowledge_doc(state: WorkflowState) -> str:
     )
 
     return "\n".join(doc)
+
+
+def _update_domain_json(state: WorkflowState) -> None:
+    """自动更新 domain.json：从 DDL/SQL 提取增量数据，dict-level 合并写入。
+
+    策略：
+    - 已有域：加载现有 domain.json → 合并新实体/指标/过滤规则 → 写回
+    - 新域：创建骨架 + 提取数据 → 写入
+    - 合并只增不覆盖（保留人工精写的 description 等字段）
+    - 失败不阻塞管道
+    """
+    from ...config.settings import get_settings
+    from ...utils.domain_extract import (
+        create_new_domain,
+        extract_entities_from_ddl,
+        extract_filter_rules,
+        extract_metrics_from_sql,
+        load_domain_dict,
+        merge_domain_updates,
+        save_domain_dict,
+    )
+
+    req_name = state.get("metadata", {}).get("requirement_name", "unknown")
+
+    try:
+        ddl = state.get("ddl_content", "")
+        sql = state.get("sql_content", "")
+        if not ddl and not sql:
+            logger.debug("[task=%s] 无 DDL/SQL 内容，跳过 domain.json 更新", req_name)
+            return
+
+        # 确定 domain_id
+        domain_id = state.get("domain_id")
+        if not domain_id:
+            # 从需求名称生成 domain_id
+            domain_id = re.sub(r"[^\w一-鿿]", "_", req_name)[:40].strip("_")
+            if not domain_id:
+                logger.debug("[task=%s] 无法确定 domain_id，跳过", req_name)
+                return
+
+        # 提取增量数据
+        updates: dict = {}
+        if ddl:
+            entities = extract_entities_from_ddl(ddl)
+            if entities:
+                updates["entities"] = entities
+                logger.info("[task=%s] 从 DDL 提取 %d 个实体", req_name, len(entities))
+        if sql:
+            metrics = extract_metrics_from_sql(sql)
+            if metrics:
+                updates["metrics"] = metrics
+                logger.info("[task=%s] 从 SQL 提取 %d 个指标", req_name, len(metrics))
+            filter_rules = extract_filter_rules(sql)
+            if filter_rules:
+                updates["filter_rules"] = filter_rules
+
+        if not updates:
+            logger.debug("[task=%s] 未提取到任何数据，跳过 domain.json 更新", req_name)
+            return
+
+        # 确定 domain.json 路径
+        settings = get_settings()
+        domains_dir = settings.project_root / "knowledge" / "domains"
+        domain_path = domains_dir / domain_id / "domain.json"
+
+        # 加载现有或创建新域
+        existing = load_domain_dict(domain_path)
+        if existing:
+            merge_domain_updates(existing, updates)
+            logger.info("[task=%s] 已合并增量数据到 %s", req_name, domain_path)
+        else:
+            # 新域：从需求名推断中文名称
+            domain_name = req_name.split("/")[-1].split("\\")[-1][:30]
+            existing = create_new_domain(domain_id, domain_name, updates)
+            logger.info("[task=%s] 创建新域 %s: %s", req_name, domain_id, domain_path)
+
+        save_domain_dict(domain_path, existing)
+
+    except Exception:
+        logger.warning("domain.json 更新失败，跳过", exc_info=True)
 
 
 def _regenerate_semantic_docs(state: WorkflowState) -> None:
