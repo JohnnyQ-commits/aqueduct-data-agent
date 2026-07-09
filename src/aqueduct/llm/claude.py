@@ -176,12 +176,16 @@ class ClaudeLLM(BaseLLM):
         """
         from anthropic import Anthropic
 
+        from ..config.settings import get_settings
+
+        timeout_seconds = float(get_settings().llm_timeout_seconds)
+
         # 缓存客户端实例，复用 HTTP 连接池
         if not hasattr(self, "_sdk_client") or self._sdk_client is None:
             self._sdk_client = Anthropic(
                 api_key=self._api_key if self._api_key else None,
                 base_url=self._base_url if self._base_url else None,
-                timeout=600.0,
+                timeout=timeout_seconds,
             )
         client = self._sdk_client
 
@@ -294,14 +298,18 @@ class ClaudeLLM(BaseLLM):
 
         settings = get_settings()
         max_retries = settings.llm_max_retries
+        timeout_seconds = settings.llm_timeout_seconds
 
-        return self._chat_cli_with_retry(messages, kwargs, max_retries=max_retries)
+        return self._chat_cli_with_retry(
+            messages, kwargs, max_retries=max_retries, timeout=timeout_seconds
+        )
 
     def _chat_cli_with_retry(
         self,
         messages: list[LLMMessage],
         kwargs: dict[str, Any],
         max_retries: int = 2,
+        timeout: int = 900,
     ) -> LLMResponse:
         """带重试的 CLI 调用实现。"""
         from ..config.settings import get_settings
@@ -330,7 +338,7 @@ class ClaudeLLM(BaseLLM):
         # 将 prompt 和输出放到系统临时目录（避免项目根目录残留临时文件）
         tmp_dir = Path(tempfile.mkdtemp(prefix="aqueduct_claude_"))
 
-        timeout = 600  # 单次超时时间（秒）
+        # timeout 由 _chat_cli 从 settings.llm_timeout_seconds 传入，重试时指数增长
         last_error: Exception | None = None
 
         for attempt in range(max_retries + 1):

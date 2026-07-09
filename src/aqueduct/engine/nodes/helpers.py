@@ -47,7 +47,7 @@ def save_artifact(state: WorkflowState, filename: str, content: str) -> str:
 
 
 def call_llm(state: WorkflowState, task_type: str, prompt: str) -> str:
-    """通过 ModelRouter 调用 LLM，带完整日志。
+    """通过 ModelRouter 调用 LLM，带完整日志和空响应检测。
 
     Args:
         state: 工作流状态（用于传递 LLM 实例）。
@@ -56,7 +56,14 @@ def call_llm(state: WorkflowState, task_type: str, prompt: str) -> str:
 
     Returns:
         LLM 回复的文本内容。
+
+    Raises:
+        LLMEmptyResponseError: LLM 多次返回空响应时抛出。
+        LLMTimeoutError: LLM 调用超时。
+        LLMError: 其他 LLM 调用失败。
     """
+    from ...exceptions import LLMEmptyResponseError
+
     req_name = state.get("metadata", {}).get("requirement_name", "unknown")
 
     router = state.get("_llm_router")
@@ -74,37 +81,82 @@ def call_llm(state: WorkflowState, task_type: str, prompt: str) -> str:
         len(prompt),
     )
 
-    start_time = time.time()
-    try:
-        messages = [LLMMessage(role="user", content=prompt)]
-        response = llm.chat(messages, max_tokens=32768)
-        elapsed = time.time() - start_time
+    # 空响应自动重试（LLM CLI 子进程可能静默失败，重试常能恢复）
+    max_empty_retries = 2
+    last_content = ""
 
-        logger.info(
-            "[task=%s] LLM 调用完成: task_type=%s, model=%s, "
-            "response=%d 字符, tokens(prompt=%d, completion=%d), "
-            "耗时=%.1fs",
-            req_name,
-            task_type,
-            llm.model_id,
-            len(response.content),
-            response.usage.prompt_tokens if response.usage else 0,
-            response.usage.completion_tokens if response.usage else 0,
-            elapsed,
-        )
-        return response.content
+    for attempt in range(max_empty_retries + 1):
+        start_time = time.time()
+        try:
+            messages = [LLMMessage(role="user", content=prompt)]
+            response = llm.chat(messages, max_tokens=32768)
+            elapsed = time.time() - start_time
+            last_content = response.content
 
-    except Exception as e:
-        elapsed = time.time() - start_time
-        logger.error(
-            "[task=%s] LLM 调用失败: task_type=%s, model=%s, error=%s, 耗时=%.1fs",
-            req_name,
-            task_type,
-            llm.model_id,
-            str(e),
-            elapsed,
-        )
-        raise
+            logger.info(
+                "[task=%s] LLM 调用完成: task_type=%s, model=%s, "
+                "response=%d 字符, tokens(prompt=%d, completion=%d), "
+                "耗时=%.1fs",
+                req_name,
+                task_type,
+                llm.model_id,
+                len(response.content),
+                response.usage.prompt_tokens if response.usage else 0,
+                response.usage.completion_tokens if response.usage else 0,
+                elapsed,
+            )
+
+            # 空响应检测：重试（避免 LLM CLI 静默失败污染下游）
+            if _is_empty_response(response.content):
+                if attempt < max_empty_retries:
+                    logger.warning(
+                        "[task=%s] LLM 返回空响应，%d 秒后第 %d/%d 次重试",
+                        req_name,
+                        5,
+                        attempt + 1,
+                        max_empty_retries,
+                    )
+                    time.sleep(5)
+                    continue
+                # 重试耗尽，抛出异常（不再返回占位符污染下游）
+                raise LLMEmptyResponseError(
+                    f"LLM 返回空响应（已重试 {max_empty_retries} 次）: "
+                    f"task_type={task_type}, model={llm.model_id}"
+                )
+
+            return response.content
+
+        except LLMEmptyResponseError:
+            raise
+
+        except Exception as e:
+            elapsed = time.time() - start_time
+            logger.error(
+                "[task=%s] LLM 调用失败: task_type=%s, model=%s, error=%s, 耗时=%.1fs",
+                req_name,
+                task_type,
+                llm.model_id,
+                str(e),
+                elapsed,
+            )
+            raise
+
+    # 兜底（理论上不会到达）
+    raise LLMEmptyResponseError(
+        f"LLM 返回空响应: task_type={task_type}, model={llm.model_id}, "
+        f"last_content={last_content!r}"
+    )
+
+
+def _is_empty_response(content: str) -> bool:
+    """判断 LLM 响应是否为实质空内容（含 CLI 后端的占位符）。"""
+    if not content:
+        return True
+    stripped = content.strip()
+    if not stripped:
+        return True
+    # claude.py 在 CLI 后端 stdout/stderr 都为空时返回的占位符
+    return stripped.startswith("[LLM 调用返回为空]")
 
 
 def extract_sql_block(text: str) -> str:

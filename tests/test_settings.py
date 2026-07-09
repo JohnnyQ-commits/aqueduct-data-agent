@@ -61,6 +61,15 @@ class TestSettingsValidation:
         settings = Settings()
         assert settings.workflow_timeout_seconds == 3600
 
+    def test_llm_timeout_default(self):
+        """llm_timeout_seconds 默认 900（适配长输出任务）。"""
+        settings = Settings()
+        assert settings.llm_timeout_seconds == 900
+
+    def test_llm_max_retries_default(self):
+        settings = Settings()
+        assert settings.llm_max_retries == 2
+
 
 class TestExecutionSettings:
     """执行能力配置测试。"""

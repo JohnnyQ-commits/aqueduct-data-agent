@@ -142,6 +142,11 @@ class Settings(BaseSettings):
         description="LLM 调用超时后最大重试次数（指数退避）。",
     )
 
+    llm_timeout_seconds: int = Field(
+        default=900,
+        description="单次 LLM 调用超时时间（秒）。长输出任务（doc_gen/sql_gen）建议 ≥ 900。",
+    )
+
     llm_max_context_tokens: int = Field(
         default=200_000,
         description="LLM 上下文窗口最大 token 数。超过此值触发自动截断。",

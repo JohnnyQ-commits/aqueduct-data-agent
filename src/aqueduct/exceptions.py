@@ -19,7 +19,8 @@ Memory/知识层异常继承自 `AqueductMemoryError`。
     │   └── WorkflowNodeError（特定节点失败）
     ├── LLMError（LLM 调用失败）
     │   ├── LLMTimeoutError（LLM 调用超时）
-    │   └── LLMContextExceededError（超出上下文窗口）
+    │   ├── LLMContextExceededError（超出上下文窗口）
+    │   └── LLMEmptyResponseError（LLM 返回空响应）
     ├── AqueductMemoryError（知识存储操作失败）
     │   └── DomainNotFoundError（业务域不存在）
     └── ConfigError（配置校验失败）
@@ -107,6 +108,16 @@ class LLMContextExceededError(LLMError):
     """输入超过模型的上下文窗口时抛出。"""
 
     code = "llm_context_exceeded"
+
+
+class LLMEmptyResponseError(LLMError):
+    """LLM 返回空响应时抛出。
+
+    当 LLM 调用成功完成但返回内容为空（如 Claude CLI 子进程静默失败、
+    API 限流未透传、或响应被截断）时抛出此异常。
+    """
+
+    code = "llm_empty_response"
 
 
 class AqueductMemoryError(AqueductError):

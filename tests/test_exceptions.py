@@ -10,6 +10,7 @@ from src.aqueduct.exceptions import (
     ConfigError,
     DomainNotFoundError,
     LLMContextExceededError,
+    LLMEmptyResponseError,
     LLMError,
     SkillError,
     SkillNotFoundError,
@@ -45,6 +46,7 @@ class TestExceptionHierarchy:
     def test_llm_errors_inherit_aqueduct(self):
         assert issubclass(LLMError, AqueductError)
         assert issubclass(LLMContextExceededError, LLMError)
+        assert issubclass(LLMEmptyResponseError, LLMError)
 
     def test_memory_errors_inherit_aqueduct(self):
         assert issubclass(AqueductMemoryError, AqueductError)
