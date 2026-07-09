@@ -18,59 +18,140 @@ from .helpers import call_llm, save_artifact
 logger = logging.getLogger(__name__)
 
 
+# URL / 文件扩展名等误识别为表名的黑名单片段
+_NOISE_SUFFIXES = (
+    "aliyuncs.com",
+    "aliyuncs",
+    "mydocs.oss",
+    "oss-cn-",
+    "oss.",
+)
+_NOISE_PARTS = {
+    "aliyuncs",
+    "mydocs",
+    "aliyun",
+    "aliyuncs.com",
+    "oss",
+    "oss-cn",
+    "www",
+    "http",
+    "https",
+    "com",
+    "cn",
+    "net",
+    "org",
+    "png",
+    "jpg",
+    "jpeg",
+    "gif",
+    "pdf",
+    "xlsx",
+    "csv",
+    "html",
+    "json",
+}
+
+
+def _preprocess_markdown(text: str) -> str:
+    r"""去除 Markdown 转义：`\_` → `_`、`\=` → `=` 等。
+
+    需求文档经常用 `\` 转义标点，导致正则匹配失败。
+    """
+    return re.sub(r"\\([_\-=`*~])", r"\1", text)
+
+
+def _is_noise(name: str) -> bool:
+    """判断候选名是否为 URL 片段 / 文件扩展名等噪声。"""
+    lower = name.lower()
+    if any(lower.endswith(s) or f".{s}" in lower for s in _NOISE_SUFFIXES):
+        return True
+    parts = lower.split(".")
+    return any(p in _NOISE_PARTS for p in parts)
+
+
 def _extract_target_table(text: str) -> str:
-    """从需求文档中提取目标表名。
+    r"""从需求文档中提取目标表名。
+
+    预处理：去除 Markdown 转义（`\_` → `_`）。
 
     匹配模式（按优先级）:
       1. '目标表[：:] xxx' 中文提示
       2. 'CREATE TABLE schema.table' SQL 语句
-      3. '写入/输出到 schema.table' 中文动词 + 表名
-      4. 独立的 schema.table 格式标识符
+      3. '表[：:] xxx' / '写入/输出到 xxx' 中文动词 + 表名
+      4. 独立的 schema.table 或 db.schema.table 格式标识符
 
     Returns:
         提取到的表名，未找到时返回空字符串。
     """
+    text = _preprocess_markdown(text)
+
     # 模式 1: 中文提示 "目标表：xxx" / "目标表: xxx"
     m = re.search(r"目标表[：:]\s*(\S+)", text)
     if m:
-        return m.group(1).strip("，。,.")
+        return m.group(1).rstrip("，。,.）)")
 
     # 模式 2: CREATE TABLE 语句
     m = re.search(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\S+)", text, re.IGNORECASE)
     if m:
         return m.group(1).strip("(，。,.")
 
-    # 模式 3: 中文动词 + 表名
-    m = re.search(r"(?:写入|输出到|存入|保存到)\s*(\w+\.\w+)", text)
+    # 模式 3: 中文动词 + 表名（支持三段式 db.schema.table）
+    m = re.search(
+        r"(?:表[：:]|写入|输出到|存入|保存到)\s*"
+        r"((?:\w+\.)?(?:\w+)\.(?:\w+))",
+        text,
+    )
     if m:
-        return m.group(1)
+        candidate = m.group(1)
+        if not _is_noise(candidate):
+            return candidate
 
-    # 模式 4: 独立的 schema.table 格式（两段均 ≥2 字符，排除 e.g. / i.e. 等缩写）
-    candidates = re.findall(r"\b([a-z_]{2,})\.([a-z_]{2,})\b", text, re.IGNORECASE)
-    if candidates:
-        return f"{candidates[0][0]}.{candidates[0][1]}"
+    # 模式 4: 独立的三段式 db.schema.table
+    for m in re.finditer(r"\b([a-z_]\w*)\.([a-z_]\w*)\.([a-z_]\w*)\b", text, re.IGNORECASE):
+        candidate = f"{m.group(1)}.{m.group(2)}.{m.group(3)}"
+        if not _is_noise(candidate):
+            return candidate
+
+    # 模式 5: 独立的 schema.table 格式（两段均 ≥2 字符，排除 e.g. / i.e. 等缩写）
+    for m in re.finditer(r"\b([a-z_]{2,})\.([a-z_]{2,})\b", text, re.IGNORECASE):
+        candidate = f"{m.group(1)}.{m.group(2)}"
+        if not _is_noise(candidate):
+            return candidate
 
     return ""
 
 
 def _extract_table_names(text: str) -> list[str]:
-    """从需求文档中提取所有可能的表名（database.table 格式）。
+    """从需求文档中提取所有可能的表名。
 
-    匹配所有 schema.table 格式的标识符，去重返回。
+    预处理：去除 Markdown 转义。
+    支持三段式 db.schema.table 和两段式 schema.table。
+    自动过滤 URL 片段和文件扩展名。
 
     Returns:
         表名列表，未找到时返回空列表。
     """
-    # 匹配 database.table 格式（两段均 ≥2 字符）
-    candidates = re.findall(r"\b([a-z_]{2,})\.([a-z_]{2,})\b", text, re.IGNORECASE)
-    # 去重，保持顺序
+    text = _preprocess_markdown(text)
+
     seen: set[str] = set()
     result: list[str] = []
-    for db, tbl in candidates:
-        full_name = f"{db}.{tbl}"
-        if full_name not in seen:
-            seen.add(full_name)
-            result.append(full_name)
+
+    # 三段式：db.schema.table（优先匹配）
+    for m in re.finditer(r"\b([a-z_]\w*)\.([a-z_]\w*)\.([a-z_]\w*)\b", text, re.IGNORECASE):
+        name = f"{m.group(1)}.{m.group(2)}.{m.group(3)}"
+        if not _is_noise(name) and name not in seen:
+            seen.add(name)
+            result.append(name)
+
+    # 两段式：schema.table（补充匹配）
+    for m in re.finditer(r"\b([a-z_]{2,})\.([a-z_]{2,})\b", text, re.IGNORECASE):
+        name = f"{m.group(1)}.{m.group(2)}"
+        if _is_noise(name) or name in seen:
+            continue
+        # 若已是三段式表名的子串则跳过（避免 dw_demo.xxx 与 xxx.yyy 重复）
+        seen.add(name)
+        result.append(name)
+
     return result
 
 

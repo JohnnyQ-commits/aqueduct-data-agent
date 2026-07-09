@@ -45,7 +45,12 @@ def setup_task_logging(
             )
         )
 
-        logging.getLogger("aqueduct").addHandler(handler)
+        aqueduct_logger = logging.getLogger("aqueduct")
+        aqueduct_logger.addHandler(handler)
+        # 确保 aqueduct logger 自身 level 允许 INFO 通过，
+        # 否则在 Python API（不经 CLI）调用时会继承 root WARNING 导致 INFO 丢失
+        if aqueduct_logger.level == logging.NOTSET or aqueduct_logger.level > logging.INFO:
+            aqueduct_logger.setLevel(logging.INFO)
 
         logger.info(
             "[task=%s] 任务日志文件: %s",
