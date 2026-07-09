@@ -217,7 +217,64 @@ def _generate_delivery_report(state: WorkflowState) -> str:
 
 
 def _generate_knowledge_doc(state: WorkflowState) -> str:
-    """从工作流状态自动生成知识沉淀文档。"""
+    """通过 LLM 从工作流产出物中提炼知识沉淀文档。
+
+    使用 knowledge_extract 模板调用 Sonnet，提取结构化业务知识。
+    失败时 fallback 到纯 Python 截断拼接。
+    """
+    from string import Template
+
+    from ...config.settings import get_settings
+
+    req_name = state.get("metadata", {}).get("requirement_name", "unknown")
+
+    try:
+        settings = get_settings()
+        tpl_path = settings.prompt_dir / "knowledge_extract.tpl.md"
+        if not tpl_path.exists():
+            logger.warning("知识提取模板不存在: %s，使用 fallback", tpl_path)
+            return _generate_knowledge_doc_fallback(state)
+
+        content = tpl_path.read_text(encoding="utf-8")
+        prompt = Template(content).safe_substitute(
+            requirement_name=req_name,
+            requirement=state.get("requirement", "")[:3000],
+            design_scheme=state.get("design_scheme", "")[:3000],
+            ddl_content=state.get("ddl_content", "")[:2000],
+            sql_content=state.get("sql_content", "")[:5000],
+            review_result=(state.get("review_result") or "")[:3000],
+            domain_context=state.get("domain_context", "")[:2000],
+            table_schemas=_format_table_schemas(state.get("table_schemas", {})),
+        )
+
+        knowledge_doc = call_llm(state, "knowledge_extract", prompt)
+
+        if not knowledge_doc or len(knowledge_doc.strip()) < 100:
+            logger.warning("知识提取 LLM 返回过短（%d 字符），使用 fallback", len(knowledge_doc or ""))
+            return _generate_knowledge_doc_fallback(state)
+
+        logger.info("知识沉淀 LLM 提取完成: %d 字符", len(knowledge_doc))
+        return knowledge_doc
+
+    except Exception:
+        logger.warning("知识提取 LLM 调用失败，使用 fallback", exc_info=True)
+        return _generate_knowledge_doc_fallback(state)
+
+
+def _format_table_schemas(table_schemas: dict[str, str]) -> str:
+    """将 table_schemas dict 格式化为可读文本。"""
+    if not table_schemas:
+        return "（无表结构信息）"
+    lines = []
+    for table_name, schema in table_schemas.items():
+        lines.append(f"### {table_name}")
+        lines.append(schema[:500])
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _generate_knowledge_doc_fallback(state: WorkflowState) -> str:
+    """fallback: 纯 Python 截断拼接（无 LLM）。"""
     req_name = state.get("metadata", {}).get("requirement_name", "unknown")
     requirement = state.get("requirement", "")
     design = state.get("design_scheme", "")
@@ -226,9 +283,9 @@ def _generate_knowledge_doc(state: WorkflowState) -> str:
     artifacts = state.get("artifacts", [])
 
     doc = [
-        f"# 知识沉淀 -- {req_name}",
+        f"# 知识沉淀 — {req_name}",
         "",
-        "> 自动生成于工作流执行完成",
+        "> 自动生成于工作流执行完成（fallback 模式）",
         "",
         "## 一、需求概述",
         "",

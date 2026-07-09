@@ -38,6 +38,7 @@ MEDIUM_TASKS = frozenset(
         "dqc_gen",  # DQC 测试用例生成
         "design_ddl",  # 方案+DDL 合并生成（OPT-4）
         "lineage",  # 字段级血缘生成（结构化提取，不需要 Opus）
+        "knowledge_extract",  # 知识沉淀提取（从交付物中提炼业务知识）
     ]
 )
 
