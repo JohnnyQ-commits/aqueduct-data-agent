@@ -73,9 +73,12 @@ jobs:
 
       - name: Verify knowledge domains
         run: |
-          count=$(ls knowledge/domains/*.json 2>/dev/null | wc -l)
+          # 支持域目录模式 (*/domain.json) 和扁平模式 (*.json)
+          nested=$(find knowledge/domains -name "domain.json" 2>/dev/null | wc -l)
+          flat=$(ls knowledge/domains/*.json 2>/dev/null | wc -l)
+          count=$((nested + flat))
           if [ "$count" -lt 1 ]; then
             echo "No domain JSON files found"
             exit 1
           fi
-          echo "Found $count domain files"
+          echo "Found $count domain files (nested: $nested, flat: $flat)"
