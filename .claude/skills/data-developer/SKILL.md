@@ -57,7 +57,8 @@ version: "0.3.0"
    - `dp_mysql_get_detail` — 查询 MySQL 表结构
 3. 读取 `knowledge/domains/*.json` 中匹配的业务域定义，对齐口径、关联关系和过滤规则
 4. 识别歧义点，输出"需求理解摘要 + 问题清单"向用户确认
-5. 用户确认后，自动进入 Phase 2
+5. 如有待确认问题，逐条向用户收集答案，答案追加到摘要文件并注入后续 Phase prompt
+6. 用户确认后，自动进入 Phase 2
 
 **输出**: `output/{需求名}/Phase1-需求理解摘要.md`
 
@@ -142,20 +143,23 @@ Phase 6 生成的 `knowledge/domains/{domain_id}.json` 须符合以下结构：
 ```json
 {
   "domain_id": "unique_identifier",
-  "domain_name": "业务域中文名称",
+  "name": "业务域中文名称",
+  "version": "1.0.0",
+  "description": "业务域描述",
   "entities": [
     {
       "name": "实体名称",
-      "table": "schema.table_name",
-      "attributes": [{"name": "字段名", "type": "数据类型", "description": "说明"}],
-      "primary_key": ["pk_field"]
+      "source": "schema.table_name",
+      "primary_key": "pk_field",
+      "description": "实体描述",
+      "attributes": [{"name": "字段名", "type": "数据类型", "description": "说明"}]
     }
   ],
   "relationships": [
-    {"from": "实体A", "to": "实体B", "type": "1:N", "description": "关系说明"}
+    {"from": "实体A", "to": "实体B", "cardinality": "1:N", "description": "关系说明"}
   ],
   "metrics": [
-    {"name": "指标名", "formula": "SUM/NVL/COUNT表达式", "description": "业务含义"}
+    {"name": "指标名", "expression": "SUM/COUNT表达式", "description": "业务含义"}
   ]
 }
 ```

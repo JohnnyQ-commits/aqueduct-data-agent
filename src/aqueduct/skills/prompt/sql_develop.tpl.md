@@ -118,7 +118,7 @@ inner join (
         area_name
     from dim.dim_dept_info_df
     where inc_day = '$[time(yyyyMMdd,-1d)]'
-        and area_code in ('R01','R02','R03','R03')
+        and area_code in ('R01','R02','R03')
 ) d on s.dept_code = d.dept_code
 
 -- ❌ 错误：子查询中字段横排
@@ -145,7 +145,7 @@ inner join (
         area_code
     from dim.dim_dept_info_df
     where inc_day = '$[time(yyyyMMdd,-1d)]'
-        and area_code in ('R01','R02','R03','R03')
+        and area_code in ('R01','R02','R03')
         and dept_type_code not in ('T01','T02')
 ) d on s.dept_code = d.dept_code
 
@@ -153,7 +153,7 @@ inner join (
 from staff_base s
 left join dim.dim_dept_info_df d
     on s.dept_code = d.dept_code
-where d.area_code in ('R01','R02','R03','R03')
+where d.area_code in ('R01','R02','R03')
     and d.dept_type_code not in ('T01','T02')
 ```
 
@@ -175,9 +175,9 @@ where d.area_code in ('R01','R02','R03','R03')
 ```sql
 -- 条件字段收集阶段：LEFT JOIN 保留所有员工，is_valid/train_status 等标记字段供 ADS 层判断
 from staff_base s
-left join dw_demo.dwd_staff_attr_dtl sf on s.emp_code = sf.emp_code      -- 不过滤，全部关联
-left join dw_demo.dwd_train_stat_di tr       on s.emp_code = tr.emp_code        -- 不过滤，全部关联
-left join dw_demo.dwd_area_config_di ac     on s.emp_code = ac.emp_code        -- 不过滤，全部关联
+left join dw_demo.dwd_staff_attr_dtl sf on s.emp_code = sf.emp_code              -- 不过滤，全部关联
+left join dw_demo.dwd_train_stat_di tr       on s.emp_code = tr.emp_code          -- 不过滤，全部关联
+left join dw_demo.dwd_area_config_di ac       on s.emp_code = ac.emp_code          -- 不过滤，全部关联
 ```
 
 **过滤条件下推示例**（INNER JOIN 提前过滤）：
@@ -188,7 +188,7 @@ inner join (
     select dept_code, dept_name, area_code
     from dim.dim_dept_info_df
     where inc_day = '$[time(yyyyMMdd,-1d)]'
-        and area_code in ('R01','R02','R03','R03')    -- 过滤在子查询内
+        and area_code in ('R01','R02','R03')    -- 过滤在子查询内
 ) d on s.dept_code = d.dept_code
 ```
 

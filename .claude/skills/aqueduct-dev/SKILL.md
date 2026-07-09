@@ -66,6 +66,7 @@ aqueduct dev {requirement_path} --sql-file {sql_path}
 
 管道会在 Phase 1 后暂停。读取输出目录的 Phase 1 文件，向用户摘要展示：
 - 源表、目标表、关键指标
+- 如有待确认问题，逐条收集用户答案（自动追加到摘要文件并注入后续 Phase）
 - 等待用户确认后，管道自动继续 Phase 2-6
 
 ### Step 4: 展示产出物

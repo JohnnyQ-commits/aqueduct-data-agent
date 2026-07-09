@@ -175,7 +175,7 @@
 -- 示例 4：宽表模式（条件≥3 个 / 需排查验收）— ★ 最常用
 -- ============================================================
 -- 三个强制原则：
---   1. 排查优先：判断中间字段（org_code、service_dept 等）必须暴露
+--   1. 排查优先：判断中间字段（如 region_code、channel_type）必须暴露
 --   2. 逻辑内聚：每个 is_sN 自包含，不依赖外层额外过滤
 --   3. ADS 统一过滤：WHERE 只写 is_sN = 1
 -- DWD+DWS 合并为一张宽表，减少中间表
@@ -184,89 +184,81 @@
 -- drop table if exists tmp_demo.tmp_scenario_wide_$[time(yyyyMMdd,-60d)];
 -- create table if not exists tmp_demo.tmp_scenario_wide_$[time(yyyyMMdd,-1d)] as
 -- select
---     s.emp_code,
---     s.position_name,
---     s.dept_code,
+--     o.order_id,
+--     o.customer_id,
+--     o.region_code,
 --     -- 判断中间字段（暴露供排查）
---     s.org_code,
---     s.service_dept,
---     ac.single_region_id,
---     adm.config_area_dept_code,
---     pc.node                              as pc_matched_node,
---     pc.related_node                      as pc_matched_related,
---     -- 来源/子组校验（derived 标记）
---     case when (sf.emp_source = 'HR'
---                and sf.emp_category not in ('REMOVED','REMOVED'))
---               or (sf.emp_source = 'OA'
---                   and sf.emp_category in ('合同工','劳务工'))
+--     o.channel_type,
+--     o.warehouse_id,
+--     c.customer_level,
+--     r.region_name,
+--     -- 来源校验（derived 标记）
+--     case when o.order_source = 'APP'
+--               and o.order_type not in ('test','mock')
+--               or o.order_source = 'API'
+--               and o.order_type in ('standard','express')
 --          then 1 else 0
 --     end                                  as is_valid_source,
---     -- 培养状态
---     case when tr.emp_code is not null
+--     -- VIP 客户标记
+--     case when c.customer_level in ('gold','platinum')
 --          then '1' else '0'
---     end                                  as train_status,
+--     end                                  as is_vip,
 --     -- 场景标记（每个自包含）
---     case when s.position_name not in ('REMOVED','delivery')
+--     case when o.total_amount > 10000
 --          then 1 else 0
---     end                                  as is_s1,              -- 岗位异动
---     case when coalesce(ac.region_cnt, 0) = 1
---               and adm.config_area_dept_code is not null
---               and adm.config_area_dept_code <> s.dept_code
---               and pc.node is null                           -- 父子排除内聚在此
+--     end                                  as is_s1,              -- 大额订单
+--     case when coalesce(r.region_cnt, 0) = 1
+--               and r.region_name is not null
+--               and r.region_name <> o.region_code
 --          then 1 else 0
---     end                                  as is_s2,              -- 网点异动（自包含）
---     s.inc_day
+--     end                                  as is_s2,              -- 区域异常
+--     o.inc_day
 -- from (
 --     select
---         emp_code,
---         position_name                                    as position_name,
---         case when position_name = 'delivery'
---              then service_dept
---              else org_code
---         end as dept_code,
---         org_code,
---         service_dept,
+--         order_id,
+--         customer_id,
+--         region_code,
+--         channel_type,
+--         warehouse_id,
+--         total_amount,
+--         order_source,
+--         order_type,
 --         inc_day
---     from dw_demo.dwd_courier_info_df
+--     from dw_demo.dwd_order_info_di
 --     where inc_day = '$[time(yyyyMMdd,-1d)]'
---         and status = '1'
---         and isdeleted = '0'
---         and status_code = '0010'
--- ) s
+--         and order_status >= '20'
+-- ) o
 -- inner join (                                                      -- 属性维度：过滤推入子查询
 --     select
---         dept_code
---     from dim.dim_dept_info_df
+--         customer_id,
+--         customer_level
+--     from dw_demo.dim_customer_info_df
 --     where inc_day = '$[time(yyyyMMdd,-1d)]'
---         and hq_code in ('R01','R02','R03','R03')
--- ) d on s.dept_code = d.dept_code
--- left join dw_demo.dwd_staff_attr_dtl sf on s.emp_code = sf.emp_code         -- 条件字段：LEFT JOIN 保留全量
--- left join dw_demo.dwd_train_stat_di tr       on s.emp_code = tr.emp_code
--- left join area_config ac        on s.emp_code = ac.emp_code
---     -- ↑ area_config 子查询用 CASE WHEN 合并多用途字段：
---     --   count(distinct area_id) as region_cnt,
---     --   case when count(distinct area_id)=1 then max(area_id) end as single_region_id
--- left join area_dept_map adm     on ac.single_region_id = adm.aoi_area_id
--- left join parent_child pc       on s.dept_code = pc.node
---     and adm.aoi_area_id = pc.related_node
+--         and status = 'active'
+-- ) c on o.customer_id = c.customer_id
+-- left join dw_demo.dwd_product_info_df p on o.order_id = p.order_id  -- 条件字段：LEFT JOIN 保留全量
+-- left join dw_demo.dwd_region_stat_di r    on o.region_code = r.region_code
+--     -- ↑ region_stat 子查询用 CASE WHEN 合并多用途字段：
+--     --   count(distinct region_id) as region_cnt,
+--     --   case when count(distinct region_id)=1 then max(region_name) end as region_name
 -- ;
 
 -- ADS层：宽表过滤落表（直接用 is_sN，不额外 JOIN）
 -- insert overwrite table ads_demo.ads_scenario_result_di partition (inc_day)
 -- select
---     emp_code            as emp_code,
---     position_name,
---     dept_code,
---     org_code,                                                    -- 中间字段透传到 ADS 供排查
---     service_dept,
+--     order_id,
+--     customer_id,
+--     region_code,
+--     channel_type,                                                 -- 中间字段透传到 ADS 供排查
+--     warehouse_id,
 --     is_valid_source,
---     train_status,
+--     is_vip,
 --     is_s1,
 --     is_s2,
 --     inc_day
 -- from tmp_demo.tmp_scenario_wide_$[time(yyyyMMdd,-1d)]
 -- where is_valid_source = 1                                       -- 条件1：来源校验
---     and train_status = '1'                                      -- 条件2：已培养
+--     and is_vip = '1'                                            -- 条件2：VIP 客户
 --     and (is_s1 = 1 or is_s2 = 1)                                -- 至少命中一个场景
 -- ;
 

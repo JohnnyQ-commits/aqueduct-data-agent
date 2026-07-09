@@ -296,3 +296,5 @@ erDiagram
 | snapshot_partition | 库存快照取 T-1 日分区 | `inc_day = '$[time(yyyyMMdd,-1d)]'` |
 | movement_partition | 库存流水取 T-1 日分区 | `inc_day = '$[time(yyyyMMdd,-1d)]'` |
 | active_sku | 只分析在售 SKU | `status = 'active'` |
+
+---
