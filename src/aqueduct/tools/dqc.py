@@ -75,6 +75,9 @@ def _parse_test_cases(dqc_sql: str) -> list[dict[str, Any]]:
             weight_map = {"High": 30, "Medium": 15, "Low": 5}
             weight_val = weight_map.get(weight_str, 15)
 
+            threshold_match = re.search(r"--\s*阈值:\s*(.*)", block)
+            threshold = threshold_match.group(1).strip() if threshold_match else ""
+
             test_cases.append(
                 {
                     "category": category,
@@ -82,6 +85,7 @@ def _parse_test_cases(dqc_sql: str) -> list[dict[str, Any]]:
                     "description": desc,
                     "expectation": expectation,
                     "weight": weight_val,
+                    "threshold": threshold,
                     "status": "PENDING",
                 }
             )
@@ -123,15 +127,17 @@ def _generate_dqc_dashboard(test_cases: list[dict], results: list[dict] | None =
         f"| **严重风险** | {'🚨' if any(r['status'] == 'FAILED' and r['weight'] >= 30 for r in results) else '🛡️'} | {sum(1 for r in results if r['status'] == 'FAILED' and r['weight'] >= 30)} 项 |",
         "",
         "#### 2. 测试详细明细",
-        "| 分类 | 测试项 | 描述 | 预期 | 状态 | 异常值 | 修复建议 |",
-        "| :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
+        "| 分类 | 测试项 | 描述 | 阈值 | 预期 | 状态 | 异常值 | 修复建议 |",
+        "| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
     ]
 
     sorted_results = sorted(results, key=lambda x: x["status"] == "PASSED")
     for r in sorted_results:
         status_icon = "✅" if r["status"] == "PASSED" else "❌"
         lines.append(
-            f"| {r['category']} | {r['name']} | {r['description']} | {r['expectation']} | {status_icon} {r['status']} | {r.get('value', '-')} | {r.get('fix_suggestion', '-')} |"
+            f"| {r['category']} | {r['name']} | {r['description']} "
+            f"| {r.get('threshold', '-')} | {r['expectation']} "
+            f"| {status_icon} {r['status']} | {r.get('value', '-')} | {r.get('fix_suggestion', '-')} |"
         )
 
     return "\n".join(lines)

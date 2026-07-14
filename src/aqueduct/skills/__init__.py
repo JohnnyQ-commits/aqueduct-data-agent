@@ -18,6 +18,7 @@ _SKILL_MODULES = [
     "design_scheme",
     "dqc_quality",
     "report_delivery",
+    "requirement_and_design",
     "requirement_clarify",
     "sql_develop",
 ]

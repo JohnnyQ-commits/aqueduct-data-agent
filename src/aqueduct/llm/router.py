@@ -27,6 +27,7 @@ ANALYSIS_TASKS = frozenset(
         "summarize",  # 摘要生成
         "board_stats",  # 提效看板统计
         "semantic_recall",  # 语义召回
+        "prompt_compress",  # Prompt 压缩（OPT-6）
     ]
 )
 

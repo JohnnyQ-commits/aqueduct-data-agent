@@ -51,11 +51,21 @@ class TestSettingsValidation:
 
     def test_empty_model_ids_allowed(self):
         """模型 ID 为空不报错，只发出警告。默认值不为空。"""
-        settings = Settings()
-        # 默认值应指向实际的模型 ID（三档路由生效）
-        assert settings.default_analysis_model == "claude-haiku-4-5-20251001"
-        assert settings.default_medium_model == "claude-sonnet-4-6-20250514"
-        assert settings.default_heavy_model == "claude-opus-4-7-20250514"
+        # 隔离 .env 和 os.environ，测试纯默认值
+        import os
+
+        saved = {
+            k: os.environ.pop(k)
+            for k in list(os.environ)
+            if k.startswith("AQUEDUCT_") or k.startswith("ANTHROPIC_DEFAULT_")
+        }
+        try:
+            settings = Settings(_env_file=None)
+            assert settings.default_analysis_model == "claude-haiku-4-5-20251001"
+            assert settings.default_medium_model == "claude-sonnet-4-6-20250514"
+            assert settings.default_heavy_model == "claude-opus-4-7-20250514"
+        finally:
+            os.environ.update(saved)
 
     def test_workflow_timeout_default(self):
         settings = Settings()

@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-
-import pytest
 
 from src.aqueduct.utils.domain_extract import (
     _bump_patch_version,
@@ -19,7 +16,6 @@ from src.aqueduct.utils.domain_extract import (
     merge_domain_updates,
     save_domain_dict,
 )
-
 
 # ── DDL 实体提取 ─────────────────────────────────────────────
 
@@ -240,9 +236,7 @@ class TestMergeDomainUpdates:
 
     def test_relationships_dedup(self):
         existing = {
-            "relationships": [
-                {"from": "A", "to": "B", "condition": "A.id = B.id"}
-            ],
+            "relationships": [{"from": "A", "to": "B", "condition": "A.id = B.id"}],
             "entities": {},
             "metrics": {},
             "filter_rules": {},
@@ -341,5 +335,5 @@ class TestHelpers:
         #         0123456789012345678
         text = "abc(def(ghi)jkl)mno"
         # pos 3 = '(', pos 7 = '(', pos 11 = ')', pos 15 = ')'
-        assert _find_matching_paren(text, 3) == 15   # 外层 (
-        assert _find_matching_paren(text, 7) == 11   # 内层 (
+        assert _find_matching_paren(text, 3) == 15  # 外层 (
+        assert _find_matching_paren(text, 7) == 11  # 内层 (

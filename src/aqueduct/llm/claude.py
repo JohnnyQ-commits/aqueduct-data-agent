@@ -39,6 +39,10 @@ class ClaudeLLM(BaseLLM):
         "opus": 200_000,
     }
 
+    # 类级别 SDK 客户端缓存：(api_key, base_url, timeout) → Anthropic 实例
+    # 所有 ClaudeLLM 实例共享同一 HTTP 连接池，避免重复建连
+    _shared_sdk_clients: dict[tuple[str, str, float], Any] = {}
+
     def __init__(
         self,
         model_id: str | None = None,
@@ -75,9 +79,6 @@ class ClaudeLLM(BaseLLM):
 
         # CLI 路径（_detect_backend 可能设置）
         self._claude_cli_path: str | None = None
-
-        # SDK 客户端缓存（_chat_sdk 中延迟初始化）
-        self._sdk_client: Any = None
 
         # 检测后端能力
         self._backend = self._detect_backend()
@@ -180,14 +181,19 @@ class ClaudeLLM(BaseLLM):
 
         timeout_seconds = float(get_settings().llm_timeout_seconds)
 
-        # 缓存客户端实例，复用 HTTP 连接池
-        if not hasattr(self, "_sdk_client") or self._sdk_client is None:
-            self._sdk_client = Anthropic(
+        # 类级别客户端缓存：所有 ClaudeLLM 实例共享同一 HTTP 连接池
+        cache_key = (
+            self._api_key or "",
+            self._base_url or "",
+            timeout_seconds,
+        )
+        if cache_key not in ClaudeLLM._shared_sdk_clients:
+            ClaudeLLM._shared_sdk_clients[cache_key] = Anthropic(
                 api_key=self._api_key if self._api_key else None,
                 base_url=self._base_url if self._base_url else None,
                 timeout=timeout_seconds,
             )
-        client = self._sdk_client
+        client = ClaudeLLM._shared_sdk_clients[cache_key]
 
         # 分离 system 消息（如果有）
         system_msg = None

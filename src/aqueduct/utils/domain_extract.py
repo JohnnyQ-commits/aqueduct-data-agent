@@ -109,7 +109,14 @@ def extract_entities_from_ddl(ddl: str) -> dict[str, dict[str, Any]]:
             col_comment = col_match.group(3) or ""
 
             # 跳过分区/约束行
-            if col_name.upper() in ("PARTITIONED", "CLUSTERED", "STORED", "ROW", "LOCATION", "TBLPROPERTIES"):
+            if col_name.upper() in (
+                "PARTITIONED",
+                "CLUSTERED",
+                "STORED",
+                "ROW",
+                "LOCATION",
+                "TBLPROPERTIES",
+            ):
                 continue
 
             attr: dict[str, Any] = {
@@ -204,9 +211,6 @@ def extract_filter_rules(sql: str) -> dict[str, dict[str, Any]]:
     rules: dict[str, dict[str, Any]] = {}
 
     # 提取分区过滤
-    partition_patterns = [
-        (re.compile(r"(\w+)\s*=\s*'[^']*'", re.IGNORECASE), "partition"),
-    ]
     for line in sql.split("\n"):
         stripped = line.strip()
         if stripped.startswith("--"):
@@ -264,8 +268,7 @@ def merge_domain_updates(existing: dict[str, Any], updates: dict[str, Any]) -> d
     # relationships: 追加不重复的（按 from+to+condition 去重）
     existing_rels = existing.get("relationships", [])
     existing_rel_keys = {
-        (r.get("from", ""), r.get("to", ""), r.get("condition", ""))
-        for r in existing_rels
+        (r.get("from", ""), r.get("to", ""), r.get("condition", "")) for r in existing_rels
     }
     for rel in updates.get("relationships", []):
         key = (rel.get("from", ""), rel.get("to", ""), rel.get("condition", ""))
@@ -350,7 +353,7 @@ def _to_entity_name(table_name: str) -> str:
     name = table_name
     for prefix in ("dwd_", "dws_", "dim_", "ods_", "ads_", "dm_"):
         if name.startswith(prefix):
-            name = name[len(prefix):]
+            name = name[len(prefix) :]
             break
     # 去掉常见后缀
     for suffix in ("_di", "_df", "_ri", "_rf", "_di", "_info", "_detail"):

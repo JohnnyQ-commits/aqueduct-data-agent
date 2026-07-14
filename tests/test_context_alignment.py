@@ -18,6 +18,7 @@ from src.aqueduct.skills.ddl_generate import DDLGenerateSkill
 from src.aqueduct.skills.design_ddl import DesignDDLSkill
 from src.aqueduct.skills.dqc_quality import DQCQualitySkill
 from src.aqueduct.skills.report_delivery import ReportDeliverySkill
+from src.aqueduct.skills.requirement_and_design import RequirementAndDesignSkill
 from src.aqueduct.skills.requirement_clarify import RequirementClarifySkill
 from src.aqueduct.skills.sql_develop import SQLDevelopSkill
 
@@ -172,22 +173,37 @@ class TestPhase1Standardization:
         }
 
     def test_phase1_passes_dict_input(self):
-        """Phase 1 应向 Skill 传递 dict 类型的 input。"""
+        """Phase 1 应向 Skill 传递 dict 类型的 input（三合一模式）。"""
         state = self._make_state()
         captured_input = {}
 
-        original_execute = RequirementClarifySkill.execute
+        original_execute = RequirementAndDesignSkill.execute
 
         def capture_execute(self_skill, context: SkillContext):
             captured_input["type"] = type(context.input).__name__
             captured_input["value"] = context.input
             return original_execute(self_skill, context)
 
+        # 构造符合三合一解析格式的 LLM 响应
+        combined_response = (
+            "## 需求理解摘要\n\n"
+            "- 目标表: dm.test\n"
+            "- 数据来源: dwd.source\n\n"
+            "## 设计方案\n\n"
+            "### 取数逻辑\n"
+            "单表聚合\n\n"
+            "```sql\n"
+            "CREATE TABLE dm.test (id bigint COMMENT '主键')\n"
+            "PARTITIONED BY (inc_day string)\n"
+            "STORED AS PARQUET;\n"
+            "```"
+        )
+
         with (
-            patch.object(RequirementClarifySkill, "execute", capture_execute),
+            patch.object(RequirementAndDesignSkill, "execute", capture_execute),
             patch("src.aqueduct.engine.nodes.requirement._recall_domain_knowledge"),
             patch("src.aqueduct.engine.nodes.requirement._extract_target_table", return_value=""),
-            patch("src.aqueduct.engine.nodes.requirement.call_llm", return_value="摘要"),
+            patch("src.aqueduct.engine.nodes.requirement.call_llm", return_value=combined_response),
             patch("src.aqueduct.engine.nodes.requirement.save_artifact", return_value=""),
         ):
             node_requirement(state)

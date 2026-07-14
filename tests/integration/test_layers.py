@@ -206,8 +206,17 @@ class TestLLMIntegration:
         opus_llm = router.route("sql_gen")
         assert opus_llm is not None
 
-    def test_model_router_three_tiers_distinct(self):
+    def test_model_router_three_tiers_distinct(self, monkeypatch):
         """回归测试：三档路由必须指向不同模型，不能全部 fallback 到同一个 Sonnet。"""
+        # os.environ 优先于 .env 文件，直接注入三档不同的值
+        monkeypatch.setenv("AQUEDUCT_DEFAULT_ANALYSIS_MODEL", "claude-haiku-4-5-20251001")
+        monkeypatch.setenv("AQUEDUCT_DEFAULT_MEDIUM_MODEL", "claude-sonnet-4-6-20250514")
+        monkeypatch.setenv("AQUEDUCT_DEFAULT_HEAVY_MODEL", "claude-opus-4-7-20250514")
+
+        from src.aqueduct.config.settings import get_settings
+
+        get_settings.cache_clear()
+
         from src.aqueduct.llm.router import ModelRouter
 
         router = ModelRouter()

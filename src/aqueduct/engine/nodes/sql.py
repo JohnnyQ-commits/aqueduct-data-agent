@@ -87,6 +87,8 @@ def node_sql(state: WorkflowState) -> WorkflowState:
 
         # 自动运行 SQL 校验
         _auto_validate(state, sql_path)
+        # 试跑验证：LIMIT 10 提前发现语法错误和字段不对齐
+        _auto_trial_run(state, sql_path)
         # 自动运行血缘解析（异步，不阻塞 review）
         _auto_lineage_async(state, sql_path)
         # 自动运行成本预估
@@ -170,6 +172,114 @@ def _auto_validate(state: WorkflowState, sql_path: str) -> None:
         )
     except Exception:
         logger.warning("SQL 校验失败，跳过", exc_info=True)
+
+
+def _auto_trial_run(state: WorkflowState, sql_path: str) -> None:
+    """试跑验证：对生成的 SQL 执行 LIMIT 10 试跑，提前发现语法错误。
+
+    仅在 execution_enabled=True 时执行。失败不阻塞管道，仅记录警告。
+    借鉴 ai-sql-generate 的 Stage 3 预验证思路：实际执行比静态检查更能发现问题。
+    """
+    try:
+        from ...config.settings import get_settings
+
+        settings = get_settings()
+        if not settings.execution_enabled:
+            logger.debug("试跑跳过: execution_enabled=False")
+            return
+
+        abs_path = _resolve_sql_path(state, sql_path)
+        sql_content = abs_path.read_text(encoding="utf-8")
+
+        if len(sql_content) < 50 or not is_valid_sql(sql_content):
+            logger.warning("试跑跳过: 文件内容非有效 SQL（%d 字符）", len(sql_content))
+            return
+
+        # 提取 SELECT 语句（跳过 CREATE/INSERT 等 DDL/DML）
+        select_stmts = _extract_select_statements(sql_content)
+        if not select_stmts:
+            logger.info("试跑跳过: 未找到可试跑的 SELECT 语句")
+            return
+
+        executor = get_tool("executor")
+        trial_results: list[dict] = []
+        errors: list[str] = []
+
+        for i, stmt in enumerate(select_stmts[:3]):  # 最多试跑 3 条 SELECT
+            # 追加 LIMIT 10
+            limited_stmt = stmt.rstrip().rstrip(";")
+            if "limit" not in limited_stmt.lower().split()[-1:]:
+                limited_stmt += "\nLIMIT 10"
+
+            result = executor.execute(action="execute", sql=limited_stmt)
+            trial_results.append(
+                {
+                    "index": i,
+                    "success": result.success,
+                    "error": result.error if not result.success else None,
+                }
+            )
+            if not result.success:
+                errors.append(f"SELECT #{i + 1}: {result.error}")
+
+        # 记录结果
+        state["trial_run_result"] = {
+            "total": len(select_stmts),
+            "tested": len(trial_results),
+            "passed": len(trial_results) - len(errors),
+            "errors": errors,
+        }
+
+        if errors:
+            logger.warning("试跑发现 %d 个错误: %s", len(errors), "; ".join(errors))
+        else:
+            logger.info("试跑通过: %d 条 SELECT 语句均成功", len(trial_results))
+
+        # 保存试跑报告
+        report_lines = [
+            "# SQL 试跑报告",
+            "",
+            f"- **测试语句数**: {len(trial_results)}/{len(select_stmts)}",
+            f"- **通过**: {len(trial_results) - len(errors)}",
+            f"- **失败**: {len(errors)}",
+            "",
+        ]
+        for r in trial_results:
+            status = "✅" if r["success"] else "❌"
+            line = f"- {status} SELECT #{r['index'] + 1}"
+            if r["error"]:
+                line += f" — `{r['error'][:100]}`"
+            report_lines.append(line)
+
+        save_artifact(state, "Phase4-试跑报告.md", "\n".join(report_lines))
+
+    except Exception:
+        logger.warning("试跑验证失败，跳过", exc_info=True)
+
+
+def _extract_select_statements(sql_content: str) -> list[str]:
+    """从 SQL 内容中提取独立的 SELECT 语句。
+
+    跳过 CREATE TABLE、INSERT INTO 等非查询语句。
+    简单按分号分割（不处理存储过程等复杂结构）。
+    """
+    import re
+
+    # 去掉注释
+    cleaned = re.sub(r"--.*$", "", sql_content, flags=re.MULTILINE)
+    cleaned = re.sub(r"/\*.*?\*/", "", cleaned, flags=re.DOTALL)
+
+    # 按分号分割
+    statements = [s.strip() for s in cleaned.split(";") if s.strip()]
+
+    # 只保留 SELECT 语句（含 WITH ... SELECT）
+    selects = []
+    for stmt in statements:
+        upper = stmt.lstrip().upper()
+        if upper.startswith("SELECT") or upper.startswith("WITH"):
+            selects.append(stmt)
+
+    return selects
 
 
 def _auto_lineage_async(state: WorkflowState, sql_path: str) -> None:

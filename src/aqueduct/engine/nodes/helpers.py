@@ -5,6 +5,7 @@
 - _save_artifact: 保存产出文件
 - _call_llm: 调用 LLM
 - _extract_sql_block: 从 LLM 回复中提取 SQL 代码块
+- _strip_llm_meta: 剥离 LLM 元信息（思维泄露）
 """
 
 from __future__ import annotations
@@ -49,6 +50,9 @@ def save_artifact(state: WorkflowState, filename: str, content: str) -> str:
 def call_llm(state: WorkflowState, task_type: str, prompt: str) -> str:
     """通过 ModelRouter 调用 LLM，带完整日志和空响应检测。
 
+    OPT-6: 超过 8000 字符的 prompt 自动应用规则压缩（无 LLM 成本）。
+    压缩只去除冗余内容（图片、重复分隔线、过长表结构），保留任务指令。
+
     Args:
         state: 工作流状态（用于传递 LLM 实例）。
         task_type: 任务类型（sql_gen, ddl_gen 等）。
@@ -70,6 +74,20 @@ def call_llm(state: WorkflowState, task_type: str, prompt: str) -> str:
     if router is None:
         router = ModelRouter()
         state["_llm_router"] = router
+
+    # OPT-6: 长 prompt 自动规则压缩（不用于压缩任务本身，避免循环）
+    if task_type != "prompt_compress" and len(prompt) > 8000:
+        from ...utils.prompt_optimizer import PromptCompressor
+
+        original_len = len(prompt)
+        prompt = PromptCompressor().compress_rule(prompt)
+        logger.info(
+            "[task=%s] OPT-6 规则压缩: %d → %d 字符（减少 %.0f%%）",
+            req_name,
+            original_len,
+            len(prompt),
+            (1 - len(prompt) / original_len) * 100 if original_len > 0 else 0,
+        )
 
     llm = router.route(task_type)
 
@@ -124,7 +142,8 @@ def call_llm(state: WorkflowState, task_type: str, prompt: str) -> str:
                     f"task_type={task_type}, model={llm.model_id}"
                 )
 
-            return response.content
+            # 剥离 LLM 元信息（"Based on all the context..." 等思维泄露）
+            return _strip_llm_meta(response.content)
 
         except LLMEmptyResponseError:
             raise
@@ -186,3 +205,53 @@ def is_valid_sql(content: str) -> bool:
     keywords = ["select", "insert", "create", "update", "merge"]
     lower = content.lower()
     return any(kw in lower for kw in keywords)
+
+
+# ---------------------------------------------------------------------------
+# LLM 元信息剥离（防止思维泄露到产出物）
+# ---------------------------------------------------------------------------
+
+# LLM 常见的元信息开头模式（Claude 尤其容易在回复开头输出这些）
+_META_PATTERNS = [
+    r"^(?:Based on|Now I have|Now that I have|I now have)\s+all\s+(?:the\s+)?.*?(?:context|information|data)",
+    r"^(?:I(?:'ll| will)\s+(?:now\s+)?(?:proceed|generate|create|analyze|write|start))",
+    r"^(?:Let me\s+(?:now\s+)?(?:proceed|generate|create|analyze|write|start|work on))",
+    r"^With all (?:the\s+)?(?:context|information|data)\s+(?:gathered|collected|available)",
+    r"^As a\s+(?:data\s+)?(?:engineer|developer|analyst).*?,?\s+I\s+",
+    r"^(?:The\s+(?:following|below)\s+(?:is|contains|represents)\s+(?:the\s+)?)?(?:my\s+)?(?:analysis|response|output|result)",
+    r"^After\s+(?:reviewing|analyzing|considering)\s+all\s+",
+]
+
+_META_RE = [re.compile(p, re.IGNORECASE) for p in _META_PATTERNS]
+
+
+def _strip_llm_meta(content: str) -> str:
+    """剥离 LLM 回复开头的元信息/思维泄露，保留实际内容。
+
+    对比实验发现 Phase 1/2 产出物以 "Based on all the context gathered..." 等
+    LLM 元信息开头，暴露了内部推理过程。本函数剥离这些前缀行。
+
+    多次迭代剥离（最多 3 行），直到内容以正常文本开头。
+    """
+    lines = content.split("\n")
+    stripped_count = 0
+    max_strip = 3  # 最多剥离前 3 行
+
+    while stripped_count < max_strip and lines:
+        first_line = lines[0].strip()
+        if not first_line:
+            break
+
+        matched = False
+        for pattern in _META_RE:
+            if pattern.match(first_line):
+                lines.pop(0)
+                stripped_count += 1
+                matched = True
+                logger.debug("剥离 LLM 元信息: %s", first_line[:80])
+                break
+
+        if not matched:
+            break
+
+    return "\n".join(lines)

@@ -79,13 +79,13 @@
 -- ✅ 正确：子查询预处理 JOIN 键
 from (
     select
-        emp_code,
+        loginid,
         name,
-        case when position_name = 'delivery'
-             then coalesce(service_dept, org_code)
-             else org_code
+        case when positionname = '配送员'
+             then coalesce(servicedept, orgcode)
+             else orgcode
         end as dept_code
-    from dw_demo.dwd_courier_info_df
+    from emp_info_di
     where inc_day = '$[time(yyyyMMdd,-1d)]'
         and status = '1'
 ) s
@@ -93,11 +93,11 @@ left join dim_dept_info_df d
     on s.dept_code = d.dept_code
 
 -- ❌ 错误：JOIN ON 中写 CASE WHEN
-from dw_demo.dwd_courier_info_df s
+from emp_info_di s
 left join dim_dept_info_df d
-    on (case when s.position_name = 'delivery'
-             then coalesce(s.service_dept, s.org_code)
-             else s.org_code end) = d.dept_code
+    on (case when s.positionname = '配送员'
+             then coalesce(s.servicedept, s.orgcode)
+             else s.orgcode end) = d.dept_code
 ```
 
 原则：**子查询负责行级计算和基础过滤，外层 JOIN 只负责等值关联**。
@@ -118,7 +118,7 @@ inner join (
         area_name
     from dim.dim_dept_info_df
     where inc_day = '$[time(yyyyMMdd,-1d)]'
-        and area_code in ('R01','R02','R03')
+        and area_code in ('R01','R02','R03','R08')
 ) d on s.dept_code = d.dept_code
 
 -- ❌ 错误：子查询中字段横排
@@ -145,16 +145,16 @@ inner join (
         area_code
     from dim.dim_dept_info_df
     where inc_day = '$[time(yyyyMMdd,-1d)]'
-        and area_code in ('R01','R02','R03')
-        and dept_type_code not in ('T01','T02')
+        and area_code in ('R01','R02','R03','R08')
+        and dept_type_code not in ('DT01-A','DT01-B')
 ) d on s.dept_code = d.dept_code
 
 -- ❌ 错误：过滤条件放在外层 WHERE
 from staff_base s
 left join dim.dim_dept_info_df d
     on s.dept_code = d.dept_code
-where d.area_code in ('R01','R02','R03')
-    and d.dept_type_code not in ('T01','T02')
+where d.area_code in ('R01','R02','R03','R08')
+    and d.dept_type_code not in ('DT01-A','DT01-B')
 ```
 
 原则：**子查询负责基础过滤（提前减少数据量），外层只负责 JOIN 关联**。这样做的好处：
@@ -168,16 +168,16 @@ where d.area_code in ('R01','R02','R03')
 
 | 模式 | JOIN 策略 | 原因 |
 |------|----------|------|
-| **宽表模式**（条件字段收集） | LEFT JOIN | 保留所有基础记录，`select * from wide_table where emp_code = 'xxx'` 可回答"这个人为什么没进结果" |
+| **宽表模式**（条件字段收集） | LEFT JOIN | 保留所有基础记录，`select * from wide_table where loginid = 'xxx'` 可回答"这个人为什么没进结果" |
 | **过滤条件下推**（属性维度关联） | INNER JOIN | 右表过滤条件推入子查询后，LEFT JOIN 语义等价于 INNER JOIN，直接用 INNER JOIN 更清晰 |
 
 **宽表模式示例**（LEFT JOIN 保留全量）：
 ```sql
 -- 条件字段收集阶段：LEFT JOIN 保留所有员工，is_valid/train_status 等标记字段供 ADS 层判断
 from staff_base s
-left join dw_demo.dwd_staff_attr_dtl sf on s.emp_code = sf.emp_code              -- 不过滤，全部关联
-left join dw_demo.dwd_train_stat_di tr       on s.emp_code = tr.emp_code          -- 不过滤，全部关联
-left join dw_demo.dwd_area_config_di ac       on s.emp_code = ac.emp_code          -- 不过滤，全部关联
+left join dw_emp_usage_dtl sf on s.loginid = sf.emp_code      -- 不过滤，全部关联
+left join novice_train_stat_rpt tr       on s.loginid = tr.loginid        -- 不过滤，全部关联
+left join area_config ac     on s.loginid = ac.loginid        -- 不过滤，全部关联
 ```
 
 **过滤条件下推示例**（INNER JOIN 提前过滤）：
@@ -188,13 +188,13 @@ inner join (
     select dept_code, dept_name, area_code
     from dim.dim_dept_info_df
     where inc_day = '$[time(yyyyMMdd,-1d)]'
-        and area_code in ('R01','R02','R03')    -- 过滤在子查询内
+        and area_code in ('R01','R02','R03','R08')    -- 过滤在子查询内
 ) d on s.dept_code = d.dept_code
 ```
 
 **判断依据**：右表字段是否出现在最终 WHERE/ADS 过滤条件中？
 - **是**（属性维度，如 area_code、dept_type_code）→ 推入子查询，INNER JOIN
-- **否**（仅作为判断标记字段，如 train_status、has_region_config）→ 保留 LEFT JOIN，条件留到 ADS
+- **否**（仅作为判断标记字段，如 train_status、has_area_config）→ 保留 LEFT JOIN，条件留到 ADS
 
 ### 宽表模式（★ 最常用）
 
@@ -202,16 +202,16 @@ inner join (
 
 **三个强制原则**：
 
-1. **排查优先** — 所有判断中间字段必须暴露在宽表 SELECT 中（如 org_code、service_dept、single_region_id 等），让 `select * from wide_table where emp_code = 'xxx'` 能回答"这个人为什么没进结果/为什么进了结果"
+1. **排查优先** — 所有判断中间字段必须暴露在宽表 SELECT 中（如 orgcode、servicedept、single_area_id 等），让 `select * from wide_table where loginid = 'xxx'` 能回答"这个人为什么没进结果/为什么进了结果"
 2. **逻辑内聚** — 每个场景标记 `is_sN` 必须**自包含**，所有相关条件（包括父子网点排除等）都写进同一个 CASE WHEN，不能依赖外层 WHERE 额外过滤
 3. **ADS 统一过滤** — 所有条件集中在最终 INSERT 的 WHERE 中，用 `is_sN = 1` 即可，不需要额外 JOIN 或子查询
 
 ```sql
 -- ✅ 宽表模式：判断中间字段暴露 + 标记自包含
 -- 宽表
-s.org_code,                                                    -- 中间字段：暴露供排查
-s.service_dept,                                                -- 中间字段：暴露供排查
-ac.single_region_id,                                            -- 中间字段：暴露供排查
+s.orgcode,                                                    -- 中间字段：暴露供排查
+s.servicedept,                                                -- 中间字段：暴露供排查
+ac.single_area_id,                                            -- 中间字段：暴露供排查
 pc.node                              as pc_matched_node,      -- 中间字段：父子匹配详情
 
 case when ... then 1 else 0 end        as is_s1,              -- 岗位异动
@@ -224,7 +224,7 @@ where is_s1 = 1 or is_s2 = 1
 
 ```sql
 -- ❌ 反例：中间字段没暴露 + 逻辑分散
--- 宽表：只 SELECT 最终字段，org_code/service_dept 看不到
+-- 宽表：只 SELECT 最终字段，orgcode/servicedept 看不到
 -- ADS：父子网点排除写在这里，is_s2 不完整
 left join pc_flag on ... where is_s2 = 1 and pc_flag.is_parent_child = 0
 ```
@@ -232,28 +232,61 @@ left join pc_flag on ... where is_s2 = 1 and pc_flag.is_parent_child = 0
 ### 多层合并
 
 - **DWD + DWS 可合并** — 当 DWD 只是简单清洗 + 维度关联，没有复杂聚合时，直接合并到 DWS 宽表，减少中间表
-- **同表多次读取合并** — 同一张表被多次读取时，尽量在一次读取中多取需要的字段。例如 T-1 的 `service_dept` 可以直接从主查询带出，不需要单独再读一次
+- **同表多次读取合并** — 同一张表被多次读取时，尽量在一次读取中多取需要的字段。例如 T-1 的 `servicedept` 可以直接从主查询带出，不需要单独再读一次
 - **同源表多用途子查询合并** — 当多个子查询从同一张表、相同 WHERE 条件取不同用途字段时，合并为一个子查询，用 `CASE WHEN` 条件聚合区分用途，禁止拆成多个子查询重复扫描
 
 ```sql
 -- ✅ 正确：同一张表读一次，用 CASE WHEN 区分不同用途
 left join (
     select
-        emp_code,
-        count(distinct region_id)               as region_cnt,          -- 供 is_s3 使用
-        concat_ws(',', collect_set(region_id))  as con_region_id,
-        case when count(distinct region_id) = 1
-             then max(region_id)
-        end                                          as single_region_id     -- 仅单区域有值
-    from dw_demo.dwd_area_config_di
+        loginid,
+        count(distinct large_area_id)               as area_cnt,          -- 供 is_s3 使用
+        concat_ws(',', collect_set(large_area_id))  as con_area_id,
+        case when count(distinct large_area_id) = 1
+             then max(large_area_id)
+        end                                          as single_area_id     -- 仅单区域有值
+    from area_config_partitioned
     where type = 8 and status = 1 and inc_day = '$[time(yyyyMMdd,-1d)]'
-    group by emp_code
-) ac on s.emp_code = ac.emp_code
+    group by loginid
+) ac on s.loginid = ac.loginid
 
 -- ❌ 错误：同一张表读两遍
-left join (select ... count(...) as region_cnt from same_table group by ...) ac on ...
-left join (select ... max(...) as single_region_id from same_table having count(...) = 1) ac_single on ...
+left join (select ... count(...) as area_cnt from same_table group by ...) ac on ...
+left join (select ... max(...) as single_area_id from same_table having count(...) = 1) ac_single on ...
 ```
+
+### 桥接表拆分
+
+当一张"关系对"表（桥接表）需要同时匹配两个来自不同 JOIN 链的值时，JOIN 条件会出现**跨表依赖**——这是错误信号，需要拆分子查询。
+
+```sql
+-- ❌ 错误：pc 同时依赖 s 和 adm 两张表（跨表依赖）
+left join (...) pc
+    on s.dept_code = pc.node                       -- 来源 1：主表 s
+    and adm.config_area_dept_code = pc.related_node -- 来源 2：另一个 LEFT JOIN 的 adm
+
+-- ✅ 正确：按业务域拆分子查询，pc 两端都来自同层合并结果
+from (
+    -- 子查询 A：员工基础池（s + d）→ dept_code
+    select s.loginid, s.dept_code, ...
+    from (...) s inner join (...) d on s.dept_code = d.dept_code
+) a
+left join (
+    -- 子查询 B：区域配置链（ac + adm）→ config_area_dept_code
+    select ac.loginid, adm.config_area_dept_code, ...
+    from (...) ac left join (...) adm on ac.single_area_id = adm.aoi_area_id
+) b on a.loginid = b.loginid
+left join (...) pc
+    on a.dept_code = pc.node                       -- 来自子查询 A
+    and b.config_area_dept_code = pc.related_node  -- 来自子查询 B
+```
+
+**识别信号**：JOIN 条件引用了两个不同的 LEFT JOIN 表的字段 → 必须拆分子查询。
+
+**好处**：
+- 每个子查询可独立跑、独立验
+- 桥接表不再有跨表依赖，关系清晰
+- 改一侧子查询不影响另一侧
 
 ### 架构决策树（必须按此顺序判断）
 
@@ -327,9 +360,10 @@ Q4: 源表 ≥7 张或 60+ 字段？
 🚫 **禁止遗漏除法保护** —— 所有除法必须用 `nullif(divisor, 0)` + `coalesce`  
 🚫 **禁止遗漏文件头注释**  
 🚫 **禁止跳过数仓分层** —— 复杂需求（≥7 表或 60+ 字段）必须分层建表，不能堆在一个 SQL 里
-🚫 **禁止宽表隐藏判断中间字段** —— 宽表模式下，所有判断计算依赖的中间字段（org_code、service_dept、single_region_id 等）必须 SELECT 暴露，方便排查
+🚫 **禁止宽表隐藏判断中间字段** —— 宽表模式下，所有判断计算依赖的中间字段（orgcode、servicedept、single_area_id 等）必须 SELECT 暴露，方便排查
 🚫 **禁止场景标记逻辑分散** —— 每个 is_sN 的所有判断条件必须写进同一个 CASE WHEN（含父子排除等），不能依赖外层额外过滤
 🚫 **禁止同源表多子查询重复扫描** —— 多个子查询从同一张表、相同 WHERE 条件取不同用途字段时，必须合并为一个子查询，用 CASE WHEN 条件聚合区分用途
+🚫 **禁止桥接表跨表依赖** —— 当"关系对"表（如父子关系）的 JOIN 条件同时引用两个不同 LEFT JOIN 表的字段时（如 `pc ON s.dept_code AND adm.dept_code`），必须按业务域拆分子查询，使桥接表两端都来自同层合并结果
 
 ---
 
@@ -363,6 +397,7 @@ Q4: 源表 ≥7 张或 60+ 字段？
 | 7 | 所有可空数值字段都有 coalesce？所有除法都有 nullif？ | 遗漏空值保护 |
 | 8 | 文件头注释完整吗？ | 漏掉源表列表或描述 |
 | 9 | 同源表是否合并为一个子查询？（用 CASE WHEN 区分不同用途） | 同一张表读两遍，一个聚合计数、一个 HAVING 过滤 |
+| 10 | 桥接表的 JOIN 条件是否只引用同层子查询？ | pc ON s.dept_code AND adm.dept_code（跨表依赖），应拆为子查询 A + B |
 
 ---
 

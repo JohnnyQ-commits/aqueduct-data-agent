@@ -200,6 +200,10 @@ def _recall_domain_knowledge(state: WorkflowState) -> None:
 def _query_table_schemas(state: WorkflowState) -> dict[str, str]:
     """尝试通过 MCP 查询需求中涉及的表结构。
 
+    支持表结构缓存：先查缓存，未命中再查 MCP，结果写入缓存。
+    缓存实例从 state["_table_schema_cache"] 获取（由 pipeline 入口注入）。
+    缓存不存在时退化为无缓存模式。
+
     MCP 未配置或查询失败时返回空字典（不阻塞流程）。
 
     Returns:
@@ -218,14 +222,35 @@ def _query_table_schemas(state: WorkflowState) -> dict[str, str]:
         logger.info("需求文档中未找到表名，跳过表结构查询")
         return {}
 
-    logger.info("尝试通过 MCP 查询 %d 个表的结构: %s", len(table_names), table_names)
+    logger.info("尝试查询 %d 个表的结构: %s", len(table_names), table_names)
 
-    schemas: dict[str, str] = {}
+    # 从 state 获取缓存实例（pipeline 入口注入，跨 Phase 共享）
+    cache = state.get("_table_schema_cache")
+
+    # 先批量查缓存
+    cached_schemas: dict[str, str] = {}
+    uncached_names: list[str] = []
+
+    if cache is not None:
+        cached_schemas = cache.get_many(table_names)
+        uncached_names = [n for n in table_names if n not in cached_schemas]
+        if cached_schemas:
+            logger.info("缓存命中 %d / %d 个表结构", len(cached_schemas), len(table_names))
+    else:
+        uncached_names = table_names
+
+    if not uncached_names:
+        # 全部命中缓存，跳过 MCP 查询
+        return cached_schemas
+
+    # 未命中的表走 MCP 查询
+    schemas: dict[str, str] = dict(cached_schemas)
     client: SyncMCPClient | None = None
+
     try:
         client = SyncMCPClient()
 
-        for table_name in table_names:
+        for table_name in uncached_names:
             try:
                 db, tbl = _parse_table_name(table_name)
                 schema = client.get_table_schema(db, tbl)
@@ -234,11 +259,17 @@ def _query_table_schemas(state: WorkflowState) -> dict[str, str]:
                     f"  - {c.name} ({c.type}){f' — {c.comment}' if c.comment else ''}"
                     for c in schema.columns
                 )
-                schemas[table_name] = (
+                formatted = (
                     f"表: {schema.database}.{schema.table}\n"
                     f"注释: {schema.comment or '无'}\n"
                     f"字段 ({len(schema.columns)} 个):\n{columns_text}"
                 )
+                schemas[table_name] = formatted
+
+                # 写入缓存
+                if cache is not None:
+                    cache.set(table_name, formatted)
+
                 logger.info("MCP 查询表结构成功: %s (%d 字段)", table_name, len(schema.columns))
             except Exception as e:
                 logger.warning("MCP 查询表结构失败: %s - %s", table_name, e)
@@ -256,11 +287,33 @@ def _query_table_schemas(state: WorkflowState) -> dict[str, str]:
 def node_requirement(state: WorkflowState) -> WorkflowState:
     """Phase 1: 需求理解节点。
 
-    调用 RequirementClarifySkill 生成 prompt -> LLM 解析需求。
+    OPT-5: 默认使用三合一模式（requirement_and_design skill），
+    一次 LLM 调用同时产出需求理解摘要 + 设计方案 + DDL，
+    减少 2 次 LLM 往返。Phase 2 检测到已完成时自动跳过。
+
+    OPT-7: 增量管道 — 需求未变更时跳过 Phase 1，从 manifest 恢复输出。
     """
     req_name = state.get("metadata", {}).get("requirement_name", "unknown")
     start = time.time()
-    logger.info("[task=%s, phase=1] 需求理解开始", req_name)
+
+    # OPT-7: 增量管道 — 检查是否可以跳过 Phase 1
+    from ...utils.change_analyzer import ChangeAnalyzer
+    from .helpers import get_output_dir
+
+    output_dir = get_output_dir(state)
+    analyzer = ChangeAnalyzer(output_dir=output_dir)
+    requirement = state.get("requirement", "")
+
+    if analyzer.should_skip_phase1(requirement):
+        analyzer.restore_phase1_outputs(state)
+        logger.info(
+            "[task=%s, phase=1] 增量跳过: 需求未变更，从 manifest 恢复输出（耗时 %.1fs）",
+            req_name,
+            time.time() - start,
+        )
+        return state
+
+    logger.info("[task=%s, phase=1] 需求理解开始（三合一模式）", req_name)
 
     # 自动召回领域知识，填充 domain_context 供全流程使用
     _recall_domain_knowledge(state)
@@ -280,7 +333,8 @@ def node_requirement(state: WorkflowState) -> WorkflowState:
         state["table_schemas"] = {}
 
     try:
-        skill = get_skill("requirement_clarify")
+        # OPT-5: 使用三合一 Skill（需求分析+方案设计+DDL）
+        skill = get_skill("requirement_and_design")
         context = SkillContext(
             input={
                 "requirement_doc": state.get("requirement", ""),
@@ -292,28 +346,57 @@ def node_requirement(state: WorkflowState) -> WorkflowState:
         result = skill.execute(context)
 
         if not result.success:
-            state.setdefault("errors", []).append(f"需求解析失败: {result.error}")
+            state.setdefault("errors", []).append(f"需求+方案设计失败: {result.error}")
             return state
 
         prompt = result.data.get("prompt", "")
-        llm_response = call_llm(state, "requirement_parse", prompt)
+        # 使用 design_ddl 路由（Sonnet 档，中等生成质量）
+        llm_response = call_llm(state, "design_ddl", prompt)
 
-        save_artifact(state, "Phase1-需求理解摘要.md", llm_response)
-        state["requirement_summary"] = llm_response
-        state["metadata"] = {**(state.get("metadata", {})), "requirement_parsed": "true"}
+        # 解析三合一响应：需求摘要 + 设计方案 + DDL
+        from .design import _split_requirement_and_design
+
+        req_summary, design_scheme, ddl_content = _split_requirement_and_design(llm_response)
+
+        # 保存需求理解摘要
+        save_artifact(state, "Phase1-需求理解摘要.md", req_summary)
+        state["requirement_summary"] = req_summary
+
+        # 保存设计方案
+        if design_scheme:
+            save_artifact(state, "Phase2-设计方案.md", design_scheme)
+            state["design_scheme"] = design_scheme
+
+        # 保存 DDL
+        if ddl_content and len(ddl_content) > 50:
+            ddl_path = save_artifact(state, "Phase3-表结构.sql", ddl_content)
+            state["ddl_content"] = ddl_content
+            state["ddl_file"] = ddl_path
+
+        state["metadata"] = {
+            **(state.get("metadata", {})),
+            "requirement_parsed": "true",
+            "design_done": "true",
+            "ddl_done": "true" if ddl_content and len(ddl_content) > 50 else "false",
+        }
+
+        # OPT-7: 保存 manifest 供下次增量管道使用
+        analyzer.save_manifest(state.get("requirement", ""), state)
 
         elapsed = time.time() - start
         logger.info(
-            "[task=%s, phase=1] 需求理解完成: summary=%d 字符, 耗时=%.1fs",
+            "[task=%s, phase=1] 三合一完成: summary=%d 字符, design=%d 字符, ddl=%d 字符, 耗时=%.1fs",
             req_name,
-            len(llm_response),
+            len(req_summary),
+            len(design_scheme),
+            len(ddl_content),
             elapsed,
         )
     except Exception as e:
         elapsed = time.time() - start
-        state.setdefault("errors", []).append(f"需求解析异常: {e!s}")
+        state.setdefault("errors", []).append(f"需求+方案设计异常: {e!s}")
         logger.error(
-            "[task=%s, phase=1] 需求理解异常: %s, 耗时=%.1fs",
+            "[task=%s, phase=1] 三合一异常: %s, 耗时=%.1fs",
             req_name,
             e,
             elapsed,

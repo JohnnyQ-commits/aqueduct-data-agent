@@ -3,6 +3,9 @@
 所有配置通过 `AQUEDUCT_` 前缀的环境变量加载，
 支持可选的 .env 文件。
 
+兼容 Anthropic 官方变量名（ANTHROPIC_DEFAULT_HAIKU_MODEL 等），
+后续接入其他厂商时只需在 _FALLBACK_VAR_MAP 中追加映射。
+
 用法:
     from aqueduct.config.settings import get_settings
 
@@ -13,6 +16,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -42,6 +46,14 @@ def _find_project_root() -> Path:
 
 
 _PROJECT_ROOT = _find_project_root()
+
+# 第三方变量名 → AQUEDUCT_ 字段名映射（兼容 Anthropic 官方变量名）
+# 后续接入 Codex / DeepSeek / 千问等厂商时，在此追加映射即可
+_FALLBACK_VAR_MAP: dict[str, str] = {
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "default_analysis_model",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "default_medium_model",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "default_heavy_model",
+}
 
 
 class Settings(BaseSettings):
@@ -187,6 +199,32 @@ class Settings(BaseSettings):
         default=1000,
         description="SQL 执行最大返回行数。",
     )
+
+    def __init__(self, **data):
+        """注入第三方环境变量 fallback。
+
+        pydantic-settings 的 mode="before" validator 执行时默认值已填充，
+        无法区分"用户设置"与"硬编码默认值"。改为在 __init__ 中提前注入：
+        当 AQUEDUCT_ 前缀的环境变量未设置（os.environ 和 .env 中均无）时，
+        从 _FALLBACK_VAR_MAP 中读取第三方变量名注入 os.environ。
+
+        后续接入 Codex / DeepSeek / 千问等厂商时，只需在 _FALLBACK_VAR_MAP
+        中追加映射即可。
+        """
+        self._inject_fallback_env_vars()
+        super().__init__(**data)
+
+    @classmethod
+    def _inject_fallback_env_vars(cls) -> None:
+        """将 _FALLBACK_VAR_MAP 中的第三方变量注入 os.environ。
+
+        仅当 AQUEDUCT_ 前缀对应的字段未被设置时（os.environ 中无对应变量）才注入，
+        不覆盖已有值。
+        """
+        for env_key, field_name in _FALLBACK_VAR_MAP.items():
+            aqueduct_key = f"AQUEDUCT_{field_name.upper()}"
+            if aqueduct_key not in os.environ and env_key in os.environ:
+                os.environ[aqueduct_key] = os.environ[env_key]
 
     @model_validator(mode="after")
     def _resolve_paths(self) -> Settings:

@@ -134,6 +134,9 @@ class WorkflowState(TypedDict):
     _needs_fix_loop: NotRequired[bool]  # 审查节点标记是否需要修复循环
     _review_issues: NotRequired[list]  # 审查发现的问题列表
 
+    # === 可选：表结构缓存（跨 Phase 复用） ===
+    _table_schema_cache: NotRequired[Any]  # TableSchemaCache 实例
+
     # === 可选：后台任务资源（异步血缘生成） ===
     _lineage_future: NotRequired[Any]  # concurrent.futures.Future
     _lineage_executor: NotRequired[Any]  # concurrent.futures.ThreadPoolExecutor

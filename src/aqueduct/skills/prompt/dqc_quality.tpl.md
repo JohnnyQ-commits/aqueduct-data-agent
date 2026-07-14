@@ -45,9 +45,13 @@
 ```sql
 -- [分类-名称] 描述说明
 -- 权重: High/Medium/Low
+-- 阈值: 判定条件（如 <=0, <50%, =0, >150）
 select ...
 -- 预期: 预期结果描述
 ```
+
+> **阈值格式**：用 `操作符+数值` 表示判定边界（如 `<=0` 表示异常条件为值小于等于 0，`<50%` 表示波动率超过 50% 为异常）。
+> 阈值应与 WHERE 子句的过滤条件保持一致 — 即"超过阈值即为异常"。
 
 ---
 
@@ -148,7 +152,8 @@ domain_context: "实体: Order (order_id, city, amount). 规则: 金额必须大
 ```sql
 -- [唯一性-主键重复] 检查 order_id 是否重复
 -- 权重: High
-select 
+-- 阈值: >0
+select
     order_id,
     count(*) as cnt
 from order_stats
@@ -160,7 +165,8 @@ having count(*) > 1
 
 -- [唯一性-主键非空] 检查 order_id 是否为 NULL
 -- 权重: High
-select 
+-- 阈值: >0
+select
     count(*) as null_count
 from order_stats
 where inc_day = '${bizdate}'
@@ -170,7 +176,8 @@ where inc_day = '${bizdate}'
 
 -- [业务反证-金额正数] 检查金额是否大于 0
 -- 权重: High
-select 
+-- 阈值: <=0
+select
     count(*) as invalid_count
 from order_stats
 where inc_day = '${bizdate}'
@@ -180,7 +187,8 @@ where inc_day = '${bizdate}'
 
 -- [跨表一致性-总量对比] 与源表总量对比
 -- 权重: Medium
-select 
+-- 阈值: 差异>0
+select
     (select count(*) from order_stats where inc_day = '${bizdate}') as target_count,
     (select count(*) from source_order where inc_day = '${bizdate}') as source_count
 ;
@@ -188,7 +196,8 @@ select
 
 -- [边界值-城市非空] 检查 city 是否为空字符串
 -- 权重: Medium
-select 
+-- 阈值: >0
+select
     count(*) as empty_count
 from order_stats
 where inc_day = '${bizdate}'
@@ -198,7 +207,8 @@ where inc_day = '${bizdate}'
 
 -- [波动监控-总量环比] 与昨日总量对比
 -- 权重: Low
-select 
+-- 阈值: 波动率>50%
+select
     (select count(*) from order_stats where inc_day = '${bizdate}') as today_count,
     (select count(*) from order_stats where inc_day = date_sub('${bizdate}', 1)) as yesterday_count
 ;

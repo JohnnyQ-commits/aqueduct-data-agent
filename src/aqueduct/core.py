@@ -445,7 +445,9 @@ class Aqueduct:
         """
         req_path = Path(requirement)
         if req_path.exists():
-            requirement_text = req_path.read_text(encoding="utf-8")
+            from .utils.file_parser import parse_requirement_file
+
+            requirement_text = parse_requirement_file(req_path)
             req_name = req_path.stem
         else:
             requirement_text = requirement
@@ -462,6 +464,17 @@ class Aqueduct:
             state["metadata"]["output_dir"] = output_dir
         if external_sql_path:
             state["external_sql_path"] = external_sql_path
+
+        # 注入表结构缓存（跨 Phase 共享，避免重复 MCP 查询）
+        from .config.settings import get_settings
+        from .utils.table_cache import TableSchemaCache
+
+        settings = get_settings()
+        cache_persist_path = settings.project_root / ".cache" / "table_schemas.json"
+        state["_table_schema_cache"] = TableSchemaCache(
+            ttl_seconds=86400,  # 24 小时
+            persist_path=cache_persist_path,
+        )
 
         return _run_pipeline(
             state,
