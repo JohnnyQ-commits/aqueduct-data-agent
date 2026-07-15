@@ -1,294 +1,294 @@
--- ============================================================
--- 需求：{{requirement_name}}
--- 目标表：{{target_table}}
--- 源表：{{source_tables}}
--- 作者：aqueduct
--- 日期：{{date}}
--- 描述：{{description}}
--- ============================================================
+ ============================================================
+ 需求：{{requirement_name}}
+ 目标表：{{target_table}}
+ 源表：{{source_tables}}
+ 作者：aqueduct
+ 日期：{{date}}
+ 描述：{{description}}
+ ============================================================
 
--- ============================================================
--- 示例 1：简单场景（≤3 张源表）— 子查询方式
--- ============================================================
--- insert overwrite table dw_demo.dws_emp_tool_daily_di partition (inc_day = '${bizdate}')
--- select
---     a.emp_code,
---     a.emp_name,
---     coalesce(b.dept_name,'') as dept_name,
---     coalesce(a.tool_total_num,0) as tool_total_num
--- from (
---     select
---         emp_code,
---         emp_name,
---         tool_total_num
---     from dwd.emp_info_di
---     where inc_day = '${bizdate}'
---         and employ_status = '在职'
--- ) a
--- left join (
---     select
---         emp_code,
---         dept_name
---     from dwd.dim_dept_info_df
---     where inc_day = '${bizdate}'
--- ) b
--- on a.emp_code = b.emp_code
--- ;
+ ============================================================
+ 示例 1：简单场景（≤3 张源表）— 子查询方式
+ ============================================================
+ insert overwrite table dw_demo.dws_emp_tool_daily_di partition (inc_day = '${bizdate}')
+ select
+     a.emp_code,
+     a.emp_name,
+     coalesce(b.dept_name,'') as dept_name,
+     coalesce(a.tool_total_num,0) as tool_total_num
+ from (
+     select
+         emp_code,
+         emp_name,
+         tool_total_num
+     from dwd.emp_info_di
+     where inc_day = '${bizdate}'
+         and employ_status = '在职'
+ ) a
+ left join (
+     select
+         emp_code,
+         dept_name
+     from dwd.dim_dept_info_df
+     where inc_day = '${bizdate}'
+ ) b
+ on a.emp_code = b.emp_code
+ ;
 
--- ============================================================
--- 示例 2：复杂场景（4-6 张源表）— CTE 方式
--- ============================================================
--- CTE 优势：逻辑从上到下读，比嵌套括号清晰
--- CTE 局限：中间结果不落地，数据问题排查时需手动拆出 CTE 单独跑
--- with emp_base as (
---     select
---         emp_code,
---         emp_name,
---         dept_code,
---         area_code,
---         employ_status
---     from dwd.emp_info_di
---     where inc_day = '${bizdate}'
---         and employ_status = '在职'
---         and position_attr_tx = '一线'
--- ),
--- tool_agg as (
---     select
---         emp_code,
---         count(tool_name) as tool_cnt,
---         coalesce(sum(tool_total_num),0) as tool_total
---     from dwd.emp_tool_di
---     where inc_day = '${bizdate}'
---     group by emp_code
--- ),
--- order_agg as (
---     select
---         emp_code,
---         count(order_id) as order_cnt,
---         coalesce(sum(pay_amount),0) as gmv
---     from dwd.dwd_order_detail_di
---     where inc_day = '${bizdate}'
---         and order_status >= '20'
---     group by emp_code
--- )
--- insert overwrite table dw_demo.dws_emp_daily_di partition (inc_day = '${bizdate}')
--- select
---     e.emp_code,
---     e.emp_name,
---     coalesce(t.tool_cnt,0) as tool_cnt,
---     t.tool_total,
---     coalesce(o.order_cnt,0) as order_cnt,
---     o.gmv,
---     round(o.gmv / nullif(o.order_cnt,0), 2) as avg_order_amount
--- from emp_base e
--- left join tool_agg t
---     on e.emp_code = t.emp_code
--- left join order_agg o
---     on e.emp_code = o.emp_code
--- ;
+ ============================================================
+ 示例 2：复杂场景（4-6 张源表）— CTE 方式
+ ============================================================
+ CTE 优势：逻辑从上到下读，比嵌套括号清晰
+ CTE 局限：中间结果不落地，数据问题排查时需手动拆出 CTE 单独跑
+ with emp_base as (
+     select
+         emp_code,
+         emp_name,
+         dept_code,
+         area_code,
+         employ_status
+     from dwd.emp_info_di
+     where inc_day = '${bizdate}'
+         and employ_status = '在职'
+         and position_attr_tx = '一线'
+ ),
+ tool_agg as (
+     select
+         emp_code,
+         count(tool_name) as tool_cnt,
+         coalesce(sum(tool_total_num),0) as tool_total
+     from dwd.emp_tool_di
+     where inc_day = '${bizdate}'
+     group by emp_code
+ ),
+ order_agg as (
+     select
+         emp_code,
+         count(order_id) as order_cnt,
+         coalesce(sum(pay_amount),0) as gmv
+     from dwd.dwd_order_detail_di
+     where inc_day = '${bizdate}'
+         and order_status >= '20'
+     group by emp_code
+ )
+ insert overwrite table dw_demo.dws_emp_daily_di partition (inc_day = '${bizdate}')
+ select
+     e.emp_code,
+     e.emp_name,
+     coalesce(t.tool_cnt,0) as tool_cnt,
+     t.tool_total,
+     coalesce(o.order_cnt,0) as order_cnt,
+     o.gmv,
+     round(o.gmv / nullif(o.order_cnt,0), 2) as avg_order_amount
+ from emp_base e
+ left join tool_agg t
+     on e.emp_code = t.emp_code
+ left join order_agg o
+     on e.emp_code = o.emp_code
+ ;
 
--- ============================================================
--- 示例 3：更复杂场景（≥7 张源表或 60+ 字段）— 分层建表
--- ============================================================
--- 中间表：tmp_{库名}.tmp_{需求简称}_{聚合主题}
--- 右表过滤条件推入子查询，LEFT JOIN → INNER JOIN
--- create table tmp_demo.tmp_order_daily_stat_city as
--- select
---     o.inc_day,
---     o.city,
---     c.city_name,
---     count(distinct o.order_id) as order_cnt,
---     sum(o.pay_amount) as gmv,
---     count(distinct o.customer_id) as customer_cnt,
---     coalesce(sum(case when o.order_type = 'scatter' then o.pay_amount end), 0) as scatter_gmv,
---     coalesce(sum(case when o.order_type = 'delivery' then o.pay_amount end), 0) as delivery_gmv
--- from dwd.dwd_order_detail_di o
--- inner join (
---     select
---         city_code,
---         city_name
---     from dwd.dim_city_info_df
---     where inc_day = '${bizdate}'
--- ) c on o.city = c.city_code
--- inner join (
---     select
---         customer_id
---     from dwd.dim_customer_info_df
---     where inc_day = '${bizdate}'
--- ) cu on o.customer_id = cu.customer_id
--- inner join (
---     select
---         product_id
---     from dwd.dim_product_info_df
---     where inc_day = '${bizdate}'
--- ) p on o.product_id = p.product_id
--- inner join (
---     select
---         shop_id
---     from dwd.dim_shop_info_df
---     where inc_day = '${bizdate}'
--- ) s on o.shop_id = s.shop_id
--- inner join (
---     select
---         category_id
---     from dwd.dim_category_info_df
---     where inc_day = '${bizdate}'
--- ) cat on o.category_id = cat.category_id
--- inner join (
---     select
---         payment_id
---     from dwd.dim_payment_info_df
---     where inc_day = '${bizdate}'
--- ) pay on o.payment_id = pay.payment_id
--- inner join (
---     select
---         logistics_id
---     from dwd.dim_logistics_info_df
---     where inc_day = '${bizdate}'
--- ) log on o.logistics_id = log.logistics_id
--- where o.inc_day = '${bizdate}'
---     and o.order_status >= '20'
--- group by
---     o.inc_day,
---     o.city,
---     c.city_name
--- ;
---
--- 最终表：从中间表取数
--- insert overwrite table ads_demo.ads_order_daily_stat_di partition (inc_day)
--- select
---     city,
---     city_name,
---     order_cnt,
---     customer_cnt,
---     gmv,
---     scatter_gmv,
---     delivery_gmv,
---     round(gmv / nullif(order_cnt,0), 2) as avg_order_amount,
---     round(gmv / nullif(customer_cnt,0), 2) as avg_customer_amount,
---     inc_day
--- from tmp_demo.tmp_order_daily_stat_city
--- where inc_day = '${bizdate}'
--- ;
+ ============================================================
+ 示例 3：更复杂场景（≥7 张源表或 60+ 字段）— 分层建表
+ ============================================================
+ 中间表：tmp_{库名}.tmp_{需求简称}_{聚合主题}
+ 右表过滤条件推入子查询，LEFT JOIN → INNER JOIN
+ create table tmp_demo.tmp_order_daily_stat_city as
+ select
+     o.inc_day,
+     o.city,
+     c.city_name,
+     count(distinct o.order_id) as order_cnt,
+     sum(o.pay_amount) as gmv,
+     count(distinct o.customer_id) as customer_cnt,
+     coalesce(sum(case when o.order_type = 'scatter' then o.pay_amount end), 0) as scatter_gmv,
+     coalesce(sum(case when o.order_type = 'delivery' then o.pay_amount end), 0) as delivery_gmv
+ from dwd.dwd_order_detail_di o
+ inner join (
+     select
+         city_code,
+         city_name
+     from dwd.dim_city_info_df
+     where inc_day = '${bizdate}'
+ ) c on o.city = c.city_code
+ inner join (
+     select
+         customer_id
+     from dwd.dim_customer_info_df
+     where inc_day = '${bizdate}'
+ ) cu on o.customer_id = cu.customer_id
+ inner join (
+     select
+         product_id
+     from dwd.dim_product_info_df
+     where inc_day = '${bizdate}'
+ ) p on o.product_id = p.product_id
+ inner join (
+     select
+         shop_id
+     from dwd.dim_shop_info_df
+     where inc_day = '${bizdate}'
+ ) s on o.shop_id = s.shop_id
+ inner join (
+     select
+         category_id
+     from dwd.dim_category_info_df
+     where inc_day = '${bizdate}'
+ ) cat on o.category_id = cat.category_id
+ inner join (
+     select
+         payment_id
+     from dwd.dim_payment_info_df
+     where inc_day = '${bizdate}'
+ ) pay on o.payment_id = pay.payment_id
+ inner join (
+     select
+         logistics_id
+     from dwd.dim_logistics_info_df
+     where inc_day = '${bizdate}'
+ ) log on o.logistics_id = log.logistics_id
+ where o.inc_day = '${bizdate}'
+     and o.order_status >= '20'
+ group by
+     o.inc_day,
+     o.city,
+     c.city_name
+ ;
 
--- ============================================================
--- 示例 4：宽表模式（条件≥3 个 / 需排查验收）— ★ 最常用
--- ============================================================
--- 三个强制原则：
---   1. 排查优先：判断中间字段（orgcode、servicedept 等）必须暴露
---   2. 逻辑内聚：每个 is_sN 自包含，不依赖外层额外过滤
---   3. ADS 统一过滤：WHERE 只写 is_sN = 1
--- DWD+DWS 合并为一张宽表，减少中间表
+ 最终表：从中间表取数
+ insert overwrite table ads_demo.ads_order_daily_stat_di partition (inc_day)
+ select
+     city,
+     city_name,
+     order_cnt,
+     customer_cnt,
+     gmv,
+     scatter_gmv,
+     delivery_gmv,
+     round(gmv / nullif(order_cnt,0), 2) as avg_order_amount,
+     round(gmv / nullif(customer_cnt,0), 2) as avg_customer_amount,
+     inc_day
+ from tmp_demo.tmp_order_daily_stat_city
+ where inc_day = '${bizdate}'
+ ;
 
--- DWS层：宽表（合并基础池 + 所有判断条件 + 判断中间字段）
--- drop table if exists tmp_demo.tmp_scenario_wide_$[time(yyyyMMdd,-60d)];
--- create table if not exists tmp_demo.tmp_scenario_wide_$[time(yyyyMMdd,-1d)] as
--- select
---     s.loginid,
---     s.position_name,
---     s.dept_code,
---     -- 判断中间字段（暴露供排查）
---     s.orgcode,
---     s.servicedept,
---     ac.single_area_id,
---     adm.config_area_dept_code,
---     pc.node                              as pc_matched_node,
---     pc.related_node                      as pc_matched_related,
---     -- 来源/子组校验（derived 标记）
---     case when (sf.emp_source = 'HR'
---                and sf.emp_subgroup not in ('短期合同制','灵活排遣'))
---               or (sf.emp_source = 'OA'
---                   and sf.emp_subgroup in ('合同工','劳务工'))
---          then 1 else 0
---     end                                  as is_valid_source,
---     -- 培养状态
---     case when tr.loginid is not null
---          then '1' else '0'
---     end                                  as train_status,
---     -- 场景标记（每个自包含）
---     case when s.position_name not in ('收派员','配送员')
---          then 1 else 0
---     end                                  as is_s1,              -- 岗位异动
---     case when coalesce(ac.area_cnt, 0) = 1
---               and adm.config_area_dept_code is not null
---               and adm.config_area_dept_code <> s.dept_code
---               and pc.node is null                           -- 父子排除内聚在此
---          then 1 else 0
---     end                                  as is_s2,              -- 网点异动（自包含）
---     s.inc_day
--- from (
---     select
---         loginid,
---         positionname                                    as position_name,
---         case when positionname = '配送员'
---              then servicedept
---              else orgcode
---         end as dept_code,
---         orgcode,
---         servicedept,
---         inc_day
---     from dw_demo.emp_info_di
---     where inc_day = '$[time(yyyyMMdd,-1d)]'
---         and status = '1'
---         and isdeleted = '0'
---         and positionproperty = '0010'
--- ) s
--- inner join (                                                      -- 属性维度：过滤推入子查询
---     select
---         dept_code
---     from dim.dim_dept_info_df
---     where inc_day = '$[time(yyyyMMdd,-1d)]'
---         and hq_code in ('R01','R02','R03','R08')
--- ) d on s.dept_code = d.dept_code
--- left join dw_emp_base sf on s.loginid = sf.emp_code         -- 条件字段：LEFT JOIN 保留全量
--- left join novice_train tr       on s.loginid = tr.loginid
--- left join area_config ac        on s.loginid = ac.loginid
---     -- ↑ area_config 子查询用 CASE WHEN 合并多用途字段：
---     --   count(distinct area_id) as area_cnt,
---     --   case when count(distinct area_id)=1 then max(area_id) end as single_area_id
--- left join area_dept_map adm     on ac.single_area_id = adm.aoi_area_id
--- left join parent_child pc       on s.dept_code = pc.node
---     and adm.aoi_area_id = pc.related_node
--- ;
+ ============================================================
+ 示例 4：宽表模式（条件≥3 个 / 需排查验收）— ★ 最常用
+ ============================================================
+ 三个强制原则：
+   1. 排查优先：判断中间字段（orgcode、servicedept 等）必须暴露
+   2. 逻辑内聚：每个 is_sN 自包含，不依赖外层额外过滤
+   3. ADS 统一过滤：WHERE 只写 is_sN = 1
+ DWD+DWS 合并为一张宽表，减少中间表
 
--- ADS层：宽表过滤落表（直接用 is_sN，不额外 JOIN）
--- insert overwrite table ads_demo.ads_scenario_result_di partition (inc_day)
--- select
---     loginid            as emp_code,
---     position_name,
---     dept_code,
---     orgcode,                                                    -- 中间字段透传到 ADS 供排查
---     servicedept,
---     is_valid_source,
---     train_status,
---     is_s1,
---     is_s2,
---     inc_day
--- from tmp_demo.tmp_scenario_wide_$[time(yyyyMMdd,-1d)]
--- where is_valid_source = 1                                       -- 条件1：来源校验
---     and train_status = '1'                                      -- 条件2：已培养
---     and (is_s1 = 1 or is_s2 = 1)                                -- 至少命中一个场景
--- ;
+ DWS层：宽表（合并基础池 + 所有判断条件 + 判断中间字段）
+ drop table if exists tmp_demo.tmp_scenario_wide_$[time(yyyyMMdd,-60d)];
+ create table if not exists tmp_demo.tmp_scenario_wide_$[time(yyyyMMdd,-1d)] as
+ select
+     s.loginid,
+     s.position_name,
+     s.dept_code,
+     -- 判断中间字段（暴露供排查）
+     s.orgcode,
+     s.servicedept,
+     ac.single_area_id,
+     adm.config_area_dept_code,
+     pc.node                              as pc_matched_node,
+     pc.related_node                      as pc_matched_related,
+     -- 来源/子组校验（derived 标记）
+     case when (sf.emp_source = 'HR'
+                and sf.emp_subgroup not in ('短期合同制','灵活排遣'))
+               or (sf.emp_source = 'OA'
+                   and sf.emp_subgroup in ('合同工','劳务工'))
+          then 1 else 0
+     end                                  as is_valid_source,
+     -- 培养状态
+     case when tr.loginid is not null
+          then '1' else '0'
+     end                                  as train_status,
+     -- 场景标记（每个自包含）
+     case when s.position_name not in ('收派员','配送员')
+          then 1 else 0
+     end                                  as is_s1,              -- 岗位异动
+     case when coalesce(ac.area_cnt, 0) = 1
+               and adm.config_area_dept_code is not null
+               and adm.config_area_dept_code <> s.dept_code
+               and pc.node is null                           -- 父子排除内聚在此
+          then 1 else 0
+     end                                  as is_s2,              -- 网点异动（自包含）
+     s.inc_day
+ from (
+     select
+         loginid,
+         positionname                                    as position_name,
+         case when positionname = '配送员'
+              then servicedept
+              else orgcode
+         end as dept_code,
+         orgcode,
+         servicedept,
+         inc_day
+     from dw_demo.emp_info_di
+     where inc_day = '$[time(yyyyMMdd,-1d)]'
+         and status = '1'
+         and isdeleted = '0'
+         and positionproperty = '0010'
+ ) s
+ inner join (                                                      -- 属性维度：过滤推入子查询
+     select
+         dept_code
+     from dim.dim_dept_info_df
+     where inc_day = '$[time(yyyyMMdd,-1d)]'
+         and hq_code in ('R01','R02','R03','R08')
+ ) d on s.dept_code = d.dept_code
+ left join dw_emp_base sf on s.loginid = sf.emp_code         -- 条件字段：LEFT JOIN 保留全量
+ left join novice_train tr       on s.loginid = tr.loginid
+ left join area_config ac        on s.loginid = ac.loginid
+     -- ↑ area_config 子查询用 CASE WHEN 合并多用途字段：
+     --   count(distinct area_id) as area_cnt,
+     --   case when count(distinct area_id)=1 then max(area_id) end as single_area_id
+ left join area_dept_map adm     on ac.single_area_id = adm.aoi_area_id
+ left join parent_child pc       on s.dept_code = pc.node
+     and adm.aoi_area_id = pc.related_node
+ ;
 
--- ============================================================
--- 编码规范速查
--- ============================================================
--- 1. 关键字小写：select, from, where, group by, left join
--- 2. 字段竖排：所有 select（含子查询/CTE/JOIN）字段均竖排，4 空格缩进，每字段独占一行
--- 3. WHERE 紧凑：≤3 个条件写一行，>3 个换行（and 前置 2 空格）
--- 4. 函数逗号无空格：coalesce(a,0), in('a','b')
--- 5. GROUP BY 灵活：≤3 字段紧凑，>3 字段竖排
--- 6. JOIN 与 ON 分行：left join table\n    on condition
--- 7. JOIN 键预处理：行级条件决定 JOIN 键时，先子查询计算再等值关联（禁止 ON 中写 CASE）
--- 8. 过滤条件下推：右表过滤条件推入子查询，LEFT JOIN → INNER JOIN（宽表模式除外）
--- 9. 简单场景用子查询：≤3 张源表用 from (select) alias
--- 10. 复杂场景用 CTE：4-6 张源表用 with ... as（逻辑清晰，但中间结果不落地）
--- 11. 更复杂场景分层建表：≥7 张源表或 60+ 字段按 DWD/DWS/ADS 分层（中间结果落盘，便于排查）
--- 12. 宽表模式（★ 最常用）：条件≥3 个 → DWD+DWS 合并宽表 + ADS WHERE
--- 13. 宽表三原则：① 排查优先（判断中间字段全暴露）② 逻辑内聚（is_sN 自包含）③ ADS 统一过滤
--- 14. 多层合并：DWD 无复杂聚合时合并到 DWS；同表多次读取合并为一次
--- 15. 架构决策树：先判断条件数量（≥3→宽表）再判断源表数量（≥7→分层），不要靠猜
--- 16. 同源表多用途合并：同一张表+相同 WHERE 读多次时，合并为一个子查询，用 CASE WHEN 条件聚合区分用途（如 area_cnt 计数 + single_area_id 单区域取值）
--- 17. 桥接表拆分：当"关系对"表的 JOIN 条件同时引用两个不同 LEFT JOIN 表的字段时（跨表依赖），按业务域拆分子查询
---     识别信号：pc ON a.dept_code AND b.config_dept（a 和 b 是两个不同的 LEFT JOIN）→ 拆为子查询 A + B
---     好处：每个子查询可独立跑/验，桥接表两端来自同层，关系清晰
+ ADS层：宽表过滤落表（直接用 is_sN，不额外 JOIN）
+ insert overwrite table ads_demo.ads_scenario_result_di partition (inc_day)
+ select
+     loginid            as emp_code,
+     position_name,
+     dept_code,
+     orgcode,                                                    -- 中间字段透传到 ADS 供排查
+     servicedept,
+     is_valid_source,
+     train_status,
+     is_s1,
+     is_s2,
+     inc_day
+ from tmp_demo.tmp_scenario_wide_$[time(yyyyMMdd,-1d)]
+ where is_valid_source = 1                                       -- 条件1：来源校验
+     and train_status = '1'                                      -- 条件2：已培养
+     and (is_s1 = 1 or is_s2 = 1)                                -- 至少命中一个场景
+ ;
+
+ ============================================================
+ 编码规范速查
+ ============================================================
+ 1. 关键字小写：select, from, where, group by, left join
+ 2. 字段竖排：所有 select（含子查询/CTE/JOIN）字段均竖排，4 空格缩进，每字段独占一行
+ 3. WHERE 紧凑：≤3 个条件写一行，>3 个换行（and 前置 2 空格）
+ 4. 函数逗号无空格：coalesce(a,0), in('a','b')
+ 5. GROUP BY 灵活：≤3 字段紧凑，>3 字段竖排
+ 6. JOIN 与 ON 分行：left join table\n    on condition
+ 7. JOIN 键预处理：行级条件决定 JOIN 键时，先子查询计算再等值关联（禁止 ON 中写 CASE）
+ 8. 过滤条件下推：右表过滤条件推入子查询，LEFT JOIN → INNER JOIN（宽表模式除外）
+ 9. 简单场景用子查询：≤3 张源表用 from (select) alias
+ 10. 复杂场景用 CTE：4-6 张源表用 with ... as（逻辑清晰，但中间结果不落地）
+ 11. 更复杂场景分层建表：≥7 张源表或 60+ 字段按 DWD/DWS/ADS 分层（中间结果落盘，便于排查）
+ 12. 宽表模式（★ 最常用）：条件≥3 个 → DWD+DWS 合并宽表 + ADS WHERE
+ 13. 宽表三原则：① 排查优先（判断中间字段全暴露）② 逻辑内聚（is_sN 自包含）③ ADS 统一过滤
+ 14. 多层合并：DWD 无复杂聚合时合并到 DWS；同表多次读取合并为一次
+ 15. 架构决策树：先判断条件数量（≥3→宽表）再判断源表数量（≥7→分层），不要靠猜
+ 16. 同源表多用途合并：同一张表+相同 WHERE 读多次时，合并为一个子查询，用 CASE WHEN 条件聚合区分用途（如 area_cnt 计数 + single_area_id 单区域取值）
+ 17. 桥接表拆分：当"关系对"表的 JOIN 条件同时引用两个不同 LEFT JOIN 表的字段时（跨表依赖），按业务域拆分子查询
+     识别信号：pc ON a.dept_code AND b.config_dept（a 和 b 是两个不同的 LEFT JOIN）→ 拆为子查询 A + B
+     好处：每个子查询可独立跑/验，桥接表两端来自同层，关系清晰
