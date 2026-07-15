@@ -214,7 +214,9 @@ class TestMemoryStoreDualDirectory:
         static_domain = DomainModel(domain_id="shared_domain", name="静态版", description="static")
         static_domain.to_json(static_dir / "shared_domain" / "domain.json")
 
-        dynamic_domain = DomainModel(domain_id="shared_domain", name="动态版", description="dynamic")
+        dynamic_domain = DomainModel(
+            domain_id="shared_domain", name="动态版", description="dynamic"
+        )
         dynamic_domain.to_json(dynamic_dir / "shared_domain" / "domain.json")
 
         store = MemoryStore(domains_dir=static_dir, dynamic_dir=dynamic_dir)

@@ -127,9 +127,7 @@ class MemoryStore:
                 domain_ids.add(p.stem)
 
         if not domain_ids:
-            logger.warning(
-                "业务域目录为空: %s, %s", self._domains_dir, self._dynamic_dir
-            )
+            logger.warning("业务域目录为空: %s, %s", self._domains_dir, self._dynamic_dir)
         return sorted(domain_ids)
 
     def match_domain(self, requirement: str) -> DomainModel | None:
