@@ -2,8 +2,12 @@
 
 加载、缓存、搜索业务域本体模型。
 支持两种目录结构：
-- 域目录模式: knowledge/domains/{domain_id}/domain.json（推荐）
-- 扁平模式: knowledge/domains/{domain_id}.json（旧版兼容）
+- 域目录模式: {dir}/{domain_id}/domain.json（推荐）
+- 扁平模式: {dir}/{domain_id}.json（旧版兼容）
+
+域来源：
+- 静态域（knowledge/domains）：3 个示例域，提交到 git
+- 动态域（internal/knowledge）：运行时生成，gitignored
 """
 
 from __future__ import annotations
@@ -28,20 +32,36 @@ class MemoryStore:
     5. 关系图谱生成（Mermaid）
     """
 
-    def __init__(self, domains_dir: Path | str | None = None) -> None:
+    def __init__(
+        self,
+        domains_dir: Path | str | None = None,
+        dynamic_dir: Path | str | None = None,
+    ) -> None:
         """初始化知识存储。
 
         Args:
-            domains_dir: 业务域 JSON 目录。
-                         默认使用 knowledge/domains。
+            domains_dir: 静态业务域目录（示例域）。
+                         默认从 Settings.knowledge_dir 读取。
+            dynamic_dir: 动态业务域目录（运行时生成，知识回流写入）。
+                         默认从 Settings.dynamic_knowledge_dir 读取。
         """
-        if domains_dir is None:
-            domains_dir = Path("knowledge/domains")
+        if domains_dir is None or dynamic_dir is None:
+            from ..config.settings import get_settings
+
+            settings = get_settings()
+            if domains_dir is None:
+                domains_dir = settings.knowledge_dir
+            if dynamic_dir is None:
+                dynamic_dir = settings.dynamic_knowledge_dir
+
         self._domains_dir = Path(domains_dir)
+        self._dynamic_dir = Path(dynamic_dir)
         self._cache: dict[str, DomainModel] = {}
 
     def load(self, domain_id: str) -> DomainModel:
         """加载指定业务域。
+
+        搜索顺序：静态域目录 → 动态域目录。
 
         Args:
             domain_id: 业务域 ID（如 'ecommerce_order'）。
@@ -53,13 +73,11 @@ class MemoryStore:
             DomainNotFoundError: 业务域文件不存在。
         """
         if domain_id not in self._cache:
-            # 优先尝试域目录模式: {domain_id}/domain.json
-            path = self._domains_dir / domain_id / "domain.json"
-            if not path.exists():
-                # 兼容扁平模式: {domain_id}.json
-                path = self._domains_dir / f"{domain_id}.json"
-            if not path.exists():
-                raise DomainNotFoundError(f"业务域 '{domain_id}' 不存在: {path}")
+            path = self._find_domain_file(domain_id)
+            if path is None:
+                raise DomainNotFoundError(
+                    f"业务域 '{domain_id}' 不存在（已搜索: {self._domains_dir}, {self._dynamic_dir}）"
+                )
 
             self._cache[domain_id] = DomainModel.from_json(path)
             logger.debug(
@@ -71,23 +89,48 @@ class MemoryStore:
 
         return self._cache[domain_id]
 
+    def _find_domain_file(self, domain_id: str) -> Path | None:
+        """在静态域和动态域目录中查找域文件。
+
+        Args:
+            domain_id: 业务域 ID。
+
+        Returns:
+            域文件路径，未找到时返回 None。
+        """
+        for base_dir in (self._domains_dir, self._dynamic_dir):
+            # 优先尝试域目录模式: {domain_id}/domain.json
+            path = base_dir / domain_id / "domain.json"
+            if path.exists():
+                return path
+            # 兼容扁平模式: {domain_id}.json
+            path = base_dir / f"{domain_id}.json"
+            if path.exists():
+                return path
+        return None
+
     def list_domains(self) -> list[str]:
-        """列出所有可用业务域 ID。
+        """列出所有可用业务域 ID（静态域 + 动态域合并去重）。
 
         Returns:
             业务域 ID 列表。
         """
-        if not self._domains_dir.exists():
-            logger.warning("业务域目录不存在: %s", self._domains_dir)
-            return []
+        domain_ids: set[str] = set()
+        for base_dir in (self._domains_dir, self._dynamic_dir):
+            if not base_dir.exists():
+                continue
+            # 域目录模式: */domain.json
+            for p in base_dir.glob("*/domain.json"):
+                domain_ids.add(p.parent.name)
+            # 扁平模式: *.json
+            for p in base_dir.glob("*.json"):
+                domain_ids.add(p.stem)
 
-        # 优先尝试域目录模式: */domain.json
-        nested = [p.parent.name for p in self._domains_dir.glob("*/domain.json")]
-        if nested:
-            return sorted(nested)
-
-        # 兼容扁平模式: *.json
-        return sorted([p.stem for p in self._domains_dir.glob("*.json")])
+        if not domain_ids:
+            logger.warning(
+                "业务域目录为空: %s, %s", self._domains_dir, self._dynamic_dir
+            )
+        return sorted(domain_ids)
 
     def match_domain(self, requirement: str) -> DomainModel | None:
         """需求阶段自动召回：根据需求描述匹配最相关的业务域。
@@ -172,14 +215,15 @@ class MemoryStore:
         return domain.to_mermaid()
 
     def save(self, domain: DomainModel) -> None:
-        """保存业务域模型到 JSON 文件。
+        """保存业务域模型到动态域目录。
 
-        使用域目录模式: {domain_id}/domain.json
+        动态域写入 internal/knowledge/（gitignored），
+        不影响 knowledge/domains/ 中的静态示例域。
 
         Args:
             domain: 要保存的业务域模型。
         """
-        domain_dir = self._domains_dir / domain.domain_id
+        domain_dir = self._dynamic_dir / domain.domain_id
         domain_dir.mkdir(parents=True, exist_ok=True)
         path = domain_dir / "domain.json"
         domain.to_json(path)

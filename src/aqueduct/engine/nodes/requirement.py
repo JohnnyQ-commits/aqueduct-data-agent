@@ -7,7 +7,6 @@ import logging
 import re
 import time
 
-from ...config.settings import get_settings
 from ...memory.recall import KnowledgeRecall
 from ...memory.store import MemoryStore
 from ...skills.base import SkillContext
@@ -172,8 +171,7 @@ def _recall_domain_knowledge(state: WorkflowState) -> None:
     无匹配领域时写入空字符串，工作流正常继续。
     """
     try:
-        settings = get_settings()
-        store = MemoryStore(domains_dir=settings.knowledge_dir)
+        store = MemoryStore()
         recall = KnowledgeRecall(store=store)
         result = recall.recall(state.get("requirement", ""))
 

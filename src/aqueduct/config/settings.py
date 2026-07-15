@@ -83,7 +83,12 @@ class Settings(BaseSettings):
 
     knowledge_dir: Path = Field(
         default=Path("knowledge/domains"),
-        description="业务域本体目录。支持域目录模式（{domain_id}/domain.json）和扁平模式（{domain_id}.json）。",
+        description="静态业务域本体目录（示例域，提交到 git）。支持域目录模式和扁平模式。",
+    )
+
+    dynamic_knowledge_dir: Path = Field(
+        default=Path("internal/knowledge"),
+        description="动态业务域本体目录（运行时生成，gitignored）。Phase 6 知识回流写入此目录。",
     )
 
     prompt_dir: Path = Field(
@@ -232,6 +237,7 @@ class Settings(BaseSettings):
         root = self.project_root
         for field_name in (
             "knowledge_dir",
+            "dynamic_knowledge_dir",
             "prompt_dir",
             "output_dir",
             "workspace_dir",

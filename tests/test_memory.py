@@ -172,3 +172,268 @@ class TestNodeRequirementKnowledgeRecall:
         assert isinstance(domain_ctx, str)
         if state.get("domain_id"):
             assert len(domain_ctx) > 0
+
+
+class TestMemoryStoreDualDirectory:
+    """MemoryStore 双目录（静态域 + 动态域）测试。"""
+
+    def test_read_from_static_dir(self, tmp_path):
+        """从静态域目录读取域。"""
+        static_dir = tmp_path / "static"
+        static_dir.mkdir()
+        domain_file = static_dir / "test_domain" / "domain.json"
+        domain_file.parent.mkdir()
+        domain = DomainModel(domain_id="test_domain", name="测试", description="测试域")
+        domain.to_json(domain_file)
+
+        store = MemoryStore(domains_dir=static_dir, dynamic_dir=tmp_path / "dynamic")
+        loaded = store.load("test_domain")
+        assert loaded.domain_id == "test_domain"
+
+    def test_read_from_dynamic_dir(self, tmp_path):
+        """从动态域目录读取域。"""
+        dynamic_dir = tmp_path / "dynamic"
+        dynamic_dir.mkdir()
+        domain_file = dynamic_dir / "dynamic_domain" / "domain.json"
+        domain_file.parent.mkdir()
+        domain = DomainModel(domain_id="dynamic_domain", name="动态域", description="运行时生成")
+        domain.to_json(domain_file)
+
+        store = MemoryStore(domains_dir=tmp_path / "static", dynamic_dir=dynamic_dir)
+        loaded = store.load("dynamic_domain")
+        assert loaded.domain_id == "dynamic_domain"
+
+    def test_static_takes_priority_over_dynamic(self, tmp_path):
+        """静态域优先于动态域（同名时）。"""
+        static_dir = tmp_path / "static"
+        dynamic_dir = tmp_path / "dynamic"
+        for d in (static_dir, dynamic_dir):
+            d.mkdir()
+            (d / "shared_domain").mkdir()
+
+        static_domain = DomainModel(domain_id="shared_domain", name="静态版", description="static")
+        static_domain.to_json(static_dir / "shared_domain" / "domain.json")
+
+        dynamic_domain = DomainModel(domain_id="shared_domain", name="动态版", description="dynamic")
+        dynamic_domain.to_json(dynamic_dir / "shared_domain" / "domain.json")
+
+        store = MemoryStore(domains_dir=static_dir, dynamic_dir=dynamic_dir)
+        loaded = store.load("shared_domain")
+        assert loaded.name == "静态版"
+
+    def test_list_domains_merges_both(self, tmp_path):
+        """list_domains 合并静态域和动态域。"""
+        static_dir = tmp_path / "static"
+        dynamic_dir = tmp_path / "dynamic"
+        for d in (static_dir, dynamic_dir):
+            d.mkdir()
+
+        (static_dir / "domain_a").mkdir()
+        DomainModel(domain_id="domain_a", name="A", description="").to_json(
+            static_dir / "domain_a" / "domain.json"
+        )
+        (dynamic_dir / "domain_b").mkdir()
+        DomainModel(domain_id="domain_b", name="B", description="").to_json(
+            dynamic_dir / "domain_b" / "domain.json"
+        )
+
+        store = MemoryStore(domains_dir=static_dir, dynamic_dir=dynamic_dir)
+        domains = store.list_domains()
+        assert domains == ["domain_a", "domain_b"]
+
+    def test_save_writes_to_dynamic_dir(self, tmp_path):
+        """save() 写入动态域目录，不写入静态域目录。"""
+        static_dir = tmp_path / "static"
+        dynamic_dir = tmp_path / "dynamic"
+        static_dir.mkdir()
+        dynamic_dir.mkdir()
+
+        store = MemoryStore(domains_dir=static_dir, dynamic_dir=dynamic_dir)
+        domain = DomainModel(domain_id="new_domain", name="新域", description="运行时生成")
+        store.save(domain)
+
+        # 动态目录应有文件
+        assert (dynamic_dir / "new_domain" / "domain.json").exists()
+        # 静态目录不应有文件
+        assert not (static_dir / "new_domain").exists()
+
+    def test_load_nonexistent_raises_with_both_dirs(self, tmp_path):
+        """域不存在时异常信息包含两个搜索目录。"""
+        from src.aqueduct.exceptions import DomainNotFoundError
+
+        store = MemoryStore(domains_dir=tmp_path / "static", dynamic_dir=tmp_path / "dynamic")
+        with pytest.raises(DomainNotFoundError, match="已搜索"):
+            store.load("nonexistent")
+
+    def test_nonexistent_dirs_no_crash(self, tmp_path):
+        """目录不存在时不崩溃，返回空列表。"""
+        store = MemoryStore(domains_dir=tmp_path / "nope1", dynamic_dir=tmp_path / "nope2")
+        assert store.list_domains() == []
+
+
+class TestEmbedderMockBackend:
+    """Embedder mock 后端测试（不依赖 sentence-transformers）。"""
+
+    def test_embed_returns_vector(self):
+        """embed() 返回正确维度的向量。"""
+        from src.aqueduct.memory.embedder import Embedder
+
+        embedder = Embedder(backend="mock")
+        vec = embedder.embed("测试文本")
+        assert len(vec) == 384
+        assert all(isinstance(v, float) for v in vec)
+
+    def test_embed_is_normalized(self):
+        """embed() 返回的向量已归一化（L2 范数 ≈ 1.0）。"""
+        import math
+
+        from src.aqueduct.memory.embedder import Embedder
+
+        embedder = Embedder(backend="mock")
+        vec = embedder.embed("归一化测试")
+        norm = math.sqrt(sum(v * v for v in vec))
+        assert abs(norm - 1.0) < 1e-6
+
+    def test_embed_deterministic(self):
+        """相同文本产生相同向量。"""
+        from src.aqueduct.memory.embedder import Embedder
+
+        embedder = Embedder(backend="mock")
+        v1 = embedder.embed("相同内容")
+        v2 = embedder.embed("相同内容")
+        assert v1 == v2
+
+    def test_embed_different_texts_different_vectors(self):
+        """不同文本产生不同向量。"""
+        from src.aqueduct.memory.embedder import Embedder
+
+        embedder = Embedder(backend="mock")
+        v1 = embedder.embed("文本 A")
+        v2 = embedder.embed("文本 B")
+        assert v1 != v2
+
+    def test_embed_batch(self):
+        """embed_batch() 返回与输入等长的向量列表。"""
+        from src.aqueduct.memory.embedder import Embedder
+
+        embedder = Embedder(backend="mock")
+        texts = ["文本一", "文本二", "文本三"]
+        vecs = embedder.embed_batch(texts)
+        assert len(vecs) == 3
+        assert all(len(v) == 384 for v in vecs)
+
+    def test_embed_batch_empty(self):
+        """embed_batch() 空输入返回空列表。"""
+        from src.aqueduct.memory.embedder import Embedder
+
+        embedder = Embedder(backend="mock")
+        assert embedder.embed_batch([]) == []
+
+    def test_custom_dim(self):
+        """mock 后端支持自定义维度。"""
+        from src.aqueduct.memory.embedder import Embedder
+
+        embedder = Embedder(backend="mock", model="128")
+        vec = embedder.embed("自定义维度")
+        assert len(vec) == 128
+
+    def test_dim_property(self):
+        """dim 属性返回向量维度。"""
+        from src.aqueduct.memory.embedder import Embedder
+
+        embedder = Embedder(backend="mock")
+        assert embedder.dim == 384
+
+    def test_unknown_backend_raises(self):
+        """未知后端名称抛出 ValueError。"""
+        from src.aqueduct.memory.embedder import Embedder
+
+        embedder = Embedder(backend="nonexistent")
+        with pytest.raises(ValueError, match="未知"):
+            embedder.embed("test")
+
+
+class TestCosineSimilarity:
+    """余弦相似度和 Top-K 检索测试。"""
+
+    def test_identical_vectors(self):
+        """相同向量的相似度为 1.0。"""
+        from src.aqueduct.memory.embedder import cosine_similarity
+
+        vec = [1.0, 0.0, 0.0]
+        assert abs(cosine_similarity(vec, vec) - 1.0) < 1e-6
+
+    def test_orthogonal_vectors(self):
+        """正交向量的相似度为 0.0。"""
+        from src.aqueduct.memory.embedder import cosine_similarity
+
+        a = [1.0, 0.0, 0.0]
+        b = [0.0, 1.0, 0.0]
+        assert abs(cosine_similarity(a, b)) < 1e-6
+
+    def test_opposite_vectors(self):
+        """反向向量的相似度为 -1.0。"""
+        from src.aqueduct.memory.embedder import cosine_similarity
+
+        a = [1.0, 0.0, 0.0]
+        b = [-1.0, 0.0, 0.0]
+        assert abs(cosine_similarity(a, b) - (-1.0)) < 1e-6
+
+    def test_dimension_mismatch_raises(self):
+        """维度不匹配时抛出 ValueError。"""
+        from src.aqueduct.memory.embedder import cosine_similarity
+
+        with pytest.raises(ValueError, match="维度不匹配"):
+            cosine_similarity([1.0, 0.0], [1.0, 0.0, 0.0])
+
+    def test_zero_vector(self):
+        """零向量相似度为 0.0。"""
+        from src.aqueduct.memory.embedder import cosine_similarity
+
+        assert cosine_similarity([0.0, 0.0], [1.0, 0.0]) == 0.0
+
+    def test_top_k_similar(self):
+        """Top-K 检索返回正确的排序结果。"""
+        from src.aqueduct.memory.embedder import top_k_similar
+
+        query = [1.0, 0.0, 0.0]
+        candidates = [
+            ("A", [0.9, 0.1, 0.0]),
+            ("B", [0.1, 0.9, 0.0]),
+            ("C", [0.95, 0.05, 0.0]),
+            ("D", [-0.5, 0.5, 0.0]),
+        ]
+        result = top_k_similar(query, candidates, k=2)
+        assert len(result) == 2
+        assert result[0][0] == "C"  # 最高相似度
+        assert result[1][0] == "A"
+
+    def test_top_k_with_threshold(self):
+        """Top-K 检索支持阈值过滤。"""
+        from src.aqueduct.memory.embedder import top_k_similar
+
+        query = [1.0, 0.0]
+        candidates = [
+            ("high", [0.99, 0.01]),
+            ("low", [-0.5, 0.5]),
+        ]
+        result = top_k_similar(query, candidates, k=5, threshold=0.5)
+        assert len(result) == 1
+        assert result[0][0] == "high"
+
+    def test_mock_embedder_semantic_ordering(self):
+        """mock 后端的 Top-K 检索：返回结果不为空。"""
+        from src.aqueduct.memory.embedder import Embedder, top_k_similar
+
+        embedder = Embedder(backend="mock")
+        query_vec = embedder.embed("电商订单统计")
+        candidates = [
+            ("订单分析", embedder.embed("订单分析")),
+            ("完全不同的内容", embedder.embed("完全不同的内容")),
+            ("电商相关", embedder.embed("电商相关")),
+        ]
+        result = top_k_similar(query_vec, candidates, k=3, threshold=-1.0)
+        # mock 后端是哈希向量，语义顺序不确定，但应返回 3 个结果
+        assert len(result) == 3
+        # 第一个结果的相似度应 >= 第二个
+        assert result[0][1] >= result[1][1]

@@ -52,6 +52,13 @@ workspace/
 output/
 node_modules/
 
+# 运行时缓存（表结构缓存、增量管道 manifest）
+.cache/
+.pipeline_manifest.json
+
+# 管道动态生成的知识文件（示例域由 git 跟踪，运行时生成写入 internal/knowledge/）
+knowledge/phase1-clarification-recording.md
+
 # 测试 &  lint 缓存
 .pytest_cache/
 .coverage

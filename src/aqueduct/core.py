@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import logging
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -199,7 +200,7 @@ def _run_pipeline(
     halted = False
     errors: list[str] = []
 
-    # 设置任务级日志
+    # 设置任务级日志（不创建目录，FileHandler 在目录不存在时优雅降级）
     req_name = state.get("metadata", {}).get("requirement_name", "unknown")
     metadata = state.get("metadata", {})
     output_dir_name = metadata.get("output_dir") or req_name
@@ -209,7 +210,8 @@ def _run_pipeline(
     out_dir = Path(output_dir_name)
     if not out_dir.is_absolute():
         out_dir = settings.project_root / "output" / out_dir
-    task_handler = setup_task_logging(req_name, out_dir)
+    log_file_path = out_dir / f"task.{datetime.now():%Y-%m-%d}.log"
+    task_handler = setup_task_logging(req_name, log_file_path)
 
     logger.info("[task=%s] 管道启动: phases=%d", req_name, total)
 

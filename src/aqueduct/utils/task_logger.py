@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -18,25 +17,23 @@ logger = logging.getLogger(__name__)
 
 def setup_task_logging(
     requirement_name: str,
-    output_dir: Path,
+    log_file_path: Path,
 ) -> logging.Handler | None:
     """为当前任务创建独立日志文件。
 
-    在输出目录下创建 task.YYYY-MM-DD.log，添加 FileHandler，
-    日志自动同步写入任务日志文件。
+    在指定路径创建日志文件（不自动创建父目录，
+    父目录由 helpers.get_output_dir() 在保存产出物时创建）。
+    添加 FileHandler，日志自动同步写入任务日志文件。
 
     Args:
         requirement_name: 需求名称（用于日志标识）。
-        output_dir: 任务输出目录。
+        log_file_path: 日志文件完整路径。
 
     Returns:
         添加的 FileHandler 实例（用于后续清理），失败时返回 None。
     """
     try:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        task_log = output_dir / f"task.{datetime.now():%Y-%m-%d}.log"
-
-        handler = logging.FileHandler(str(task_log), encoding="utf-8")
+        handler = logging.FileHandler(str(log_file_path), encoding="utf-8")
         handler.setLevel(logging.DEBUG)
         handler.setFormatter(
             logging.Formatter(
@@ -55,7 +52,7 @@ def setup_task_logging(
         logger.info(
             "[task=%s] 任务日志文件: %s",
             requirement_name,
-            task_log,
+            log_file_path,
         )
         return handler
 

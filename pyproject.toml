@@ -41,6 +41,9 @@ files = [
     "pdfplumber>=0.10",
     "python-docx>=1.0",
 ]
+embeddings = [
+    "sentence-transformers>=3.0",
+]
 
 [project.scripts]
 aqueduct = "aqueduct.cli.main:main"
