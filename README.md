@@ -17,10 +17,10 @@
 
 **Aqueduct automates the mechanical part.**
 
-Give it a requirement document. Get back 11 standardized deliverables: DDL, ETL SQL, DQC test cases, field-level lineage, design documents, and a comprehensive report.
+Give it a requirement document. Get back 15 standardized deliverables: DDL, ETL SQL, DQC test cases, field-level lineage, design documents, and a comprehensive report.
 
 ```text
-Requirement (.md) --> Design (.md) --> DDL (.sql) --> SQL (.sql) --> Review --> DQC (.sql) --> Report (.md) --> Deliverables (11 files)
+Requirement (.md) --> Design (.md) --> DDL (.sql) --> SQL (.sql) --> Review --> DQC (.sql) --> Report (.md) --> Deliverables (15 files)
 ```
 
 ### What makes it different
@@ -36,19 +36,27 @@ Requirement (.md) --> Design (.md) --> DDL (.sql) --> SQL (.sql) --> Review --> 
 | **Full observability** | Per-task log files, phase timing, LLM call tracing, tool execution audit |
 | **Prompt-code decoupled** | Prompts as `.tpl.md` files — edit without touching code, i18n-ready |
 
-### Output: 11 mandatory deliverables
+### Output: 15 standardized deliverables
 
 Every pipeline run produces a standardized output directory:
 
 | # | File | Description |
 |---|------|-------------|
-| 1 | `Phase3-table_ddl.sql` | Target table DDL |
-| 2 | `Phase4-{name}.sql` | ETL SQL with full lineage |
-| 3 | `Phase5-dqc_tests.sql` | DQC test cases (5 categories) |
-| 4 | `Phase6-Design.md` | Design document |
-| 5 | `Phase5-{name}_review.md` | Code review report |
-| 6 | `Phase6-Report.md` | Delivery summary report |
-| 7-11 | Metadata files | Lineage, cost estimate, productivity metrics, etc. |
+| 1 | `Phase1-需求理解摘要.md` | Requirement summary + clarification Q&A |
+| 2 | `Phase2-设计方案.md` | Design scheme (logic + field mapping) |
+| 3 | `Phase3-表结构.sql` | Target table DDL |
+| 4 | `Phase4-{name}.sql` | ETL SQL |
+| 5 | `Phase4-SQL校验报告.md` | SQL validation report |
+| 6 | `Phase4-字段级血缘图.md` | Field-level lineage (Mermaid) |
+| 7 | `Phase4-成本预警.md` | Cost estimation & risk warnings |
+| 8 | `Phase5-{name}_审查报告.md` | Code review report |
+| 9 | `Phase5-数据质量测试.sql` | DQC test cases (5 categories) |
+| 10 | `Phase5-质量仪表盘.md` | Quality dashboard |
+| 11 | `Phase5-DQC执行报告.md` | DQC execution report (when platform configured) |
+| 12 | `Phase6-Design.md` | Design document |
+| 13 | `Phase6-交付总报告.md` | Delivery summary report |
+| 14 | `Phase6-知识沉淀.md` | Knowledge retention |
+| 15 | `Phase6-提效看板.md` | Productivity board |
 
 ---
 
@@ -156,10 +164,10 @@ Confirm? [Y/n/q]: y
   [RUNNING] Phase 3/7: DDL generation
   ...
 
-[OK] Development mode workflow completed, 11 artifact(s):
-  [FILE] output/my_project/表结构.sql
-  [FILE] output/my_project/daily_order_stats.sql
-  [FILE] output/my_project/数据质量测试.sql
+[OK] Development mode workflow completed, 15 artifact(s):
+  [FILE] output/my_project/Phase3-表结构.sql
+  [FILE] output/my_project/Phase4-daily_order_stats.sql
+  [FILE] output/my_project/Phase5-数据质量测试.sql
   ...
 ```
 
@@ -226,10 +234,10 @@ Once configured, `aqueduct dev` automatically executes DQC test cases and popula
 │  Review: requirement --> review --> DQC --> report              │
 ├─────────────────────────────────────────────────────────┤
 │  Skills Layer (BaseSkill ABC)                            │
-│  7 core skills / Prompt-code decoupled (.tpl.md)         │
+│  9 core skills / Prompt-code decoupled (.tpl.md)         │
 ├─────────────────────────────────────────────────────────┤
 │  Tools Layer (BaseTool ABC)                              │
-│  9 atomic tools / SQL parsing / Template rendering       │
+│  10 atomic tools / SQL parsing / Template rendering      │
 ├─────────────────────────────────────────────────────────┤
 │  LLM Layer (BaseLLM ABC)                                 │
 │  3-tier routing: Haiku --> Sonnet --> Opus                  │
@@ -242,8 +250,8 @@ Once configured, `aqueduct dev` automatically executes DQC test cases and popula
 |-------|---------------|-----------|
 | MCP | Data platform integration via standard protocol | `mcp/` |
 | LLM | LLM abstraction, 3-tier routing, context management | `llm/` |
-| Tools | 9 atomic tools: SQL validation, lineage, DQC, cost estimation... | `tools/` |
-| Skills | 7 core skills with `.tpl.md` prompt templates | `skills/` |
+| Tools | 10 atomic tools: SQL validation, lineage, DQC, cost estimation... | `tools/` |
+| Skills | 9 core skills with `.tpl.md` prompt templates | `skills/` |
 | Engine | DAG orchestration, state graph, error recovery | `engine/` |
 | Memory | Ontology knowledge base, domain models, Top-K recall | `memory/` |
 | Config | Pydantic-settings based configuration | `config/` |
@@ -262,7 +270,7 @@ Full pipeline from requirement document to standardized delivery.
 Phase 1: Requirement understanding     (interactive checkpoint)
 Phase 2: Design scheme                 (source analysis + table design)
 Phase 3: DDL generation                (target table structure)
-Phase 4: SQL development               (ETL logic with CTEs)
+Phase 4: SQL development               (ETL logic, derived tables)
 Phase 4.5: Code review                 (automated quality check)
   └── Fix loop: Critical/Warning → auto-fix SQL → back to Phase 4
 Phase 5: DQC quality tests             (5 test categories)
@@ -348,6 +356,8 @@ Add your own domains: create a JSON file in `knowledge/domains/`, and Aqueduct w
 aqueduct/
 |-- .claude/skills/            # Claude Code agent skills
 |   |-- aqueduct/              # Framework invocation
+|   |-- aqueduct-dev/          # CLI pipeline launcher
+|   |-- aqueduct-review/       # SQL review mode
 |   |-- data-developer/        # Full pipeline automation
 |   +-- change-management/     # Requirement change tracking
 |-- src/aqueduct/              # Layered architecture
@@ -355,8 +365,8 @@ aqueduct/
 |   |   |-- adapters/          # Data platform adapters
 |   |   +-- tools/             # MCP tool implementations
 |   |-- llm/                   # LLM base layer
-|   |-- tools/                 # 9 atomic tools + registry
-|   |-- skills/                # 7 core skills + prompt templates
+|   |-- tools/                 # 10 atomic tools + registry
+|   |-- skills/                # 9 core skills + prompt templates
 |   |   +-- prompt/            # .tpl.md prompt templates
 |   |-- engine/                # Agent-DAG layer
 |   |   +-- nodes/             # 8 node modules
@@ -424,7 +434,7 @@ make format
 | **Code as Infrastructure** | The agent framework is a pip-installable Python package — versioned, tested, distributed like any software library |
 | **Ontology over Prompting** | Business knowledge is modeled as structured data (JSON), not buried in prompts. Prompts reference the model, not the other way around |
 | **DAG over Chat** | Data development is a directed acyclic graph, not a conversation. Each node has defined inputs, outputs, and validation rules |
-| **Deliverables over Answers** | The output is not a chat response. It is a set of 11 standardized, production-ready files in a structured directory |
+| **Deliverables over Answers** | The output is not a chat response. It is a set of 15 standardized, production-ready files in a structured directory |
 | **Platform Agnostic** | MCP protocol abstraction means the framework works with any data platform — no vendor lock-in |
 | **Progressive Disclosure** | Simple CLI for beginners (`aqueduct dev req.md`). Full Python API for advanced users. Skills system for customization |
 
@@ -435,7 +445,7 @@ make format
 | Feature | Aqueduct | Raw LLM Chat | dbt | Airflow |
 |---------|----------|-------------|-----|---------|
 | Input | Requirement doc | Free text | YAML config | Python DAG |
-| Output | 11 standardized files | Text response | SQL + tests | Task graph |
+| Output | 15 standardized files | Text response | SQL + tests | Task graph |
 | Code review | Built-in | Manual | PR review | N/A |
 | DQC testing | Auto-generated | Manual | dbt tests | Custom |
 | Knowledge base | Ontology JSON | Context window | Macros | Variables |
@@ -468,7 +478,7 @@ MIT. See [LICENSE](LICENSE).
 
 **Aqueduct 自动化这些重复劳动。**
 
-给它一份需求文档，拿回 11 个标准化交付物：DDL、ETL SQL、DQC 测试用例、字段级血缘、设计文档、完整交付报告。
+给它一份需求文档，拿回 15 个标准化交付物：DDL、ETL SQL、DQC 测试用例、字段级血缘、设计文档、完整交付报告。
 
 ### 核心特性
 

@@ -16,9 +16,9 @@ Aqueduct is built on a strict 7-layer architecture with clear separation of conc
 ├────────────────────────────────────────────────────────────────────┤
 │  Layer 5  Agent-DAG    StateGraph / 8-node DAG / Dual-mode workflow │
 ├────────────────────────────────────────────────────────────────────┤
-│  Layer 4  Skills       7 core skills / .tpl.md prompts / Extensible │
+│  Layer 4  Skills       9 core skills / .tpl.md prompts / Extensible │
 ├────────────────────────────────────────────────────────────────────┤
-│  Layer 3  Tools        9 atomic tools / SQL parser / Registry       │
+│  Layer 3  Tools        10 atomic tools / SQL parser / Registry      │
 ├────────────────────────────────────────────────────────────────────┤
 │  Layer 2  LLM          BaseLLM ABC / 3-tier router / Context mgmt   │
 ├────────────────────────────────────────────────────────────────────┤
@@ -338,7 +338,7 @@ class WorkflowState(TypedDict):
    - Report skill compiles delivery package
    - Productivity tool calculates metrics
    ↓
-10. Output: 11 deliverables in output/
+10. Output: 15 deliverables in output/
 ```
 
 ---

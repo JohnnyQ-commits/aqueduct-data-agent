@@ -5,7 +5,7 @@
 ## 项目简介
 
 **Aqueduct** 是一个工业级数据开发自动化 Agent 框架。
-给定需求文档，自动产出 11 个标准化交付物（DDL、ETL SQL、DQC、血缘图、设计文档等）。
+给定需求文档，自动产出 15 个标准化交付物（DDL、ETL SQL、DQC、血缘图、设计文档等）。
 
 核心特点：
 - **插件直接生成为优先**：日常数据开发优先使用 `/data-developer` 在单次对话中完成，快速高效
@@ -78,12 +78,12 @@ src/aqueduct/
 ├── exceptions.py        # 自定义异常（LLMTimeoutError 等）
 ├── config/settings.py   # Pydantic-settings 配置
 ├── engine/
-│   ├── nodes/           # 7 个 Phase 节点（requirement → report）
+│   ├── nodes/           # 8 个节点（7 个 Phase + change 变更管理）
 │   ├── workflow.py      # StateGraph 定义
 │   ├── recovery.py      # 错误恢复（指数退避）
 │   └── state.py         # WorkflowState TypedDict
-├── skills/              # 7 个业务 Skill + prompt/ 模板
-├── tools/               # 9 个原子工具
+├── skills/              # 9 个业务 Skill + prompt/ 模板
+├── tools/               # 10 个原子工具
 ├── llm/                 # Claude 适配器 + 模型路由
 ├── memory/              # 本体知识库 + Top-K 召回
 └── utils/               # 日志、正则等工具
@@ -103,7 +103,7 @@ src/aqueduct/
 ## 测试方式
 
 ```bash
-# 单元测试 + 集成测试（165 tests）
+# 单元测试 + 集成测试（373 tests）
 python -m pytest tests/ -v
 
 # 端到端验证（需要 LLM API key）
@@ -112,12 +112,14 @@ aqueduct dev examples/ecommerce_daily_stat.md
 
 ## Claude Skills
 
-本项目有 3 个 Claude Code Skills：
+本项目有 5 个 Claude Code Skills：
 
 | Skill | 触发方式 | 用途 | 优先级 |
 |-------|---------|------|--------|
 | `/data-developer` | **默认** — 自然语言数据开发请求 | 单次对话直接生成所有交付物 | ⭐ 最高 |
+| `/aqueduct` | 用户提到"数据开发"、"ETL开发"、"需求转SQL"等 | 框架调用入口，默认路由到 `/data-developer` | 路由层 |
 | `/aqueduct-dev` | 用户明确提到"CLI"、"管道" | 启动 7 阶段 CLI 管道 | 仅明确指定时 |
+| `/aqueduct-review` | 用户要求审查 SQL 变更、对比线上版本 | SQL 审查模式（差异比对 + 需求覆盖度） | — |
 | `/change-management` | 用户提到"变更"、"CR" | 交付后需求变更管理 | — |
 
 ## 配置文件

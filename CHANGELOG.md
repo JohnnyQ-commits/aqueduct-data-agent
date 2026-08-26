@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`aqueduct knowledge sync` command**: rebuilds knowledge base docs (`INDEX.md` + per-domain audit docs) via `SemanticTool`
+- **Business domain schema compatibility**: `memory/domain.py` normalizes both new Skill-generated JSON (`domain_name` / `table` / list `primary_key` / `formula` / `type`) and legacy demo JSON (`name` / `expression` / `cardinality`) into the internal `DomainModel`; dict/list mixed forms supported
+- **Knowledge base dual-directory architecture + Embedder vectorization module**: semantic layer writes only to `internal/knowledge`
+- **Pipeline acceleration + semantic layer write scope**: optimization pass over the pipeline; semantic layer no longer pollutes the user-facing knowledge directory
+- **data-developer Skill v0.4.0**: new Phase 2 stop point — data architecture confirmation with 6 default decision points (target grain / layering / update strategy / source tables / data-eng-vs-backend boundary / scheduling dependency); architecture-level changes require one extra confirmation round; `sql_standards.md` (12 sections) now tracked in git
+
+### Changed
+
+- **CTE policy unified — fully banned**: all SQL standards docs consistently forbid `WITH` clauses; derived tables or TMP tables required instead
+- **Docs count sync**: 10 atomic tools / 9 core skills / 8 nodes / 5 Claude Code skills / 15 deliverables / 373 tests (was 203 at 0.4.2) across CLAUDE.md, README.md, ARCHITECTURE.md
+
 ## [0.4.2] - 2026-07-09
 
 ### Added
