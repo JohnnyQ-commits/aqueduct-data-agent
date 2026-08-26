@@ -210,7 +210,7 @@ select 'total' as channel, total_sales from table
 union all
 select 'hr' as channel, hr_sales from table
 union all
-select 'oa' as channel, pmp_sales from table
+select 'oa' as channel, oa_sales from table
 
 -- ✅ 正确：1 次表扫描
 select
@@ -220,7 +220,7 @@ from table
 lateral view stack(3,
     'total', total_sales,
     'hr', hr_sales,
-    'oa', pmp_sales
+    'oa', oa_sales
 ) stacked_data as channel, sales
 ```
 

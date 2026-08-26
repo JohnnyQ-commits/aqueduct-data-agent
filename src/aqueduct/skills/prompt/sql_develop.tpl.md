@@ -85,7 +85,7 @@ from (
              then coalesce(servicedept, orgcode)
              else orgcode
         end as dept_code
-    from emp_info_di
+    from dwd.emp_info_di
     where inc_day = '$[time(yyyyMMdd,-1d)]'
         and status = '1'
 ) s
@@ -93,7 +93,7 @@ left join dim_dept_info_df d
     on s.dept_code = d.dept_code
 
 -- ❌ 错误：JOIN ON 中写 CASE WHEN
-from emp_info_di s
+from dwd.emp_info_di s
 left join dim_dept_info_df d
     on (case when s.positionname = '配送员'
              then coalesce(s.servicedept, s.orgcode)
@@ -116,7 +116,7 @@ inner join (
         division_name,
         area_code,
         area_name
-    from dim.dim_dept_info_df
+    from dwd.dim_dept_info_df
     where inc_day = '$[time(yyyyMMdd,-1d)]'
         and area_code in ('R01','R02','R03','R08')
 ) d on s.dept_code = d.dept_code
@@ -124,7 +124,7 @@ inner join (
 -- ❌ 错误：子查询中字段横排
 inner join (
     select dept_code, dept_name, division_code, division_name, area_code, area_name
-    from dim.dim_dept_info_df
+    from dwd.dim_dept_info_df
     where ...
 ) d on s.dept_code = d.dept_code
 ```
@@ -143,7 +143,7 @@ inner join (
         dept_code,
         dept_name,
         area_code
-    from dim.dim_dept_info_df
+    from dwd.dim_dept_info_df
     where inc_day = '$[time(yyyyMMdd,-1d)]'
         and area_code in ('R01','R02','R03','R08')
         and dept_type_code not in ('DT01-A','DT01-B')
@@ -151,7 +151,7 @@ inner join (
 
 -- ❌ 错误：过滤条件放在外层 WHERE
 from staff_base s
-left join dim.dim_dept_info_df d
+left join dwd.dim_dept_info_df d
     on s.dept_code = d.dept_code
 where d.area_code in ('R01','R02','R03','R08')
     and d.dept_type_code not in ('DT01-A','DT01-B')
@@ -186,7 +186,7 @@ left join area_config ac     on s.loginid = ac.loginid        -- 不过滤，全
 from staff_base s
 inner join (
     select dept_code, dept_name, area_code
-    from dim.dim_dept_info_df
+    from dwd.dim_dept_info_df
     where inc_day = '$[time(yyyyMMdd,-1d)]'
         and area_code in ('R01','R02','R03','R08')    -- 过滤在子查询内
 ) d on s.dept_code = d.dept_code

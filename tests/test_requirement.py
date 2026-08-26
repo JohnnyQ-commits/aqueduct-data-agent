@@ -15,7 +15,7 @@ from aqueduct.engine.nodes.requirement import (
 
 class TestPreprocessMarkdown:
     def test_unescapes_underscore(self):
-        assert _preprocess_markdown(r"dw\_demo") == "dw_demo"
+        assert _preprocess_markdown(r"dwd\_emp\_info\_di") == "dwd_emp_info_di"
 
     def test_unescapes_equals(self):
         assert _preprocess_markdown(r"type\=8") == "type=8"
@@ -32,7 +32,7 @@ class TestIsNoise:
         assert _is_noise("screenshot.jpg") is True
 
     def test_real_table_names(self):
-        assert _is_noise("dw_demo.area_config") is False
+        assert _is_noise("dw_demo.dim_area_conf") is False
         assert _is_noise("dm_demo.dw_emp_base") is False
         assert _is_noise("my_db.users") is False
 
@@ -47,8 +47,8 @@ class TestExtractTargetTable:
         assert _extract_target_table(text) == "my_db.target_table"
 
     def test_markdown_escaped_label(self):
-        text = r"MCP表：dw\_demo.area\_config"
-        assert _extract_target_table(text) == "dw_demo.area_config"
+        text = r"MCP表：dw\_demo.dim\_area\_conf"
+        assert _extract_target_table(text) == "dw_demo.dim_area_conf"
 
     def test_three_part_name(self):
         text = "some text db_name.schema_name.table_name more text"
@@ -62,12 +62,12 @@ class TestExtractTargetTable:
 class TestExtractTableNames:
     def test_extracts_real_tables(self):
         text = r"""
-        MCP表：dw\_demo.area\_config\_partitioned
+        MCP表：dw\_demo.dim\_area\_conf\_partitioned
         表：dm\_demo.dw\_emp\_usage\_dtl
         表：dm\_app.tmp\_novice\_train\_stat\_rpt
         """
         names = _extract_table_names(text)
-        assert "dw_demo.area_config_partitioned" in names
+        assert "dw_demo.dim_area_conf_partitioned" in names
         assert "dm_demo.dw_emp_usage_dtl" in names
         assert "dm_app.tmp_novice_train_stat_rpt" in names
 

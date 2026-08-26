@@ -251,7 +251,7 @@
          orgcode,
          servicedept,
          inc_day
-     from dw_demo.emp_info_di
+     from dwd.emp_info_di
      where inc_day = '$[time(yyyyMMdd,-1d)]'
          and status = '1'
          and isdeleted = '0'
@@ -260,7 +260,7 @@
  inner join (                                                      -- 属性维度：过滤推入子查询
      select
          dept_code
-     from dim.dim_dept_info_df
+     from dwd.dim_dept_info_df
      where inc_day = '$[time(yyyyMMdd,-1d)]'
          and hq_code in ('R01','R02','R03','R08')
  ) d on s.dept_code = d.dept_code

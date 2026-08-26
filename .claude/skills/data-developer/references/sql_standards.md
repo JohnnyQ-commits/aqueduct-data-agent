@@ -32,9 +32,9 @@
 - ❌ `dw_demo.tmp_diagnosis_dim_dept`
 
 ### 1.4 维度表来源
-- **必须用专用维度表** `dim.dim_dept_info_df`
+- **必须用专用维度表** `dwd.dim_dept_info_df`
 - ❌ 不要用业务表构建维度（会导致数据缺失）
-- ✅ `from dim.dim_dept_info_df where inc_day = '20260806'`
+- ✅ `from dwd.dim_dept_info_df where inc_day = '20260806'`
 - ❌ `from olap.dwd_demo.emp_attendance_detail`（考勤表）
 - **复用原则**：多个 SQL 需要相同维度表时，复用已创建的，不重复建表
 
@@ -269,7 +269,7 @@
   lateral view stack(3,
       'total', total_headcount,
       'hr', hr_headcount,
-      'oa', pmp_headcount
+      'oa', oa_headcount
   ) stacked_data as channel, headcount
   ```
 

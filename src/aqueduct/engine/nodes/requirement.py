@@ -147,7 +147,7 @@ def _extract_table_names(text: str) -> list[str]:
         name = f"{m.group(1)}.{m.group(2)}"
         if _is_noise(name) or name in seen:
             continue
-        # 若已是三段式表名的子串则跳过（避免 dw_demo.xxx 与 xxx.yyy 重复）
+        # 若已是三段式表名的子串则跳过（避免 db.schema.table 与 schema.table 重复）
         seen.add(name)
         result.append(name)
 
