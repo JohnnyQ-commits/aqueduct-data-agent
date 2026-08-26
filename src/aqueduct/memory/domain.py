@@ -71,6 +71,81 @@ class ComputationChain(BaseModel):
     risk_threshold: str = ""  # 预警阈值
 
 
+def _to_str(value: Any) -> str:
+    """任意值转字符串：str 原样返回，其余 JSON 序列化。"""
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _normalize_entity(ent: dict[str, Any]) -> dict[str, Any]:
+    """实体字段归一: table→source、primary_key list→str。"""
+    ent = dict(ent)
+    if "table" in ent and "source" not in ent:
+        ent["source"] = ent.pop("table")
+    if isinstance(ent.get("primary_key"), list):
+        ent["primary_key"] = ", ".join(ent["primary_key"])
+    return ent
+
+
+def _normalize_metric(metric: dict[str, Any]) -> dict[str, Any]:
+    """指标字段归一: formula→expression。"""
+    metric = dict(metric)
+    if "formula" in metric and "expression" not in metric:
+        metric["expression"] = metric.pop("formula")
+    return metric
+
+
+def _normalize_relationship(rel: dict[str, Any]) -> dict[str, Any]:
+    """关系字段归一: type→cardinality。"""
+    rel = dict(rel)
+    if "type" in rel and "cardinality" not in rel:
+        rel["cardinality"] = rel.pop("type")
+    return rel
+
+
+def _normalize_domain_data(data: dict[str, Any]) -> dict[str, Any]:
+    """兼容新旧两种业务域 JSON schema，统一转为内部模型结构。
+
+    新 schema（data-developer Skill Phase 6 生成）:
+        域名为 domain_name；entities/metrics 为 list；
+        实体物理表为 table、主键为 list；指标公式为 formula；关系基数为 type。
+    旧 schema（demo 域）:
+        域名为 name；entities/metrics 为 dict；指标公式为 expression；关系基数为 cardinality。
+    dict 与 list 形态均做字段级归一（兼容两者混用的过渡 schema）。
+    """
+    data = dict(data)
+
+    # 域名: domain_name → name
+    if "domain_name" in data and "name" not in data:
+        data["name"] = data["domain_name"]
+
+    # entities: list 转 dict（key 为实体名），dict 保留原 key；统一做字段归一
+    if isinstance(data.get("entities"), list):
+        data["entities"] = {e.get("name", ""): _normalize_entity(e) for e in data["entities"]}
+    elif isinstance(data.get("entities"), dict):
+        data["entities"] = {k: _normalize_entity(v) for k, v in data["entities"].items()}
+
+    # metrics: list 转 dict（key 为指标名），dict 保留原 key；统一做字段归一
+    if isinstance(data.get("metrics"), list):
+        data["metrics"] = {m.get("name", ""): _normalize_metric(m) for m in data["metrics"]}
+    elif isinstance(data.get("metrics"), dict):
+        data["metrics"] = {k: _normalize_metric(v) for k, v in data["metrics"].items()}
+
+    # business_rules: list → dict；dict 形态的 value 统一转 str（自由扩展结构序列化保留）
+    rules = data.get("business_rules")
+    if isinstance(rules, list):
+        data["business_rules"] = {f"rule_{i}": _to_str(rule) for i, rule in enumerate(rules, 1)}
+    elif isinstance(rules, dict):
+        data["business_rules"] = {k: _to_str(v) for k, v in rules.items()}
+
+    # relationships: 统一做字段归一
+    if isinstance(data.get("relationships"), list):
+        data["relationships"] = [_normalize_relationship(r) for r in data["relationships"]]
+
+    return data
+
+
 class DomainModel(BaseModel):
     """业务域本体模型 — 完整定义一个业务领域。"""
 
@@ -90,6 +165,8 @@ class DomainModel(BaseModel):
     def from_json(cls, path: str | Path) -> DomainModel:
         """从 JSON 文件加载业务域模型。
 
+        兼容新旧两种 schema（见 _normalize_domain_data）。
+
         Args:
             path: JSON 文件路径。
 
@@ -100,12 +177,10 @@ class DomainModel(BaseModel):
         if not path.exists():
             raise FileNotFoundError(f"领域模型文件不存在: {path}")
 
-        import json
-
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
 
-        return cls.model_validate(data)
+        return cls.model_validate(_normalize_domain_data(data))
 
     def to_json(self, path: str | Path) -> None:
         """保存业务域模型到 JSON 文件。

@@ -160,6 +160,10 @@ class MemoryStore:
                 domain = self.load(domain_id)
             except DomainNotFoundError:
                 continue
+            except Exception:
+                # 单个域 JSON 结构异常时跳过，不阻断整体召回
+                logger.warning("业务域 '%s' 加载失败，已跳过", domain_id, exc_info=True)
+                continue
 
             score = self._score_domain(domain, keywords)
             if score > best_score:

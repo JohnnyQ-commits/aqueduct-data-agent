@@ -423,11 +423,29 @@ class TestMemoryIntegration:
         # 验证缓存命中
         assert domain1 is domain2
 
-    def test_knowledge_recall_matches_domain(self):
-        """测试知识召回能匹配到相关业务域。"""
-        from src.aqueduct.memory.recall import KnowledgeRecall
+    def test_knowledge_recall_matches_domain(self, tmp_path):
+        """测试知识召回能匹配到相关业务域。
 
-        recall = KnowledgeRecall()
+        使用只含 ecommerce_order 域的受控目录（并隔离动态域目录），
+        避免知识库其他域加入后的得分竞争影响断言。
+        """
+        import shutil
+
+        from src.aqueduct.memory.recall import KnowledgeRecall
+        from src.aqueduct.memory.store import MemoryStore
+
+        domains_dir = tmp_path / "domains"
+        domains_dir.mkdir()
+        dynamic_dir = tmp_path / "dynamic"
+        dynamic_dir.mkdir()
+        shutil.copy(
+            Path(__file__).resolve().parents[2] / "knowledge/domains/ecommerce_order/domain.json",
+            domains_dir / "ecommerce_order.json",
+        )
+
+        recall = KnowledgeRecall(
+            store=MemoryStore(domains_dir=domains_dir, dynamic_dir=dynamic_dir)
+        )
         result = recall.recall("电商 订单 统计")
 
         assert result["domain_id"] == "ecommerce_order"

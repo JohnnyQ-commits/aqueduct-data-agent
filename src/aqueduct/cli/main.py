@@ -10,6 +10,7 @@ Windows GBK 编码兼容：强制 UTF-8 stdout/stderr，所有输出使用 ASCII
     aqueduct review online.sql changed.sql
     aqueduct validate sql_file.sql --strict
     aqueduct status
+    aqueduct knowledge sync
 """
 
 from __future__ import annotations
@@ -361,6 +362,26 @@ def _validate_sql(args: argparse.Namespace) -> int:
         return 1
 
 
+def _knowledge_sync(args: argparse.Namespace) -> int:
+    """重建知识库文档：INDEX.md + 各域审计文档（SemanticTool）。"""
+    from ..tools.semantic import SemanticTool
+
+    result = SemanticTool().execute(
+        domains_dir=str(get_settings().project_root / "knowledge/domains"),
+        mode="all",
+    )
+    if not result.success:
+        print(f"[FAIL] {result.error}", file=sys.stderr)
+        return 1
+
+    data = result.data or {}
+    files = data.get("files", [])
+    print(f"[OK] knowledge docs regenerated ({data.get('domain_count', 0)} domains)")
+    for f in files:
+        print(f"  - {f}")
+    return 0
+
+
 def _status(args: argparse.Namespace) -> int:
     """项目状态概览。"""
     settings = get_settings()
@@ -454,6 +475,17 @@ def create_parser() -> argparse.ArgumentParser:
         help="Project status overview",
     )
 
+    # knowledge 命令 — 知识库文档管理
+    knowledge_parser = subparsers.add_parser(
+        "knowledge",
+        help="Knowledge base management",
+    )
+    knowledge_subparsers = knowledge_parser.add_subparsers(dest="knowledge_command")
+    knowledge_subparsers.add_parser(
+        "sync",
+        help="Regenerate knowledge/INDEX.md and per-domain docs from knowledge/domains/",
+    )
+
     # change 命令 — 变更管理
     change_parser = subparsers.add_parser(
         "change",
@@ -467,6 +499,14 @@ def create_parser() -> argparse.ArgumentParser:
     change_parser.add_argument("--output", "-o", help="Output directory")
 
     return parser
+
+
+def _knowledge(args: argparse.Namespace) -> int:
+    """knowledge 命令入口 — 按 knowledge_command 分发。"""
+    if args.knowledge_command == "sync":
+        return _knowledge_sync(args)
+    print("Usage: aqueduct knowledge sync", file=sys.stderr)
+    return 1
 
 
 def main() -> int:
@@ -489,6 +529,7 @@ def main() -> int:
         "change": _change_mode,
         "validate": _validate_sql,
         "status": _status,
+        "knowledge": _knowledge,
     }
 
     handler = commands.get(args.command)
