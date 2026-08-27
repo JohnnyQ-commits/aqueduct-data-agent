@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-27
+
 ### Added
 
 - **`aqueduct knowledge sync` command**: rebuilds knowledge base docs (`INDEX.md` + per-domain audit docs) via `SemanticTool`

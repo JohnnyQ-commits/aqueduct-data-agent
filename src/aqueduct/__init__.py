@@ -3,5 +3,5 @@
 from .core import Aqueduct, AqueductResult
 from .exceptions import AqueductError, LLMTimeoutError
 
-__version__ = "0.4.2"
+__version__ = "0.5.0"
 __all__ = ["Aqueduct", "AqueductError", "AqueductResult", "LLMTimeoutError", "__version__"]
