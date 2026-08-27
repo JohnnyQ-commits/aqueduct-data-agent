@@ -49,10 +49,10 @@ embeddings = [
 aqueduct = "aqueduct.cli.main:main"
 
 [project.urls]
-Homepage = "https://github.com/JohnnyQ-commits/aqueduct"
-Repository = "https://github.com/JohnnyQ-commits/aqueduct"
-Issues = "https://github.com/JohnnyQ-commits/aqueduct/issues"
-Changelog = "https://github.com/JohnnyQ-commits/aqueduct/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/JohnnyQ-commits/aqueduct-data-agent"
+Repository = "https://github.com/JohnnyQ-commits/aqueduct-data-agent"
+Issues = "https://github.com/JohnnyQ-commits/aqueduct-data-agent/issues"
+Changelog = "https://github.com/JohnnyQ-commits/aqueduct-data-agent/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 where = ["src"]

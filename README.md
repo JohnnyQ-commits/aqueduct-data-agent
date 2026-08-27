@@ -2,7 +2,7 @@
 
 **Data Engineering Automation Agent Framework**
 
-[![CI](https://github.com/JohnnyQ-commits/aqueduct/actions/workflows/ci.yml/badge.svg)](https://github.com/JohnnyQ-commits/aqueduct/actions/workflows/ci.yml)
+[![CI](https://github.com/JohnnyQ-commits/aqueduct-data-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/JohnnyQ-commits/aqueduct-data-agent/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Status](https://img.shields.io/badge/status-alpha-orange)
@@ -65,8 +65,8 @@ Every pipeline run produces a standardized output directory:
 ### From source (recommended for now)
 
 ```bash
-git clone https://github.com/JohnnyQ-commits/aqueduct.git
-cd aqueduct
+git clone https://github.com/JohnnyQ-commits/aqueduct-data-agent.git
+cd aqueduct-data-agent
 pip install -e .
 ```
 
@@ -459,8 +459,8 @@ make format
 
 Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
-- Report bugs via [GitHub Issues](https://github.com/JohnnyQ-commits/aqueduct/issues)
-- Suggest features via [GitHub Discussions](https://github.com/JohnnyQ-commits/aqueduct/discussions)
+- Report bugs via [GitHub Issues](https://github.com/JohnnyQ-commits/aqueduct-data-agent/issues)
+- Suggest features via [GitHub Discussions](https://github.com/JohnnyQ-commits/aqueduct-data-agent/discussions)
 - Security issues: see [SECURITY.md](SECURITY.md)
 
 ---
@@ -503,8 +503,8 @@ MIT. See [LICENSE](LICENSE).
 
 ```bash
 # 安装
-git clone https://github.com/JohnnyQ-commits/aqueduct.git
-cd aqueduct
+git clone https://github.com/JohnnyQ-commits/aqueduct-data-agent.git
+cd aqueduct-data-agent
 pip install -e .
 
 # 开发模式：需求文档 -> 完整交付
