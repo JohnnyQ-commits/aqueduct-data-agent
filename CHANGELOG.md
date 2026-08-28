@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Phase 4 now receives the original requirement document** (CLI quality fix, root cause 1): `node_sql` passes `requirement_doc` into the `sql_develop` Skill, and the prompt template renders it alongside the summary — SQL generation is no longer limited to the lossy Phase 1 summary (field semantics, boundary conditions and implicit constraints are preserved)
+- **`requirement_parse` routed to the Sonnet tier** (root cause 2): requirement parsing no longer uses the weakest model tier; the change-management flow benefits, and the main pipeline Phase 1 already routes via `design_ddl` (Sonnet) since the OPT-5 three-in-one merge
+
 ## [0.5.0] - 2026-08-27
 
 ### Added

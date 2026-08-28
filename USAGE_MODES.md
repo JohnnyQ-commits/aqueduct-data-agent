@@ -329,7 +329,7 @@ state: WorkflowState = {
     "artifacts": [],
 }
 
-# Phase 1: 用 Haiku
+# Phase 1: 三合一（需求摘要+方案+DDL），Sonnet 档
 state = node_requirement(state)
 print(state["requirement_summary"])
 
@@ -337,7 +337,7 @@ print(state["requirement_summary"])
 if input("确认？(y/n)") != "y":
     exit()
 
-# Phase 2: 用 Sonnet
+# Phase 2: Sonnet（Phase 1 三合一已完成时自动跳过）
 state = node_design(state)
 print(state["design_scheme"])
 

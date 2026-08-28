@@ -23,7 +23,6 @@ logger = logging.getLogger(__name__)
 # 任务类型分类
 ANALYSIS_TASKS = frozenset(
     [
-        "requirement_parse",  # 需求解析
         "summarize",  # 摘要生成
         "board_stats",  # 提效看板统计
         "semantic_recall",  # 语义召回
@@ -33,6 +32,7 @@ ANALYSIS_TASKS = frozenset(
 
 MEDIUM_TASKS = frozenset(
     [
+        "requirement_parse",  # 需求解析（Sonnet 档：摘要质量决定下游全链路，见根因分析 TODO-2）
         "scheme_write",  # 方案编写
         "ddl_gen",  # DDL 生成
         "doc_gen",  # 文档输出

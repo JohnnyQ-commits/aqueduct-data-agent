@@ -21,6 +21,7 @@
 
 ## 输入
 
+- 原始需求文档: $requirement_doc
 - 需求摘要: $requirement_summary
 - 目标表 DDL: $ddl_content
 - 设计方案: $design_scheme

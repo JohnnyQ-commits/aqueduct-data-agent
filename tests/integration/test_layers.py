@@ -194,8 +194,8 @@ class TestLLMIntegration:
 
         router = ModelRouter()
 
-        # 分析类 → Haiku
-        haiku_llm = router.route("requirement_parse")
+        # 分析类 → Haiku（requirement_parse 已升级 Sonnet，见根因分析 TODO-2）
+        haiku_llm = router.route("summarize")
         assert haiku_llm is not None
 
         # 中等生成 → Sonnet
@@ -220,7 +220,7 @@ class TestLLMIntegration:
         from src.aqueduct.llm.router import ModelRouter
 
         router = ModelRouter()
-        haiku = router.route("requirement_parse")
+        haiku = router.route("summarize")
         sonnet = router.route("scheme_write")
         opus = router.route("sql_gen")
 

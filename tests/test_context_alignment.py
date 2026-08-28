@@ -313,8 +313,12 @@ class TestPhase4Redundancy:
             "artifacts": [],
         }
 
-    def test_sql_node_passes_summary_not_full_doc(self):
-        """sql 节点应传递 requirement_summary 而非完整 requirement_doc。"""
+    def test_sql_node_passes_full_doc_and_summary(self):
+        """sql 节点应同时传递原始需求文档和需求摘要（根因分析 TODO-1）。
+
+        旧决策（0.4.1 传摘要省 token）已推翻：摘要是有损压缩，
+        Phase 4（Opus）需要原始需求文档兜住字段语义、边界条件、隐含约束。
+        """
         state = self._make_state()
         captured_input = {}
 
@@ -337,9 +341,10 @@ class TestPhase4Redundancy:
         ):
             node_sql(state)
 
-        # 不应传递完整需求文档
-        assert "requirement_doc" not in captured_input, "不应传递 requirement_doc"
-        # 应传递需求摘要
+        # 应传递完整需求文档（TODO-1：原始需求不再丢弃）
+        assert "requirement_doc" in captured_input, "应传递 requirement_doc"
+        assert captured_input["requirement_doc"] == "完整需求文档" * 50
+        # 应同时传递需求摘要
         assert "requirement_summary" in captured_input, "应传递 requirement_summary"
         assert captured_input["requirement_summary"] == "需求摘要：统计每日各城市订单量"
 
@@ -403,6 +408,8 @@ class TestAllPhaseKeyAlignment:
         assert result.success
         prompt = result.data["prompt"]
         assert "需求" in prompt
+        # TODO-3：Phase 1 摘要经 state 兜底注入（design_ddl skill 的 inp-or-state 解析）
+        assert "摘要" in prompt, "requirement_summary 应注入 design_ddl prompt"
         assert "dw.test_table" in prompt
 
     def test_phase4_keys(self):
