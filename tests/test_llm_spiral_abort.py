@@ -189,3 +189,49 @@ class TestSpiralAbort:
 
         assert response.content == ""
         assert stream.consumed == 1, "阈值 5000 时第一个事件即中止"
+
+    def test_spiral_aborts_on_local_thinking_estimate(self, fresh_settings, monkeypatch):
+        """本地思考字符估算触发中止（无任何 message_delta usage 事件）。
+
+        实测（2026-08-31 复测日志）：网关只在流末尾才发 usage 增量——
+        message_delta 信号中止时 output_tokens 已是 32768，止损没兑现。
+        thinking_delta 文本增量是唯一的中途信号：本地估算累计思考 token。
+        """
+
+        monkeypatch.setenv("AQUEDUCT_LLM_BACKEND", "sdk")
+        monkeypatch.delenv("AQUEDUCT_LLM_SPIRAL_ABORT_TOKENS", raising=False)
+
+        events = [
+            # 思考增量：4000 汉字 ≈ 6000 tokens（estimate_tokens 1.5/字）
+            _event("content_block_delta", delta=SimpleNamespace(type="thinking_delta", thinking="思" * 4000)),
+            # 累计 12000 ≥ 阈值 12000 → 中止
+            _event("content_block_delta", delta=SimpleNamespace(type="thinking_delta", thinking="考" * 4000)),
+            # 不应到达
+            _event("content_block_delta", delta=_delta("text_delta", "SELECT 1")),
+        ]
+        stream = FakeEventStream(events)
+        _install_stream(monkeypatch, stream)
+
+        response = _make_llm().chat([LLMMessage(role="user", content="t")])
+
+        assert response.content == ""
+        assert stream.consumed == 2, "本地估算达阈值即中止，不等流末尾 usage"
+
+    def test_healthy_thinking_est_below_threshold_completes(self, fresh_settings, monkeypatch):
+        """思考低于阈值的健康调用：本地估算不误杀，正常出正文。"""
+
+        monkeypatch.setenv("AQUEDUCT_LLM_BACKEND", "sdk")
+        monkeypatch.delenv("AQUEDUCT_LLM_SPIRAL_ABORT_TOKENS", raising=False)
+
+        events = [
+            # 4000 汉字 ≈ 6000 tokens < 12000
+            _event("content_block_delta", delta=SimpleNamespace(type="thinking_delta", thinking="思" * 4000)),
+            _event("content_block_delta", delta=_delta("text_delta", "SELECT 1")),
+        ]
+        stream = FakeEventStream(events)
+        _install_stream(monkeypatch, stream)
+
+        response = _make_llm().chat([LLMMessage(role="user", content="t")])
+
+        assert response.content == "SELECT 1"
+        assert stream.consumed == 2

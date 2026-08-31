@@ -315,6 +315,7 @@ class ClaudeLLM(BaseLLM):
         )
 
         content = ""
+        thinking_tokens_est = 0
         prompt_tokens = 0
         output_tokens = 0
         final_response = None
@@ -339,11 +340,22 @@ class ClaudeLLM(BaseLLM):
                             output_tokens = tracked
                 elif etype == "content_block_delta":
                     delta = getattr(event, "delta", None)
-                    if getattr(delta, "type", "") == "text_delta":
+                    dtype = getattr(delta, "type", "")
+                    if dtype == "text_delta":
                         content += getattr(delta, "text", "") or ""
+                    elif dtype == "thinking_delta":
+                        # 本地估算累计思考 token（实测部分网关 message_delta
+                        # 只在流末尾携带 usage——思考增量文本是唯一中途信号）
+                        thinking_tokens_est += self.estimate_tokens(
+                            getattr(delta, "thinking", "") or ""
+                        )
 
-                # 思考螺旋检测：零正文 + 累计输出超阈值 → 注定烧光 max_tokens
-                if abort_tokens > 0 and not content and output_tokens >= abort_tokens:
+                # 思考螺旋检测（双信号取大者）：零正文 + 累计输出超阈值
+                # → 注定烧光 max_tokens。
+                # 信号 1: message_delta 累计 output_tokens（权威，部分网关仅流末尾发送）
+                # 信号 2: 本地思考字符估算（始终可用，提前止损的主要信号）
+                burned = max(output_tokens, thinking_tokens_est)
+                if abort_tokens > 0 and not content and burned >= abort_tokens:
                     spiral_aborted = True
                     break
 
@@ -352,20 +364,23 @@ class ClaudeLLM(BaseLLM):
 
         if spiral_aborted:
             logger.warning(
-                "[model=%s] 思考螺旋提前中止: 累计 output_tokens=%d 超阈值 %d 仍无正文，"
-                "返回空内容交由上层重试（单次止损 %d/%d tokens）",
+                "[model=%s] 思考螺旋提前中止: 累计输出≈%d tokens（usage=%d/本地估算=%d）"
+                "超阈值 %d 仍无正文，返回空内容交由上层重试（单次止损 %d/%d tokens）",
                 self._model_id,
+                max(output_tokens, thinking_tokens_est),
                 output_tokens,
+                thinking_tokens_est,
                 abort_tokens,
-                output_tokens,
+                max(output_tokens, thinking_tokens_est),
                 max_tokens,
             )
+            burned = max(output_tokens, thinking_tokens_est)
             return LLMResponse(
                 content="",
                 usage=LLMUsage(
                     prompt_tokens=prompt_tokens,
-                    completion_tokens=output_tokens,
-                    total_tokens=prompt_tokens + output_tokens,
+                    completion_tokens=burned,
+                    total_tokens=prompt_tokens + burned,
                 ),
                 model=self._model_id,
                 finish_reason="spiral_abort",
