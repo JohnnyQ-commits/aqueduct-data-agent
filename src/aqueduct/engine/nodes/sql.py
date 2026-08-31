@@ -53,6 +53,9 @@ def node_sql(state: WorkflowState) -> WorkflowState:
                     "ddl_content": state.get("ddl_content", ""),
                     "design_scheme": state.get("design_scheme", ""),
                     "domain_context": state.get("domain_context", ""),
+                    # 真实源表结构（MCP 查询，Phase 1 写入 state）——
+                    # SQL 字段引用以此为准，不再依赖摘要转述
+                    "table_schemas": state.get("table_schemas", {}),
                 },
                 state=state,
             )

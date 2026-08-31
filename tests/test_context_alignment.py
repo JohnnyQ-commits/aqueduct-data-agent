@@ -484,3 +484,134 @@ class TestAllPhaseKeyAlignment:
         prompt = result.data["prompt"]
         assert "测试需求" in prompt
         assert "graph LR" in prompt
+
+
+class TestPhase4TableSchemas:
+    """Phase 4 真实源表 schema 注入测试。
+
+    背景：table_schemas（MCP 查询的真实表结构）此前只注入 Phase 1 prompt，
+    Phase 4 生成 SQL 时只能看到两层转述（Phase 1 摘要 → Phase 2 设计方案），
+    字段名/类型引用靠转述。本测试锁死 schema 直达 Phase 4 的链路：
+    node_sql 传入 → sql_develop 渲染 → state 兜底 → 缺失时显式占位。
+    """
+
+    SCHEMAS = {
+        "dwd.order_detail": (
+            "表: dwd.order_detail\n"
+            "注释: 订单明细表\n"
+            "字段 (3 个):\n"
+            "  - order_id (bigint) — 订单号\n"
+            "  - city (string) — 下单城市\n"
+            "  - inc_day (string)"
+        )
+    }
+
+    @staticmethod
+    def _make_state(table_schemas: dict | None) -> dict:
+        state = {
+            "requirement": "完整需求文档" * 50,
+            "requirement_summary": "需求摘要：统计每日各城市订单量",
+            "ddl_content": "CREATE TABLE stats (city string, cnt bigint) PARTITIONED BY (inc_day string)",
+            "design_scheme": "源表: dwd.order_detail, 按 city 分组, COUNT(order_id)",
+            "domain_context": "实体: Order",
+            "metadata": {"requirement_name": "test"},
+            "errors": [],
+            "artifacts": [],
+        }
+        if table_schemas is not None:
+            state["table_schemas"] = table_schemas
+        return state
+
+    def test_sql_node_passes_table_schemas(self):
+        """sql 节点应把 state["table_schemas"] 传入 Skill input。"""
+        state = self._make_state(dict(self.SCHEMAS))
+        captured_input = {}
+        original_execute = SQLDevelopSkill.execute
+
+        def capture_execute(self_skill, context: SkillContext):
+            inp = context.input if isinstance(context.input, dict) else {}
+            captured_input.update(inp)
+            return original_execute(self_skill, context)
+
+        with (
+            patch.object(SQLDevelopSkill, "execute", capture_execute),
+            patch(
+                "src.aqueduct.engine.nodes.sql.call_llm",
+                return_value="```sql\nSELECT 1\n```",
+            ),
+            patch("src.aqueduct.engine.nodes.sql.extract_sql_block", return_value="SELECT 1"),
+            patch("src.aqueduct.engine.nodes.sql.save_artifact", return_value=""),
+            patch("src.aqueduct.engine.nodes.sql.is_valid_sql", return_value=True),
+            patch("src.aqueduct.engine.nodes.sql._auto_validate"),
+            patch("src.aqueduct.engine.nodes.sql._auto_trial_run"),
+            patch("src.aqueduct.engine.nodes.sql._auto_lineage_async"),
+            patch("src.aqueduct.engine.nodes.sql._auto_cost_estimate"),
+        ):
+            node_sql(state)
+
+        assert captured_input.get("table_schemas") == self.SCHEMAS, (
+            "node_sql 应将 state['table_schemas'] 传入 sql_develop Skill"
+        )
+
+    def test_sql_develop_renders_table_schemas(self):
+        """sql_develop Skill 应把表结构文本渲染进 prompt（字段级原文）。"""
+        skill = SQLDevelopSkill()
+        context = SkillContext(
+            input={
+                "requirement_doc": "统计每日订单量",
+                "requirement_summary": "摘要",
+                "ddl_content": "CREATE TABLE t (id bigint)",
+                "design_scheme": "源表: dwd.order_detail, 按 city 分组",
+                "domain_context": "",
+                "table_schemas": dict(self.SCHEMAS),
+            },
+            state={},
+        )
+
+        result = skill.execute(context)
+
+        assert result.success
+        prompt = result.data["prompt"]
+        assert "dwd.order_detail" in prompt, "源表名应出现在 prompt"
+        assert "order_id (bigint)" in prompt, "字段级 schema 原文应出现在 prompt"
+
+    def test_sql_develop_state_fallback(self):
+        """inp 未传 table_schemas 时从 state 兜底（Phase 1 写入 state）。"""
+        skill = SQLDevelopSkill()
+        context = SkillContext(
+            input={
+                "requirement_doc": "统计每日订单量",
+                "requirement_summary": "摘要",
+                "ddl_content": "CREATE TABLE t (id bigint)",
+                "design_scheme": "源表: dwd.order_detail, 按 city 分组",
+                "domain_context": "",
+            },
+            state={"table_schemas": dict(self.SCHEMAS)},
+        )
+
+        result = skill.execute(context)
+
+        assert result.success
+        assert "order_id (bigint)" in result.data["prompt"], (
+            "state 中的 table_schemas 应兜底注入（inp-or-state 模式）"
+        )
+
+    def test_sql_develop_missing_schemas_placeholder(self):
+        """无表结构时渲染显式占位，模型知道 schema 非权威来源。"""
+        skill = SQLDevelopSkill()
+        context = SkillContext(
+            input={
+                "requirement_doc": "统计每日订单量",
+                "requirement_summary": "摘要",
+                "ddl_content": "CREATE TABLE t (id bigint)",
+                "design_scheme": "源表: orders, 按 city 分组",
+                "domain_context": "",
+            },
+            state={},
+        )
+
+        result = skill.execute(context)
+
+        assert result.success
+        prompt = result.data["prompt"]
+        assert "未获取" in prompt, "缺失 schema 时应有显式占位（而非 $table_schemas 原样残留）"

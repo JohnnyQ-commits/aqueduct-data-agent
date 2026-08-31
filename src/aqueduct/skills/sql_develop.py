@@ -41,12 +41,21 @@ class SQLDevelopSkill(BaseSkill):
         ddl_content = inp.get("ddl_content") or context.state.get("ddl_content", "")
         design_scheme = inp.get("design_scheme") or context.state.get("design_scheme", "")
 
+        # MCP 查询的真实源表结构（Phase 1 写入 state）——字段名/类型以此为准，
+        # 而非摘要/设计方案的转述（转述两层后有损，SQL 字段引用需原文）
+        table_schemas = inp.get("table_schemas") or context.state.get("table_schemas", {})
+        if isinstance(table_schemas, dict):
+            table_schemas_text = "\n\n".join(table_schemas.values()) if table_schemas else "未获取"
+        else:
+            table_schemas_text = str(table_schemas) if table_schemas else "未获取"
+
         # 加载 Prompt 模板
         prompt = self.load_prompt_template(
             requirement_doc=requirement_doc,
             requirement_summary=requirement_summary,
             ddl_content=ddl_content,
             design_scheme=design_scheme,
+            table_schemas=table_schemas_text,
             domain_context=context.state.get("domain_context", ""),
         )
 
