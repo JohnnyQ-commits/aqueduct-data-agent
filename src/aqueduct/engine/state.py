@@ -141,6 +141,11 @@ class WorkflowState(TypedDict):
     _lineage_future: NotRequired[Any]  # concurrent.futures.Future
     _lineage_executor: NotRequired[Any]  # concurrent.futures.ThreadPoolExecutor
 
+    # === 可选：后台任务资源（投机 DQC 生成，PERF-9） ===
+    _dqc_spec_future: NotRequired[Any]  # concurrent.futures.Future
+    _dqc_spec_executor: NotRequired[Any]  # concurrent.futures.ThreadPoolExecutor
+    _dqc_spec_input_hash: NotRequired[int]  # (sql, ddl) 输入指纹，消费时校验
+
     # === 可选：变更管理（见 ChangeManagementState） ===
     original_requirement: NotRequired[str]
     new_requirement: NotRequired[str]

@@ -11,6 +11,7 @@ from ...exceptions import WorkflowHaltError
 from ...skills.base import SkillContext
 from ...skills.registry import get_skill
 from ..state import WorkflowState
+from .dqc import start_dqc_speculative
 from .helpers import call_llm, save_artifact
 
 logger = logging.getLogger(__name__)
@@ -196,6 +197,11 @@ def node_review(state: WorkflowState) -> WorkflowState:
 
     try:
         sql_content = state.get("sql_content", "")
+
+        # PERF-9: 投机启动 DQC 生成（与审查并行）。
+        # DQC 输入不依赖审查结果，唯一串行原因是修复循环改写 SQL——
+        # node_dqc 消费时用输入哈希护栏兜住（见 dqc.take_speculative_dqc）。
+        start_dqc_speculative(state)
 
         # ── 并行分块审查 ──
         if _should_parallel_review(sql_content):
