@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 from ...skills.base import SkillContext
@@ -50,14 +51,21 @@ def node_report(state: WorkflowState) -> WorkflowState:
             return state
 
         prompt = result.data.get("prompt", "")
-        llm_response = call_llm(state, "doc_gen", prompt)
+
+        # PERF-3: doc_gen 与 knowledge_extract 输入互相独立（都来自 state），
+        # 并行执行使 Phase 6 耗时 ≈ max(两次调用) 而非求和。
+        # 与 Phase 4 血缘异步（sql.py wait_for_lineage）同为线程池范式。
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="report") as executor:
+            doc_future = executor.submit(call_llm, state, "doc_gen", prompt)
+            kn_future = executor.submit(_generate_knowledge_doc, state)
+            llm_response = doc_future.result()
+            knowledge_doc = kn_future.result()
 
         save_artifact(state, "Phase6-Design.md", llm_response)
 
         delivery_report = _generate_delivery_report(state)
         save_artifact(state, "Phase6-交付总报告.md", delivery_report)
 
-        knowledge_doc = _generate_knowledge_doc(state)
         save_artifact(state, "Phase6-知识沉淀.md", knowledge_doc)
 
         # 自动更新 domain.json（从 DDL/SQL 提取增量数据，dict-level 合并）
