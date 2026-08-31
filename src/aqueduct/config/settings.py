@@ -183,6 +183,17 @@ class Settings(BaseSettings):
         ),
     )
 
+    llm_spiral_abort_tokens: int = Field(
+        default=12000,
+        description=(
+            "SDK 流式思考螺旋提前中止阈值（累计 output_tokens），0 表示关闭。"
+            "始终思考的模型可能陷入只思考不出正文的螺旋并烧光 max_tokens"
+            "（实测 32768 烧光、1014s 空响应）；健康调用思考 ~9000 后出正文。"
+            "流式监听 message_delta 的累计 output_tokens：超阈值仍无正文即中止，"
+            "返回空内容交由上层空响应重试（螺旋非确定，重试即重新掷骰子）。"
+        ),
+    )
+
     llm_max_context_tokens: int = Field(
         default=200_000,
         description="LLM 上下文窗口最大 token 数。超过此值触发自动截断。",

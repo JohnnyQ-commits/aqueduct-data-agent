@@ -142,7 +142,13 @@ def _install_fake_anthropic(monkeypatch, recorded: dict) -> None:
     """注入伪 anthropic 模块，记录 messages.stream 的调用参数。"""
 
     class FakeStream:
-        text_stream = iter(["hello"])
+        """可按原始事件迭代的空流（PERF-10 后 _do_sdk_stream 逐事件消费）。"""
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            raise StopIteration
 
         def __enter__(self):
             return self

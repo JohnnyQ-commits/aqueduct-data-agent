@@ -294,7 +294,18 @@ class ClaudeLLM(BaseLLM):
         max_tokens: int,
         kwargs: dict[str, Any],
     ) -> LLMResponse:
-        """执行 SDK 流式调用并解析结果。"""
+        """执行 SDK 流式调用并解析结果。
+
+        PERF-10: 逐原始事件消费流（不再用 text_stream 聚合——它隐藏了
+        thinking 事件，中途只见正文不见 token 消耗）。监听 message_delta
+        的累计 output_tokens：无正文且超过 llm_spiral_abort_tokens 时
+        判定思考螺旋，提前中止返回空内容，交由上层空响应重试
+        （helpers.call_llm 已有 2 次重试 + 退避；螺旋非确定，重试即重新掷骰子）。
+        """
+        from ..config.settings import get_settings
+
+        abort_tokens = get_settings().llm_spiral_abort_tokens
+
         stream = client.messages.stream(
             model=self._model_id,
             messages=user_messages,
@@ -304,15 +315,65 @@ class ClaudeLLM(BaseLLM):
         )
 
         content = ""
+        prompt_tokens = 0
+        output_tokens = 0
         final_response = None
+        spiral_aborted = False
+
         with stream as s:
-            for text in s.text_stream:
-                content += text
-            final_response = s.get_final_message()
+            for event in s:
+                etype = getattr(event, "type", "")
+
+                if etype == "message_start":
+                    # 初始 usage：input_tokens 在这里（message_delta 只带 output）
+                    msg_obj = getattr(event, "message", None)
+                    usage = getattr(msg_obj, "usage", None) if msg_obj else None
+                    if usage is not None:
+                        prompt_tokens = getattr(usage, "input_tokens", 0) or 0
+                elif etype == "message_delta":
+                    # 流式 usage 增量：output_tokens 为累计值（含 thinking）
+                    usage = getattr(event, "usage", None)
+                    if usage is not None:
+                        tracked = getattr(usage, "output_tokens", None)
+                        if isinstance(tracked, int) and tracked > output_tokens:
+                            output_tokens = tracked
+                elif etype == "content_block_delta":
+                    delta = getattr(event, "delta", None)
+                    if getattr(delta, "type", "") == "text_delta":
+                        content += getattr(delta, "text", "") or ""
+
+                # 思考螺旋检测：零正文 + 累计输出超阈值 → 注定烧光 max_tokens
+                if abort_tokens > 0 and not content and output_tokens >= abort_tokens:
+                    spiral_aborted = True
+                    break
+
+            if not spiral_aborted:
+                final_response = s.get_final_message()
+
+        if spiral_aborted:
+            logger.warning(
+                "[model=%s] 思考螺旋提前中止: 累计 output_tokens=%d 超阈值 %d 仍无正文，"
+                "返回空内容交由上层重试（单次止损 %d/%d tokens）",
+                self._model_id,
+                output_tokens,
+                abort_tokens,
+                output_tokens,
+                max_tokens,
+            )
+            return LLMResponse(
+                content="",
+                usage=LLMUsage(
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=output_tokens,
+                    total_tokens=prompt_tokens + output_tokens,
+                ),
+                model=self._model_id,
+                finish_reason="spiral_abort",
+            )
 
         usage_obj = getattr(final_response, "usage", None)
-        prompt_tokens = getattr(usage_obj, "input_tokens", 0) if usage_obj else 0
-        completion_tokens = getattr(usage_obj, "output_tokens", 0) if usage_obj else 0
+        prompt_tokens = getattr(usage_obj, "input_tokens", 0) if usage_obj else prompt_tokens
+        completion_tokens = getattr(usage_obj, "output_tokens", 0) if usage_obj else output_tokens
         cache_read = getattr(usage_obj, "cache_read_input_tokens", 0) if usage_obj else 0
         cache_create = getattr(usage_obj, "cache_creation_input_tokens", 0) if usage_obj else 0
 
