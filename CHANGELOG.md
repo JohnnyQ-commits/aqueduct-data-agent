@@ -14,8 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`AQUEDUCT_LLM_BACKEND` backend override (PERF-1)**: new `llm_backend` setting (`auto`/`sdk`/`cli`/`claude-cli`) forces the LLM backend, overriding auto-detection — previously any machine with the `claude` CLI installed always used the subprocess backend (cold start per call, no prompt caching, estimated tokens). The SDK client now sends the token as both `Authorization: Bearer` and `x-api-key` (same value) so self-hosted gateways that only accept Bearer auth work with direct SDK streaming calls
+- **SDK thinking budget (`AQUEDUCT_LLM_THINKING_BUDGET_TOKENS`, PERF-7)**: the SDK backend can now cap reasoning tokens for always-thinking models (e.g. glm-5.3) — measured 4.4s vs 17.7s for the same task with a 1024-token budget, and it prevents thinking from consuming the entire `max_tokens` budget and returning an empty text body (root cause of an observed empty-response retry). Defaults to 0 (parameter not sent) for compatibility with non-thinking models on the official API
+- **CLI backend timeout no longer doubles on retry (PERF-2)**: timeout retries now keep the configured `llm_timeout_seconds` with exponential backoff (1s/2s), matching the SDK path — the old doubling (900→1800→3600s) inflated worst-case wall-clock per call to 6300s and was the dominant cost (68%) of a measured 39.3-min pipeline run
 - **Phase 4 now receives the original requirement document** (CLI quality fix, root cause 1): `node_sql` passes `requirement_doc` into the `sql_develop` Skill, and the prompt template renders it alongside the summary — SQL generation is no longer limited to the lossy Phase 1 summary (field semantics, boundary conditions and implicit constraints are preserved)
 - **`requirement_parse` routed to the Sonnet tier** (root cause 2): requirement parsing no longer uses the weakest model tier; the change-management flow benefits, and the main pipeline Phase 1 already routes via `design_ddl` (Sonnet) since the OPT-5 three-in-one merge
+
+### Fixed
+
+- **Task log now survives a missing output directory**: `setup_task_logging` creates the output directory before attaching the `FileHandler` — previously the handler failed at pipeline start (directory is only created when the first artifact is saved), so API-driven runs (`Aqueduct().dev(...)`) produced no per-call task log for the entire run, losing per-phase timing/token records needed for performance analysis
 
 ## [0.5.0] - 2026-08-27
 

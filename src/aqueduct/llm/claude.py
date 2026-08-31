@@ -114,10 +114,21 @@ class ClaudeLLM(BaseLLM):
     def _detect_backend(self) -> str:
         """检测可用的 LLM 后端。
 
+        AQUEDUCT_LLM_BACKEND 可强制指定（sdk / cli / claude-cli / auto），
+        覆盖自动探测 —— 例如装了 claude CLI 但想走 SDK 流式直连时设 sdk。
+
         Returns:
             "sdk"（Anthropic SDK）或 "claude-cli"（Claude Code CLI）
         """
-        # 优先检查 Claude Code CLI
+        forced = self._forced_backend()
+        if forced:
+            if forced == "claude-cli":
+                # 仍解析 CLI 绝对路径（找不到时 _chat_cli 回退裸 "claude" 命令）
+                self._claude_cli_path = self._find_claude_cli()
+                return "claude-cli"
+            return "sdk"
+
+        # 自动探测：优先 Claude Code CLI
         cli_path = self._find_claude_cli()
         if cli_path:
             self._claude_cli_path = cli_path
@@ -135,6 +146,29 @@ class ClaudeLLM(BaseLLM):
 
         # 两个都不可用，默认使用 CLI
         return "claude-cli"
+
+    @staticmethod
+    def _forced_backend() -> str | None:
+        """读取 AQUEDUCT_LLM_BACKEND 强制后端。
+
+        Returns:
+            "sdk" / "claude-cli"，或 None（未设置、auto、非法值）。
+            非法值记录警告并回退自动探测。
+        """
+        from ..config.settings import get_settings
+
+        value = get_settings().llm_backend.strip().lower()
+        if value in ("", "auto"):
+            return None
+        if value == "sdk":
+            return "sdk"
+        if value in ("cli", "claude-cli"):
+            return "claude-cli"
+        logger.warning(
+            "AQUEDUCT_LLM_BACKEND=%r 无效（可选 auto/sdk/cli/claude-cli），回退自动探测",
+            value,
+        )
+        return None
 
     @property
     def model_id(self) -> str:
@@ -188,8 +222,11 @@ class ClaudeLLM(BaseLLM):
             timeout_seconds,
         )
         if cache_key not in ClaudeLLM._shared_sdk_clients:
+            # token 同值双发：api_key → x-api-key 头（官方 API），
+            # auth_token → Authorization: Bearer 头（自建网关只认此头）
             ClaudeLLM._shared_sdk_clients[cache_key] = Anthropic(
                 api_key=self._api_key if self._api_key else None,
+                auth_token=self._api_key if self._api_key else None,
                 base_url=self._base_url if self._base_url else None,
                 timeout=timeout_seconds,
             )
@@ -205,6 +242,15 @@ class ClaudeLLM(BaseLLM):
                 user_messages.append({"role": m.role, "content": m.content})
 
         max_tokens = kwargs.pop("max_tokens", 32768)
+
+        # PERF-7: 思考预算 —— 限档始终思考模型（如 glm-5.3）的思考量。
+        # 思考计入 max_tokens：无预算时思考可能烧光额度导致正文为空（实测空响应根因）。
+        thinking_budget = get_settings().llm_thinking_budget_tokens
+        if thinking_budget > 0:
+            kwargs["thinking"] = {
+                "type": "enabled",
+                "budget_tokens": min(thinking_budget, max_tokens // 2),
+            }
 
         # 超时重试（指数退避）
         max_retries = 2
@@ -344,7 +390,7 @@ class ClaudeLLM(BaseLLM):
         # 将 prompt 和输出放到系统临时目录（避免项目根目录残留临时文件）
         tmp_dir = Path(tempfile.mkdtemp(prefix="aqueduct_claude_"))
 
-        # timeout 由 _chat_cli 从 settings.llm_timeout_seconds 传入，重试时指数增长
+        # timeout 由 _chat_cli 从 settings.llm_timeout_seconds 传入，重试保持相同超时
         last_error: Exception | None = None
 
         for attempt in range(max_retries + 1):
@@ -430,14 +476,15 @@ class ClaudeLLM(BaseLLM):
                     len(full_prompt),
                 )
                 if attempt < max_retries:
-                    new_timeout = timeout * 2
+                    # 保持相同超时重试（翻倍会让最坏情况指数膨胀），指数退避
+                    delay = 2**attempt
                     logger.warning(
-                        "[model=%s] LLM 超时，第 %d 次重试，timeout=%ds",
+                        "[model=%s] LLM 超时，%ds 后以相同超时（%ds）重试",
                         self._model_id,
-                        attempt + 1,
-                        new_timeout,
+                        delay,
+                        timeout,
                     )
-                    timeout = new_timeout
+                    time.sleep(delay)
                     continue
 
             except Exception as e:

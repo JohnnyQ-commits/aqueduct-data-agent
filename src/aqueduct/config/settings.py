@@ -154,6 +154,15 @@ class Settings(BaseSettings):
 
     # === LLM 重试配置 ===
 
+    llm_backend: str = Field(
+        default="auto",
+        description=(
+            "LLM 后端强制选择：auto（自动探测，有 claude CLI 时优先 CLI）/ "
+            "sdk（Anthropic SDK 直连，流式 + 真实 token 统计）/ cli（claude-cli 别名）/ "
+            "claude-cli（子进程代理）。"
+        ),
+    )
+
     llm_max_retries: int = Field(
         default=2,
         description="LLM 调用超时后最大重试次数（指数退避）。",
@@ -162,6 +171,16 @@ class Settings(BaseSettings):
     llm_timeout_seconds: int = Field(
         default=900,
         description="单次 LLM 调用超时时间（秒）。长输出任务（doc_gen/sql_gen）建议 ≥ 900。",
+    )
+
+    llm_thinking_budget_tokens: int = Field(
+        default=0,
+        description=(
+            "SDK 后端思考预算（token 数），0 表示不发送该参数。"
+            "始终思考的推理模型（如 glm-5.3）默认档思考量大：实测同一任务无预算 17.7s、"
+            "预算 1024 时 4.4s，且无预算时思考可能烧光 max_tokens 导致正文为空。"
+            "注意：仅 SDK 后端生效；官方 API 非思考模型保持 0。"
+        ),
     )
 
     llm_max_context_tokens: int = Field(

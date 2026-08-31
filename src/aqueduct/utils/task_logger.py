@@ -21,8 +21,8 @@ def setup_task_logging(
 ) -> logging.Handler | None:
     """为当前任务创建独立日志文件。
 
-    在指定路径创建日志文件（不自动创建父目录，
-    父目录由 helpers.get_output_dir() 在保存产出物时创建）。
+    在指定路径创建日志文件（自动创建缺失的父目录——
+    API 调用时输出目录在首个产出物保存前尚不存在）。
     添加 FileHandler，日志自动同步写入任务日志文件。
 
     Args:
@@ -33,6 +33,7 @@ def setup_task_logging(
         添加的 FileHandler 实例（用于后续清理），失败时返回 None。
     """
     try:
+        log_file_path.parent.mkdir(parents=True, exist_ok=True)
         handler = logging.FileHandler(str(log_file_path), encoding="utf-8")
         handler.setLevel(logging.DEBUG)
         handler.setFormatter(
