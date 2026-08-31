@@ -11,6 +11,7 @@ Windows GBK 编码兼容：强制 UTF-8 stdout/stderr，所有输出使用 ASCII
     aqueduct validate sql_file.sql --strict
     aqueduct status
     aqueduct knowledge sync
+    aqueduct search-history ads_xxx dm_yyy --doc 需求文档.md
 """
 
 from __future__ import annotations
@@ -382,6 +383,38 @@ def _knowledge_sync(args: argparse.Namespace) -> int:
     return 0
 
 
+def _search_history(args: argparse.Namespace) -> int:
+    """历史交付物检索：按表名扫描 output/ 历史交付物与 knowledge/ 知识库。"""
+    from ..memory.history import extract_table_names, format_report, search_history
+
+    tables: list[str] = []
+    for t in args.tables:
+        t = t.strip().lower()
+        if t and t not in tables:
+            tables.append(t)
+
+    if args.doc:
+        doc_path = Path(args.doc)
+        if not doc_path.is_file():
+            print(f"[ERROR] Requirement doc not found: {args.doc}")
+            return 1
+        doc_text = doc_path.read_text(encoding="utf-8", errors="replace")
+        for t in extract_table_names(doc_text):
+            if t not in tables:
+                tables.append(t)
+
+    if not tables:
+        print(
+            "Usage: aqueduct search-history <table ...> [--doc req.md] [--root DIR]",
+            file=sys.stderr,
+        )
+        return 1
+
+    root = Path(args.root).resolve() if args.root else get_settings().project_root
+    print(format_report(search_history(tables, root)))
+    return 0
+
+
 def _status(args: argparse.Namespace) -> int:
     """项目状态概览。"""
     settings = get_settings()
@@ -498,6 +531,21 @@ def create_parser() -> argparse.ArgumentParser:
     change_parser.add_argument("--desc", "-d", help="Change description / summary")
     change_parser.add_argument("--output", "-o", help="Output directory")
 
+    # search-history 命令 — 历史交付物检索
+    search_parser = subparsers.add_parser(
+        "search-history",
+        help="Search historical deliverables (output/ & knowledge/) by table names",
+    )
+    search_parser.add_argument("tables", nargs="*", help="Table names to search")
+    search_parser.add_argument(
+        "--doc",
+        help="Requirement document path (extract table names and merge)",
+    )
+    search_parser.add_argument(
+        "--root",
+        help="Project root directory (default: auto-detect from settings)",
+    )
+
     return parser
 
 
@@ -530,6 +578,7 @@ def main() -> int:
         "validate": _validate_sql,
         "status": _status,
         "knowledge": _knowledge,
+        "search-history": _search_history,
     }
 
     handler = commands.get(args.command)

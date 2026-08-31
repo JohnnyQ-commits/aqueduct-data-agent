@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Historical deliverable retrieval (`aqueduct search-history` + `memory/history.py`)**: Phase 1 of the data-developer flow now mandates a retrieval pass over past `output/` deliverables and `knowledge/` before requirement understanding — per-table insert statements (target table + partition expression), knowledge-doc hit lines and semantic-model hits, plus a "not distilled" hint for tables delivered without a `knowledge/domains/*.json` (fixes wrong output-rhythm inference on tables that were delivered but never distilled). The module is pure stdlib and runs venv-free: `python src/aqueduct/memory/history.py --doc <req.md>`
+- **Data verification checklist (`references/verification_checklist.md`) + Phase 5 two-layer restructure**: Phase 5 of the data-developer flow is now a mandatory pre-launch gate (tmp-table live verification V1~V7 with dual-scenario baselines — iterative vs greenfield: production-table regression vs driver-table/pk-first-verify, non-deterministic-field set comparison, DDL alignment, sample manual checks) followed by post-launch DQC monitoring cases; DQC cases must themselves be executed on the tmp table before delivery. Includes a platform-pitfall checklist (single-statement IDE, `$[0]` bash expansion, JSON path variants, metadata sync delay, permission identity gaps, GBK console)
+
 ### Changed
 
 - **Phase 4 now receives the original requirement document** (CLI quality fix, root cause 1): `node_sql` passes `requirement_doc` into the `sql_develop` Skill, and the prompt template renders it alongside the summary — SQL generation is no longer limited to the lossy Phase 1 summary (field semantics, boundary conditions and implicit constraints are preserved)
