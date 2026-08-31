@@ -53,8 +53,12 @@ class TestPhase45RequirementDesc:
 
         with (
             patch.object(CodeReviewSkill, "execute", capture_execute),
-            patch("src.aqueduct.engine.nodes.helpers.call_llm", return_value="审查结果"),
-            patch("src.aqueduct.engine.nodes.helpers.save_artifact", return_value="output/test.md"),
+            # 补丁目标必须是导入方绑定（review.py: from .helpers import call_llm），
+            # 此前打在 helpers 源模块上无效 → 真实 LLM 调用（79s 测试债）
+            patch("src.aqueduct.engine.nodes.review.call_llm", return_value="审查结果"),
+            patch("src.aqueduct.engine.nodes.review.save_artifact", return_value="output/test.md"),
+            # PERF-9 投机 DQC 同样走真实 call_llm，一并静默
+            patch("src.aqueduct.engine.nodes.review.start_dqc_speculative"),
         ):
             node_review(state)
 
@@ -331,13 +335,18 @@ class TestPhase4Redundancy:
 
         with (
             patch.object(SQLDevelopSkill, "execute", capture_execute),
+            # 补丁目标必须是导入方绑定（sql.py: from .helpers import call_llm），
+            # 此前打在 helpers 源模块上无效 → 真实 sql_gen LLM 调用（79s 测试债）
             patch(
-                "src.aqueduct.engine.nodes.helpers.call_llm", return_value="```sql\nSELECT 1\n```"
+                "src.aqueduct.engine.nodes.sql.call_llm", return_value="```sql\nSELECT 1\n```"
             ),
-            patch("src.aqueduct.engine.nodes.helpers.extract_sql_block", return_value="SELECT 1"),
-            patch("src.aqueduct.engine.nodes.helpers.save_artifact", return_value=""),
-            patch("src.aqueduct.engine.nodes.helpers.is_valid_sql", return_value=True),
-            patch("src.aqueduct.tools.registry.get_tool"),
+            patch("src.aqueduct.engine.nodes.sql.extract_sql_block", return_value="SELECT 1"),
+            patch("src.aqueduct.engine.nodes.sql.save_artifact", return_value=""),
+            patch("src.aqueduct.engine.nodes.sql.is_valid_sql", return_value=True),
+            patch("src.aqueduct.engine.nodes.sql._auto_validate"),
+            patch("src.aqueduct.engine.nodes.sql._auto_trial_run"),
+            patch("src.aqueduct.engine.nodes.sql._auto_lineage_async"),
+            patch("src.aqueduct.engine.nodes.sql._auto_cost_estimate"),
         ):
             node_sql(state)
 
