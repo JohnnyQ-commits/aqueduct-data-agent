@@ -8,7 +8,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 from src.aqueduct.core import _run_fix_loop, _run_pipeline
-from src.aqueduct.exceptions import WorkflowHaltError
+from src.aqueduct.exceptions import LLMEmptyResponseError, WorkflowHaltError
 
 # ============================================================
 # _run_pipeline 测试
@@ -242,6 +242,28 @@ class TestRunFixLoop:
             result = _run_fix_loop(state)
 
         assert result["_needs_fix_loop"] is False
+
+    @patch("src.aqueduct.engine.nodes.helpers.call_llm")
+    def test_fix_loop_llm_failure_degrades_gracefully(self, mock_llm):
+        """回归测试: 修复调用重试耗尽不应炸管道——降级保留原 SQL 继续后续阶段。
+
+        v4 计时复测（2026-09-01）实测：sql_fix 空响应重试耗尽后
+        LLMEmptyResponseError 从 _run_fix_loop 一路上抛杀死整条管道，
+        Phase 6 报告全部丢失。正确行为是降级：记录错误、保留未修复 SQL、
+        清除回环标志、管道继续。
+        """
+        mock_llm.side_effect = LLMEmptyResponseError(
+            "LLM 返回空响应（已重试 2 次）: task_type=sql_fix, model=glm-5.3"
+        )
+        state = self._make_state_with_issues()
+
+        with patch("src.aqueduct.config.settings.get_settings") as mock_settings:
+            mock_settings.return_value.max_fix_iterations = 2
+            result = _run_fix_loop(state)  # 不应抛出异常
+
+        assert result["sql_content"] == "SELECT 1 FROM dual"
+        assert result["_needs_fix_loop"] is False
+        assert any("修复循环" in err for err in result["errors"])
 
     @patch("src.aqueduct.core._run_fix_loop")
     def test_pipeline_no_infinite_fix_loop(self, mock_fix):

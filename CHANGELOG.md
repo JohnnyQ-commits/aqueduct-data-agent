@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Fix-loop LLM failure no longer kills the pipeline**: `_run_fix_loop`'s `sql_fix` call was unguarded — when the call exhausted its empty-response retries (e.g. a thinking spiral), `LLMEmptyResponseError` propagated up and crashed the whole run, losing Phase 6 reports and the run summary even though earlier phases had succeeded (observed live: a 92-minute run died this way). The loop now degrades the same way the phase nodes do: the error is recorded in `errors`, the original unfixed SQL is kept, the loop flag is cleared and the pipeline continues
 - **Task log now survives a missing output directory**: `setup_task_logging` creates the output directory before attaching the `FileHandler` — previously the handler failed at pipeline start (directory is only created when the first artifact is saved), so API-driven runs (`Aqueduct().dev(...)`) produced no per-call task log for the entire run, losing per-phase timing/token records needed for performance analysis
 
 ## [0.5.0] - 2026-08-27

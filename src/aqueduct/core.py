@@ -144,7 +144,21 @@ def _run_fix_loop(state: WorkflowState) -> WorkflowState:
 
     logger.info("[task=%s] 修复循环: 发送修复 prompt（%d 字符）", req_name, len(prompt))
 
-    fix_response = call_llm(state, "sql_fix", prompt)
+    try:
+        fix_response = call_llm(state, "sql_fix", prompt)
+    except Exception as e:
+        # 修复失败不应炸管道（v4 实测：空响应重试耗尽曾杀死 Phase 6）——
+        # 降级：记录错误、保留未修复 SQL、清除回环标志、继续后续阶段
+        state.setdefault("errors", []).append(f"修复循环 LLM 调用失败，保留未修复 SQL: {e!s}")
+        logger.error(
+            "[task=%s] 修复循环: LLM 调用失败，保留原 SQL 继续管道: %s",
+            req_name,
+            e,
+            exc_info=True,
+        )
+        state["_needs_fix_loop"] = False
+        return state
+
     fixed_sql = extract_sql_block(fix_response)
 
     if not is_valid_sql(fixed_sql):
