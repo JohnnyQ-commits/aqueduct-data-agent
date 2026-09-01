@@ -2,11 +2,18 @@
 
 实测（2026-08-31 真实 sql_gen prompt 探针）：网关对 thinking.budget_tokens
 完全不生效——budget=1024 与 8192 均烧光 32768 max_tokens 仍零正文（597s/1014s）。
-健康调用思考 ~9000 tokens 后出正文（design_ddl 实测 completion=13736、正文 4788 字符）。
 
-流式监听 message_delta 的 output_tokens：超过阈值仍无正文 → 判定思考螺旋，
-提前中止返回空内容，交由 helpers.call_llm 现有空响应重试（非确定性螺旋，
-重试即重新掷骰子），把 ~1000s 的注定失败降到阈值/32tok/s。
+阈值标定（2026-09-01 v3/v4 对照运行实锤）：
+- 健康深度思考分布 3600~22000（design_ddl ~17000 / sql_gen ~19000 /
+  sql_review ~22000，v4 在 24000 阈值下全部成功）
+- 12000 会误杀上述全部调用（v3 十二连杀、4 Phase 失败）
+- 思考超 ~24000 后 32768 max_tokens 里正文空间已不足，结构性注定失败
+→ 默认阈值 24000 ≈ "还有救"的边界；真螺旋（烧满 32768 零正文）照样被兜住。
+
+流式双信号：message_delta 的累计 output_tokens（网关只在流末尾发送）+
+本地 thinking_delta 字符估算（中途唯一可靠信号）。超过阈值仍无正文 →
+判定思考螺旋，提前中止返回空内容，交由 helpers.call_llm 现有空响应重试
+（非确定性螺旋，重试即重新掷骰子）。
 """
 
 from __future__ import annotations
@@ -105,18 +112,21 @@ class TestSpiralAbortSettings:
     """llm_spiral_abort_tokens 配置项。"""
 
     def test_settings_default_threshold(self, fresh_settings):
-        """默认阈值 12000（健康思考 ~9000 之上、烧光 32768 之下）。"""
-        assert get_settings().llm_spiral_abort_tokens == 12000
+        """默认阈值 24000：健康思考分布（3600~22000）之上、结构性失败边界附近。"""
+        assert get_settings().llm_spiral_abort_tokens == 24000
 
 
 class TestSpiralAbort:
     """思考螺旋提前中止行为。"""
 
     def test_spiral_aborts_before_cap(self, fresh_settings, monkeypatch):
-        """无正文且 output_tokens 超阈值：提前中止，返回空内容。"""
+        """无正文且 output_tokens 超阈值：提前中止，返回空内容。
+
+        机制测试显式钉住阈值 12000，不随默认值漂移。
+        """
 
         monkeypatch.setenv("AQUEDUCT_LLM_BACKEND", "sdk")
-        monkeypatch.delenv("AQUEDUCT_LLM_SPIRAL_ABORT_TOKENS", raising=False)
+        monkeypatch.setenv("AQUEDUCT_LLM_SPIRAL_ABORT_TOKENS", "12000")
 
         events = [
             _event("message_start"),
@@ -196,10 +206,12 @@ class TestSpiralAbort:
         实测（2026-08-31 复测日志）：网关只在流末尾才发 usage 增量——
         message_delta 信号中止时 output_tokens 已是 32768，止损没兑现。
         thinking_delta 文本增量是唯一的中途信号：本地估算累计思考 token。
+
+        机制测试显式钉住阈值 12000，不随默认值漂移。
         """
 
         monkeypatch.setenv("AQUEDUCT_LLM_BACKEND", "sdk")
-        monkeypatch.delenv("AQUEDUCT_LLM_SPIRAL_ABORT_TOKENS", raising=False)
+        monkeypatch.setenv("AQUEDUCT_LLM_SPIRAL_ABORT_TOKENS", "12000")
 
         events = [
             # 思考增量：4000 汉字 ≈ 6000 tokens（estimate_tokens 1.5/字）

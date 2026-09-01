@@ -184,12 +184,17 @@ class Settings(BaseSettings):
     )
 
     llm_spiral_abort_tokens: int = Field(
-        default=12000,
+        default=24000,
         description=(
             "SDK 流式思考螺旋提前中止阈值（累计 output_tokens），0 表示关闭。"
             "始终思考的模型可能陷入只思考不出正文的螺旋并烧光 max_tokens"
-            "（实测 32768 烧光、1014s 空响应）；健康调用思考 ~9000 后出正文。"
-            "流式监听 message_delta 的累计 output_tokens：超阈值仍无正文即中止，"
+            "（实测 32768 烧光、1014s 空响应）。"
+            "标定（2026-09-01 v3/v4 对照实锤）：健康深度思考分布 3600~22000"
+            "（design_ddl ~17000 / sql_gen ~19000 / sql_review ~22000），"
+            "12000 会误杀全部重生成任务；思考超 ~24000 后 max_tokens=32768 "
+            "里正文空间已不足、结构性注定失败，24000 ≈ '还有救'的边界。"
+            "双信号取大者：message_delta 累计 output_tokens（网关仅流末尾发送）"
+            "+ 本地 thinking_delta 字符估算；超阈值仍无正文即中止，"
             "返回空内容交由上层空响应重试（螺旋非确定，重试即重新掷骰子）。"
         ),
     )
