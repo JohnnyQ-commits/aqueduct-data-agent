@@ -141,6 +141,35 @@ def _review_chunk(state: WorkflowState, prompt: str) -> str:
 # ── 审查问题解析 ──────────────────────────────────────────────────────────────
 
 
+def _lint_sql_issues(sql_content: str) -> list[dict[str, str]]:
+    """P0-1: 确定性规范校验（零 token），结果转审查 issues 格式。
+
+    规则与级别经真实交付金样本校准（见知识库"金样本特征提取与linter规则校准"）：
+    ERROR → Critical（触发修复循环），WARN → Warning，INFO → 忽略。
+    每次审查对 state 中最新 SQL 现场复检——修复循环回跳时自动复检修复结果。
+    """
+    from ...tools.validator import Validator
+
+    if not sql_content or len(sql_content) < 50:
+        return []
+    try:
+        report = Validator("", content=sql_content).run()
+    except Exception:
+        logger.warning("规范校验异常，跳过", exc_info=True)
+        return []
+
+    issues: list[dict[str, str]] = []
+    for r in report.get("issues", []):
+        level = r.get("level", "INFO")
+        line = r.get("line") or "?"
+        msg = f"[规范] {r.get('message', '')} (line {line})"
+        if level == "ERROR":
+            issues.append({"severity": "Critical", "message": msg})
+        elif level == "WARN":
+            issues.append({"severity": "Warning", "message": msg})
+    return issues
+
+
 def _parse_review_issues(review_result: str) -> list[dict[str, str]]:
     """从审查报告中提取 Critical/Warning 级别问题。
 
@@ -219,7 +248,18 @@ def node_review(state: WorkflowState) -> WorkflowState:
         state["metadata"] = {**(state.get("metadata", {})), "review_done": "true"}
 
         # 解析审查问题，判断是否需要修复循环
-        issues = _parse_review_issues(llm_response)
+        # P0-1: 先注入确定性规范校验（零 token、结果确定），
+        # 再合并 LLM 审查问题——ERROR 级违规直接作为 Critical 触发修复循环
+        lint_issues = _lint_sql_issues(sql_content)
+        if lint_issues:
+            logger.info(
+                "[task=%s] 确定性规范校验: %d 项违规（C:%d W:%d）注入审查 issues",
+                req_name,
+                len(lint_issues),
+                sum(1 for i in lint_issues if i["severity"] == "Critical"),
+                sum(1 for i in lint_issues if i["severity"] == "Warning"),
+            )
+        issues = lint_issues + _parse_review_issues(llm_response)
         critical_count = sum(1 for i in issues if i["severity"].lower() == "critical")
         warning_count = sum(1 for i in issues if i["severity"].lower() == "warning")
         fix_iterations = state.get("fix_iterations", 0)
