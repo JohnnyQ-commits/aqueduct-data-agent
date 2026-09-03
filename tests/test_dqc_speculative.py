@@ -54,6 +54,12 @@ def _failed_health_tool():
     return tool
 
 
+# P0-3: 假响应必须带 -- [ 用例注释头（_generate_dqc_split 的格式契约，
+# 无注释头的响应会被当作无效触发重试/降级）
+def _resp(tag: str) -> str:
+    return f"-- [唯一性-{tag}] select 1 as v from t where inc_day = '${{bizdate}}';\n{tag}"
+
+
 class TestSpeculativeStart:
     """node_review 入口投机启动 DQC 生成。"""
 
@@ -77,7 +83,7 @@ class TestSpeculativeStart:
             if task_type == "dqc_gen":
                 spec_started.set()
                 overlapped = review_started.wait(timeout=3)
-                return "dqc-" + ("OVERLAP" if overlapped else "SERIAL") + " 语义检查通过"
+                return _resp("dqc-" + ("OVERLAP" if overlapped else "SERIAL"))
             return "other"
 
         with (
@@ -102,7 +108,8 @@ class TestSpeculativeStart:
             node_dqc(state)
 
         assert state["review_result"] == "review-OVERLAP"
-        assert calls == ["dqc_gen"], "投机 dqc_gen 只应调用一次，Phase 5 不应重复调用"
+        # P0-3: 投机拆分为 5 类并行调用，Phase 5 复用投机结果不重复调用
+        assert sorted(calls) == ["dqc_gen"] * 5
         assert "dqc-OVERLAP" in state["dqc_result"]
 
     def test_short_sql_skips_speculative_start(self):
@@ -122,8 +129,10 @@ class TestSpeculativeConsume:
     """node_dqc 消费投机结果的哈希护栏。"""
 
     @staticmethod
-    def _start_spec(state, response="SPEC-RESULT 语义检查"):
+    def _start_spec(state, response=None):
         """启动投机并在 patch 上下文内等待完成（避免线程逃逸到真实 call_llm）。"""
+        if response is None:
+            response = _resp("SPEC-RESULT")
         with patch("src.aqueduct.engine.nodes.dqc.call_llm", return_value=response) as mock_llm:
             start_dqc_speculative(state)
             state["_dqc_spec_future"].result(timeout=5)
@@ -155,12 +164,12 @@ class TestSpeculativeConsume:
         """修复循环改写 SQL 后（哈希不一致），丢弃投机结果重新生成。"""
 
         state = _make_state()
-        self._start_spec(state, response="STALE-SPEC")
+        self._start_spec(state, response=_resp("STALE-SPEC"))
         state["sql_content"] += "\n-- 修复循环改写"
 
         def fake_llm(state, task_type, prompt):
             assert task_type == "dqc_gen"
-            return "FRESH-RESULT 重新生成"
+            return _resp("FRESH-RESULT")
 
         with (
             patch("src.aqueduct.engine.nodes.dqc.call_llm", side_effect=fake_llm),
@@ -176,16 +185,23 @@ class TestSpeculativeConsume:
         assert "STALE-SPEC" not in state["dqc_result"]
 
     def test_node_dqc_falls_back_on_spec_exception(self):
-        """投机调用失败（超时等）时回退正常路径。"""
-
+        """投机整轮失败（全类失败抛错）时回退正常路径重新生成。"""
         from src.aqueduct.exceptions import LLMTimeoutError
 
         state = _make_state()
+        call_count = {"n": 0}
+
+        def fake_llm(state, task_type, prompt):
+            # 前 5 次 = 投机轮（全类失败）→ 之后 = 正常路径重新生成
+            call_count["n"] += 1
+            if call_count["n"] <= 5:
+                raise LLMTimeoutError("spec 超时")
+            return _resp("FRESH-RESULT")
 
         with (
             patch(
                 "src.aqueduct.engine.nodes.dqc.call_llm",
-                side_effect=[LLMTimeoutError("spec 超时"), "FRESH-RESULT 回退生成"],
+                side_effect=fake_llm,
             ),
             patch("src.aqueduct.engine.nodes.dqc.save_artifact", return_value=""),
             patch(
@@ -197,6 +213,7 @@ class TestSpeculativeConsume:
             node_dqc(state)
 
         assert "FRESH-RESULT" in state["dqc_result"]
+        assert call_count["n"] == 10, "投机轮 5 次 + 正常路径 5 次"
 
     def test_node_dqc_without_spec_normal_path(self):
         """无投机结果时走原有路径（一次 dqc_gen 调用）。"""
@@ -206,7 +223,7 @@ class TestSpeculativeConsume:
 
         def fake_llm(state, task_type, prompt):
             calls.append(task_type)
-            return "NORMAL-RESULT 正常生成"
+            return _resp("NORMAL-RESULT")
 
         with (
             patch("src.aqueduct.engine.nodes.dqc.call_llm", side_effect=fake_llm),
@@ -218,7 +235,7 @@ class TestSpeculativeConsume:
         ):
             node_dqc(state)
 
-        assert calls == ["dqc_gen"]
+        assert sorted(calls) == ["dqc_gen"] * 5, "P0-3: 正常路径拆分为 5 类调用"
         assert "NORMAL-RESULT" in state["dqc_result"]
 
     def test_take_speculative_without_future_returns_none(self):
@@ -235,13 +252,17 @@ class TestSpeculativeRestart:
         """重新启动投机时关闭旧 executor，替换为新 future。"""
 
         state = _make_state()
-        with patch("src.aqueduct.engine.nodes.dqc.call_llm", return_value="SPEC-1 结果"):
+        with patch(
+            "src.aqueduct.engine.nodes.dqc.call_llm", return_value=_resp("SPEC-1")
+        ):
             start_dqc_speculative(state)
             state["_dqc_spec_future"].result(timeout=5)
         old_executor = state["_dqc_spec_executor"]
         old_future = state["_dqc_spec_future"]
 
-        with patch("src.aqueduct.engine.nodes.dqc.call_llm", return_value="SPEC-2 结果"):
+        with patch(
+            "src.aqueduct.engine.nodes.dqc.call_llm", return_value=_resp("SPEC-2")
+        ):
             start_dqc_speculative(state)
             state["_dqc_spec_future"].result(timeout=5)
 

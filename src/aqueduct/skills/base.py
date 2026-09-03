@@ -65,7 +65,12 @@ class BaseSkill(ABC):
             SkillResult，包含产出物列表和状态。
         """
 
-    def load_prompt_template(self, template_dir: Path | None = None, **variables: Any) -> str:
+    def load_prompt_template(
+        self,
+        template_dir: Path | None = None,
+        template_name: str | None = None,
+        **variables: Any,
+    ) -> str:
         """加载并渲染 Prompt 模板。
 
         使用 string.Template（$variable 语法）进行变量替换，
@@ -73,6 +78,8 @@ class BaseSkill(ABC):
 
         Args:
             template_dir: Prompt 模板目录。默认 skills/prompt/。
+            template_name: 模板文件名。默认 self.prompt_template_path
+                （Skill 需要渲染多个模板时覆盖，如 DQC 拆分模式的单类模板）。
             **variables: 模板渲染变量。
 
         Returns:
@@ -81,10 +88,10 @@ class BaseSkill(ABC):
         if template_dir is None:
             template_dir = Path(__file__).resolve().parent.parent / "skills" / "prompt"
 
-        if not self.prompt_template_path:
+        if not self.prompt_template_path and not template_name:
             raise ValueError(f"Skill '{self.name}' 未配置 prompt_template_path，无法加载模板。")
 
-        template_path = template_dir / self.prompt_template_path
+        template_path = template_dir / (template_name or self.prompt_template_path)
         if not template_path.exists():
             raise FileNotFoundError(f"Prompt 模板不存在: {template_path}")
 
