@@ -11,6 +11,12 @@ from datetime import datetime
 from ...skills.base import SkillContext
 from ...skills.registry import get_skill
 from ...tools.registry import get_tool
+from ..contract import (
+    build_retry_prompt,
+    ensure_structure,
+    scan_degradation,
+    validate_structure,
+)
 from ..state import WorkflowState
 from .helpers import call_llm, save_artifact
 from .sql import wait_for_lineage
@@ -61,12 +67,36 @@ def node_report(state: WorkflowState) -> WorkflowState:
             llm_response = doc_future.result()
             knowledge_doc = kn_future.result()
 
+        # P0-2: Phase6-Design.md 结构门禁——缺章 1 次定向重生成，仍缺降级横幅 + errors
+        def _regen_design(missing: list[str]) -> str:
+            return call_llm(
+                state, "doc_gen", build_retry_prompt(prompt, "Phase6-Design.md", missing)
+            )
+
+        llm_response, design_missing = ensure_structure(
+            "Phase6-Design.md", llm_response, _regen_design
+        )
+        if design_missing:
+            state.setdefault("errors", []).append(
+                f"Phase6-Design.md 结构缺章（定向重生成 1 次后仍缺）: {'、'.join(design_missing)}"
+            )
+            logger.warning(
+                "[task=%s, phase=6] Design.md 结构缺章降级落盘: %s",
+                req_name,
+                "、".join(design_missing),
+            )
+
         save_artifact(state, "Phase6-Design.md", llm_response)
 
         delivery_report = _generate_delivery_report(state)
         save_artifact(state, "Phase6-交付总报告.md", delivery_report)
 
         save_artifact(state, "Phase6-知识沉淀.md", knowledge_doc)
+
+        # P0-2: 知识沉淀降级横幅扫描（线程内降级不碰 state，主线程统一记 errors）
+        for line in scan_degradation(knowledge_doc):
+            state.setdefault("errors", []).append(f"Phase6-知识沉淀.md 结构缺章: {line}")
+            logger.warning("[task=%s, phase=6] 知识沉淀结构缺章降级落盘: %s", req_name, line)
 
         # 自动更新 domain.json（从 DDL/SQL 提取增量数据，dict-level 合并）
         _update_domain_json(state)
@@ -261,6 +291,17 @@ def _generate_knowledge_doc(state: WorkflowState) -> str:
                 "知识提取 LLM 返回过短（%d 字符），使用 fallback", len(knowledge_doc or "")
             )
             return _generate_knowledge_doc_fallback(state)
+
+        # P0-2: 5 章结构契约——缺章 1 次定向重生成，仍缺横幅降级。
+        # 线程内不碰 state，errors 由 node_report 扫描横幅统一记录。
+        kn_missing = validate_structure("Phase6-知识沉淀.md", knowledge_doc)
+        if kn_missing:
+            logger.warning("知识沉淀结构缺章: %s，定向重生成 1 次", "、".join(kn_missing))
+            retry_prompt = build_retry_prompt(prompt, "Phase6-知识沉淀.md", kn_missing)
+            knowledge_doc, kn_missing = ensure_structure(
+                "Phase6-知识沉淀.md",
+                call_llm(state, "knowledge_extract", retry_prompt),
+            )
 
         logger.info("知识沉淀 LLM 提取完成: %d 字符", len(knowledge_doc))
         return knowledge_doc

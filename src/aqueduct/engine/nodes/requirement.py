@@ -11,6 +11,7 @@ from ...memory.recall import KnowledgeRecall
 from ...memory.store import MemoryStore
 from ...skills.base import SkillContext
 from ...skills.registry import get_skill
+from ..contract import gate_response
 from ..state import WorkflowState
 from .helpers import call_llm, save_artifact
 
@@ -354,7 +355,34 @@ def node_requirement(state: WorkflowState) -> WorkflowState:
         # 解析三合一响应：需求摘要 + 设计方案 + DDL
         from .design import _split_requirement_and_design
 
-        req_summary, design_scheme, ddl_content = _split_requirement_and_design(llm_response)
+        def _split_triple(resp: str) -> dict[str, str]:
+            req, design, ddl = _split_requirement_and_design(resp)
+            return {
+                "Phase1-需求理解摘要.md": req,
+                "Phase2-设计方案.md": design,
+                "Phase3-表结构.sql": ddl,
+            }
+
+        # P0-2: 结构契约门禁——拆分产物缺章触发 1 次定向重生成，仍缺降级横幅 + errors
+        def _regen(retry_prompt: str, missing: list[str]) -> str:
+            return call_llm(state, "design_ddl", retry_prompt)
+
+        products, missing = gate_response(
+            prompt,
+            llm_response,
+            _split_triple,
+            ["Phase1-需求理解摘要.md", "Phase2-设计方案.md"],
+            _regen,
+        )
+        if missing:
+            state.setdefault("errors", []).append(
+                f"Phase1/Phase2 结构缺章（定向重生成 1 次后仍缺）: {'、'.join(missing)}"
+            )
+            logger.warning("[task=%s, phase=1] 结构缺章降级落盘: %s", req_name, "、".join(missing))
+
+        req_summary = products["Phase1-需求理解摘要.md"]
+        design_scheme = products["Phase2-设计方案.md"]
+        ddl_content = products["Phase3-表结构.sql"]
 
         # 保存需求理解摘要
         save_artifact(state, "Phase1-需求理解摘要.md", req_summary)

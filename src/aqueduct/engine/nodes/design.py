@@ -17,6 +17,7 @@ import time
 
 from ...skills.base import SkillContext
 from ...skills.registry import get_skill
+from ..contract import gate_response
 from ..state import WorkflowState
 from .helpers import call_llm, extract_sql_block, save_artifact
 
@@ -137,8 +138,34 @@ def node_design(state: WorkflowState) -> WorkflowState:
         prompt = result.data.get("prompt", "")
         llm_response = call_llm(state, "design_ddl", prompt)
 
+        def _split_pair(resp: str) -> dict[str, str]:
+            design, ddl = _split_design_and_ddl(resp)
+            return {"Phase2-设计方案.md": design, "Phase3-表结构.sql": ddl}
+
+        # P0-2: 结构契约门禁——设计方案缺章触发 1 次定向重生成，仍缺降级横幅 + errors
+        def _regen(retry_prompt: str, missing: list[str]) -> str:
+            return call_llm(state, "design_ddl", retry_prompt)
+
+        products, missing = gate_response(
+            prompt,
+            llm_response,
+            _split_pair,
+            ["Phase2-设计方案.md"],
+            _regen,
+        )
+        if missing:
+            state.setdefault("errors", []).append(
+                f"Phase2 结构缺章（定向重生成 1 次后仍缺）: {'、'.join(missing)}"
+            )
+            logger.warning(
+                "[task=%s, phase=2] 设计方案结构缺章降级落盘: %s",
+                req_name,
+                "、".join(missing),
+            )
+
         # 拆分设计方案和 DDL
-        design_scheme, ddl_content = _split_design_and_ddl(llm_response)
+        design_scheme = products["Phase2-设计方案.md"]
+        ddl_content = products["Phase3-表结构.sql"]
 
         # 保存设计方案
         save_artifact(state, "Phase2-设计方案.md", design_scheme)

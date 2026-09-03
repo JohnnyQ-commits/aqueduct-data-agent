@@ -14,6 +14,16 @@ from src.aqueduct.engine.nodes.report import node_report
 # _generate_knowledge_doc 要求 LLM 返回 ≥100 字符才不走 fallback
 _PAD = "x" * 120
 
+# P0-2: Phase6 文档结构契约要求的章节骨架（无骨架的响应会被门禁降级加横幅）
+_VALID_DOC = (
+    "# 测试 — 设计文档\n\n## 需求背景\n背景。\n\n## 设计方案\n方案。\n\n"
+    "## 表结构(DDL)\nDDL。\n\n## 核心 SQL\nSQL。\n\n## 血缘图\n血缘。\n"
+)
+_VALID_KN = (
+    "# 知识沉淀 — 测试\n\n### 一、业务域知识\n实体。\n\n### 二、表结构经验\n经验。\n\n"
+    "### 三、SQL 开发经验\n模式。\n\n### 四、指标口径\n口径。\n\n### 五、待确认事项\n无。\n"
+)
+
 
 def _make_state() -> dict:
     return {
@@ -47,11 +57,11 @@ class TestReportParallelCalls:
             if task_type == "doc_gen":
                 started_doc.set()
                 overlapped = started_kn.wait(timeout=3)
-                return ("doc-PARALLEL" if overlapped else "doc-SERIAL") + _PAD
+                return _VALID_DOC + f"\n\ndoc-{'PARALLEL' if overlapped else 'SERIAL'}\n"
             if task_type == "knowledge_extract":
                 started_kn.set()
                 overlapped = started_doc.wait(timeout=3)
-                return ("kn-PARALLEL" if overlapped else "kn-SERIAL") + _PAD
+                return _VALID_KN + f"\n\nkn-{'PARALLEL' if overlapped else 'SERIAL'}\n"
             return "other" + _PAD
 
         saved: dict[str, str] = {}
@@ -69,9 +79,9 @@ class TestReportParallelCalls:
             node_report(state)
 
         # 串行实现下 doc_gen 先跑、等 3s 超时返回 doc-SERIAL
-        assert saved["Phase6-Design.md"].startswith("doc-PARALLEL")
+        assert "doc-PARALLEL" in saved["Phase6-Design.md"]
         # knowledge_extract ≥100 字符 → 不走 fallback，内容即 LLM 返回
-        assert saved["Phase6-知识沉淀.md"].startswith("kn-PARALLEL")
+        assert "kn-PARALLEL" in saved["Phase6-知识沉淀.md"]
 
     def test_artifact_save_order_unchanged(self):
         """并行化不改变产出物保存顺序（Design → 交付总报告 → 知识沉淀）。"""
