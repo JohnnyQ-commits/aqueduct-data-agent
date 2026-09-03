@@ -324,7 +324,12 @@ def _req_state() -> dict:
 
 
 def _run_requirement(state, responses: list[str]) -> tuple[list[str], dict[str, str], list[str]]:
-    """跑 node_requirement，返回 (call_llm prompts, saved artifacts, errors)。"""
+    """跑 node_requirement，返回 (design_ddl 调用 prompts, saved artifacts, errors)。
+
+    P1-1 拆分后 node_requirement 固定 A(design_ddl) ∥ B(ddl_gen) 两次调用，
+    这里只统计 design_ddl（门禁路径）；ddl_gen 返回同源响应（含 sql 块可提取，
+    且两 fixture 的映射表无数据行 → 一致性校验跳过，不干扰 errors 断言）。
+    """
     from unittest.mock import patch
 
     from src.aqueduct.engine.nodes.requirement import node_requirement
@@ -333,8 +338,10 @@ def _run_requirement(state, responses: list[str]) -> tuple[list[str], dict[str, 
     saved: dict[str, str] = {}
 
     def fake_llm(state, task_type, prompt):
-        prompts.append(prompt)
-        return responses[min(len(prompts) - 1, len(responses) - 1)]
+        if task_type == "design_ddl":
+            prompts.append(prompt)
+            return responses[min(len(prompts) - 1, len(responses) - 1)]
+        return responses[-1]
 
     def fake_save(state, filename, content):
         saved[filename] = content

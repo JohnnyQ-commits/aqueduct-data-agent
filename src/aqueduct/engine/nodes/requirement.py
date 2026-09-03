@@ -13,7 +13,7 @@ from ...skills.base import SkillContext
 from ...skills.registry import get_skill
 from ..contract import gate_response
 from ..state import WorkflowState
-from .helpers import call_llm, save_artifact
+from .helpers import call_llm, extract_sql_block, save_artifact
 
 logger = logging.getLogger(__name__)
 
@@ -283,12 +283,127 @@ def _query_table_schemas(state: WorkflowState) -> dict[str, str]:
     return schemas
 
 
+def _extract_mapping_fields(design_scheme: str) -> set[str]:
+    """从设计方案「字段映射」章节提取目标字段集合。
+
+    定位 `字段映射` 标题（H2-H4）到下一个同级/更高级标题之间的表格，
+    取每行首列且形如 snake_case 的字段名；表头行（含"字段"/"目标"）与
+    分隔行自动跳过。无法定位章节或无有效字段时返回空集合。
+    """
+    m = re.search(r"^#{2,4}\s*字段映射\s*$", design_scheme, re.MULTILINE)
+    if not m:
+        return set()
+
+    seg = design_scheme[m.end() :]
+    nxt = re.search(r"^#{1,4}\s", seg, re.MULTILINE)
+    if nxt:
+        seg = seg[: nxt.start()]
+
+    fields: set[str] = set()
+    for line in seg.splitlines():
+        line = line.strip()
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if not cells:
+            continue
+        first = cells[0].strip("`* ")
+        if not first or set(first) <= {"-", ":", " "}:
+            continue  # 分隔行
+        if "字段" in first or "目标" in first:
+            continue  # 表头行
+        # 剥类型标注：真实输出首列常为 "order_count (bigint)" 形式
+        first = first.split()[0]
+        if re.fullmatch(r"[a-z_][a-z0-9_]*", first):
+            fields.add(first)
+    return fields
+
+
+_DDL_TYPES = (
+    r"(?:string|bigint|int|smallint|tinyint|double|float|decimal\s*\([^)]*\)"
+    r"|boolean|date|timestamp|varchar\s*\([^)]*\))"
+)
+
+
+def _extract_ddl_fields(ddl_content: str) -> set[str]:
+    """从 CREATE TABLE 语句提取列字段集合（含 PARTITIONED BY 分区字段）。
+
+    列定义要求行首缩进 + 标识符 + 类型关键字，避免匹配 CREATE TABLE 行
+    与注释文本；提取失败（非 DDL 文本）返回空集合。
+    """
+    fields: set[str] = set()
+    for m in re.finditer(rf"^\s+(\w+)\s+{_DDL_TYPES}", ddl_content, re.MULTILINE | re.IGNORECASE):
+        fields.add(m.group(1).lower())
+    for m in re.finditer(r"partitioned\s+by\s*\(([^)]*)\)", ddl_content, re.IGNORECASE):
+        # 第二组同样约束为类型关键字，避免 COMMENT 中文误当字段名
+        for pm in re.finditer(rf"(\w+)\s+{_DDL_TYPES}", m.group(1), re.IGNORECASE):
+            fields.add(pm.group(1).lower())
+    return fields
+
+
+def _check_ddl_consistency(design_scheme: str, ddl_content: str) -> list[str]:
+    """设计方案字段映射 vs DDL 字段集比对，返回 DDL 缺失的映射字段（排序后）。
+
+    只查映射→DDL 方向（DDL 比 mapping 多的字段如 etl_time 属正常扩展）；
+    任一侧提取失败时返回空列表（零误报原则，跳过校验）。
+    """
+    mapping = _extract_mapping_fields(design_scheme)
+    ddl_fields = _extract_ddl_fields(ddl_content)
+    if not mapping or not ddl_fields:
+        return []
+    return sorted(mapping - ddl_fields)
+
+
+def _build_ddl_prompt(state: WorkflowState) -> str:
+    """渲染 P1-1 B 路径（需求侧 DDL 直出）prompt；模板缺失返回空串。"""
+    from string import Template
+
+    from ...config.settings import get_settings
+
+    tpl_path = get_settings().prompt_dir / "ddl_generate_req.tpl.md"
+    if not tpl_path.exists():
+        logger.warning("DDL 需求侧模板不存在: %s，回退 Phase 3 独立生成", tpl_path)
+        return ""
+
+    table_schemas = state.get("table_schemas", {})
+    if isinstance(table_schemas, dict):
+        schemas_text = "\n\n".join(table_schemas.values()) if table_schemas else "未获取"
+    else:
+        schemas_text = str(table_schemas) if table_schemas else "未获取"
+
+    return Template(tpl_path.read_text(encoding="utf-8")).safe_substitute(
+        requirement_doc=state.get("requirement", ""),
+        domain_context=state.get("domain_context", ""),
+        table_schemas=schemas_text,
+        target_table=state.get("target_table", ""),
+    )
+
+
+def _generate_ddl_parallel(state: WorkflowState) -> tuple[str, str]:
+    """P1-1 B 路径：从需求 + 表结构直接生成目标表 DDL（不经设计方案）。
+
+    Returns:
+        (ddl_content, error_msg)——失败时 ddl 为空串、error 非空，
+        由调用方记录 errors 并回退 Phase 3 独立生成。
+    """
+    prompt = _build_ddl_prompt(state)
+    if not prompt:
+        return "", "DDL 需求侧模板缺失，已回退 Phase 3 独立生成"
+
+    resp = call_llm(state, "ddl_gen", prompt)
+    if not re.search(r"```sql\s*\n", resp):
+        logger.warning("并行 DDL 响应无 SQL 代码块，回退 Phase 3 独立生成")
+        return "", "并行 DDL 响应无 SQL 代码块，已回退 Phase 3 独立生成"
+    return extract_sql_block(resp), ""
+
+
 def node_requirement(state: WorkflowState) -> WorkflowState:
     """Phase 1: 需求理解节点。
 
-    OPT-5: 默认使用三合一模式（requirement_and_design skill），
-    一次 LLM 调用同时产出需求理解摘要 + 设计方案 + DDL，
-    减少 2 次 LLM 往返。Phase 2 检测到已完成时自动跳过。
+    OPT-5: 需求摘要 + 设计方案合并为单次 LLM 调用。
+    P1-1: 三合一再拆分——A（需求+方案，design_ddl）∥ B（DDL 需求侧直出，
+    ddl_gen）两个并行小调用，各自思考密度减半、远离螺旋阈值；一致性由
+    代码侧字段集比对兜底（1 次定向修复），失败回退 Phase 3 独立生成。
 
     OPT-7: 增量管道 — 需求未变更时跳过 Phase 1，从 manifest 恢复输出。
     """
@@ -312,7 +427,7 @@ def node_requirement(state: WorkflowState) -> WorkflowState:
         )
         return state
 
-    logger.info("[task=%s, phase=1] 需求理解开始（三合一模式）", req_name)
+    logger.info("[task=%s, phase=1] 需求理解开始（A需求+方案 ∥ B DDL 拆分模式）", req_name)
 
     # 自动召回领域知识，填充 domain_context 供全流程使用
     _recall_domain_knowledge(state)
@@ -332,7 +447,7 @@ def node_requirement(state: WorkflowState) -> WorkflowState:
         state["table_schemas"] = {}
 
     try:
-        # OPT-5: 使用三合一 Skill（需求分析+方案设计+DDL）
+        # OPT-5: 二合一 Skill（需求分析+方案设计）；DDL 由 B 路径并行生成
         skill = get_skill("requirement_and_design")
         context = SkillContext(
             input={
@@ -349,28 +464,45 @@ def node_requirement(state: WorkflowState) -> WorkflowState:
             return state
 
         prompt = result.data.get("prompt", "")
-        # 使用 design_ddl 路由（Sonnet 档，中等生成质量）
-        llm_response = call_llm(state, "design_ddl", prompt)
 
-        # 解析三合一响应：需求摘要 + 设计方案 + DDL
+        # P1-1: A（需求+方案）∥ B（DDL）并行——B 输入同为需求+表结构，不依赖 A 产物
+        from concurrent.futures import ThreadPoolExecutor
+
         from .design import _split_requirement_and_design
 
-        def _split_triple(resp: str) -> dict[str, str]:
-            req, design, ddl = _split_requirement_and_design(resp)
+        def _gen_ddl() -> tuple[str, str]:
+            try:
+                return _generate_ddl_parallel(state)
+            except Exception as e:
+                logger.warning("并行 DDL 生成异常，回退 Phase 3 独立生成", exc_info=True)
+                return "", f"并行 DDL 生成失败（{e}），已回退 Phase 3 独立生成"
+
+        with ThreadPoolExecutor(max_workers=2, thread_name_prefix="phase1-split") as executor:
+            a_future = executor.submit(call_llm, state, "design_ddl", prompt)
+            b_future = executor.submit(_gen_ddl)
+            llm_response = a_future.result()
+            ddl_content, ddl_error = b_future.result()
+
+        if ddl_error:
+            # B 失败不炸管道：ddl_content 为空 → Phase 3 独立生成节点接管
+            state.setdefault("errors", []).append(ddl_error)
+
+        # A 响应拆分（二合一响应无 SQL 块，DDL 一律来自 B）
+        def _split_pair(resp: str) -> dict[str, str]:
+            req, design, _ = _split_requirement_and_design(resp)
             return {
                 "Phase1-需求理解摘要.md": req,
                 "Phase2-设计方案.md": design,
-                "Phase3-表结构.sql": ddl,
             }
 
-        # P0-2: 结构契约门禁——拆分产物缺章触发 1 次定向重生成，仍缺降级横幅 + errors
+        # P0-2: 结构契约门禁——只管 A 产物，缺章触发 1 次定向重生成，仍缺降级横幅 + errors
         def _regen(retry_prompt: str, missing: list[str]) -> str:
             return call_llm(state, "design_ddl", retry_prompt)
 
         products, missing = gate_response(
             prompt,
             llm_response,
-            _split_triple,
+            _split_pair,
             ["Phase1-需求理解摘要.md", "Phase2-设计方案.md"],
             _regen,
         )
@@ -382,7 +514,41 @@ def node_requirement(state: WorkflowState) -> WorkflowState:
 
         req_summary = products["Phase1-需求理解摘要.md"]
         design_scheme = products["Phase2-设计方案.md"]
-        ddl_content = products["Phase3-表结构.sql"]
+
+        # P1-1 一致性兜底：设计方案字段映射 vs B 生成的 DDL 字段集比对
+        if ddl_content and len(ddl_content) > 50 and design_scheme:
+            miss_fields = _check_ddl_consistency(design_scheme, ddl_content)
+            if miss_fields:
+                logger.warning(
+                    "[task=%s, phase=1] DDL 与字段映射不一致（缺 %s），定向修复 1 次",
+                    req_name,
+                    "、".join(miss_fields),
+                )
+                ddl_prompt = _build_ddl_prompt(state)
+                if ddl_prompt:
+                    fix_prompt = (
+                        f"{ddl_prompt}\n\n---\n\n⚠️ **一致性警示**：设计方案的字段映射包含以下字段，"
+                        f"但 DDL 缺失：{'、'.join(miss_fields)}。请对齐字段映射重新生成完整 DDL。\n"
+                    )
+                    try:
+                        fix_resp = call_llm(state, "ddl_gen", fix_prompt)
+                        if re.search(r"```sql\s*\n", fix_resp):
+                            fixed = extract_sql_block(fix_resp)
+                            if not _check_ddl_consistency(design_scheme, fixed):
+                                ddl_content = fixed
+                                miss_fields = []
+                    except Exception:
+                        logger.warning("DDL 一致性修复调用异常", exc_info=True)
+                if miss_fields:
+                    state.setdefault("errors", []).append(
+                        f"DDL 与设计方案字段映射不一致（缺 {'、'.join(miss_fields)}），已回退 Phase 3 独立生成"
+                    )
+                    logger.warning(
+                        "[task=%s, phase=1] DDL 一致性修复后仍缺字段，回退 Phase 3: %s",
+                        req_name,
+                        "、".join(miss_fields),
+                    )
+                    ddl_content = ""
 
         # 保存需求理解摘要
         save_artifact(state, "Phase1-需求理解摘要.md", req_summary)
@@ -411,7 +577,7 @@ def node_requirement(state: WorkflowState) -> WorkflowState:
 
         elapsed = time.time() - start
         logger.info(
-            "[task=%s, phase=1] 三合一完成: summary=%d 字符, design=%d 字符, ddl=%d 字符, 耗时=%.1fs",
+            "[task=%s, phase=1] 拆分完成: summary=%d 字符, design=%d 字符, ddl=%d 字符, 耗时=%.1fs",
             req_name,
             len(req_summary),
             len(design_scheme),
@@ -422,7 +588,7 @@ def node_requirement(state: WorkflowState) -> WorkflowState:
         elapsed = time.time() - start
         state.setdefault("errors", []).append(f"需求+方案设计异常: {e!s}")
         logger.error(
-            "[task=%s, phase=1] 三合一异常: %s, 耗时=%.1fs",
+            "[task=%s, phase=1] 拆分异常: %s, 耗时=%.1fs",
             req_name,
             e,
             elapsed,
