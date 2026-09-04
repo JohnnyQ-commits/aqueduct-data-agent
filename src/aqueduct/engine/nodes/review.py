@@ -12,7 +12,7 @@ from ...skills.base import SkillContext
 from ...skills.registry import get_skill
 from ..state import WorkflowState
 from .dqc import start_dqc_speculative
-from .helpers import call_llm, save_artifact
+from .helpers import call_llm, is_valid_sql, save_artifact
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +170,44 @@ def _lint_sql_issues(sql_content: str) -> list[dict[str, str]]:
     return issues
 
 
+def _trial_run_issues(state: WorkflowState) -> list[dict[str, str]]:
+    """P1-2: 真实试跑门禁——每次审查对当前 SQL 现场试跑（LIMIT 10）。
+
+    试跑失败（语法错误/字段不对齐/表不存在）作为 Critical 注入修复循环；
+    修复循环回跳 review 时自动复检（与 P0-1 linter 同构）。
+    跳过条件（零误报原则）：execution 未启用（`is True` 严格判断——
+    单测 mock settings 未显式设 bool 时自动跳过，防止真连数据平台）、
+    SQL 无效/过短、数据平台 health_check 不可用（连接故障不误报为 SQL 问题）。
+    """
+    from ...config.settings import get_settings
+    from ...tools.registry import get_tool
+    from .sql import _run_trial_selects
+
+    sql_content = state.get("sql_content", "")
+    if not sql_content or len(sql_content) < 50 or not is_valid_sql(sql_content):
+        return []
+
+    # 严格 is True：非 bool（单测 MagicMock 属性）一律跳过
+    if get_settings().execution_enabled is not True:
+        return []
+
+    try:
+        executor = get_tool("executor")
+        health = executor.execute(action="health_check")
+        if not health.success:
+            logger.info("试跑门禁跳过: 数据平台不可用")
+            return []
+    except Exception:
+        logger.warning("试跑门禁健康检查异常，跳过", exc_info=True)
+        return []
+
+    trial = _run_trial_selects(sql_content)
+    state["trial_run_result"] = trial  # 更新为当前 SQL 的最新结果
+    if not trial["errors"]:
+        return []
+    return [{"severity": "Critical", "message": f"[试跑] {err}"} for err in trial["errors"]]
+
+
 def _parse_review_issues(review_result: str) -> list[dict[str, str]]:
     """从审查报告中提取 Critical/Warning 级别问题。
 
@@ -248,7 +286,16 @@ def node_review(state: WorkflowState) -> WorkflowState:
         state["metadata"] = {**(state.get("metadata", {})), "review_done": "true"}
 
         # 解析审查问题，判断是否需要修复循环
-        # P0-1: 先注入确定性规范校验（零 token、结果确定），
+        # P1-2: 真实试跑门禁（LIMIT 10 实际执行）先行——最强信号，
+        # 失败直接作为 Critical 触发修复循环（修复回跳时现场复检）
+        trial_issues = _trial_run_issues(state)
+        if trial_issues:
+            logger.warning(
+                "[task=%s] 试跑门禁: %d 条 SELECT 试跑失败，注入 Critical 触发修复循环",
+                req_name,
+                len(trial_issues),
+            )
+        # P0-1: 再注入确定性规范校验（零 token、结果确定），
         # 再合并 LLM 审查问题——ERROR 级违规直接作为 Critical 触发修复循环
         lint_issues = _lint_sql_issues(sql_content)
         if lint_issues:
@@ -259,7 +306,7 @@ def node_review(state: WorkflowState) -> WorkflowState:
                 sum(1 for i in lint_issues if i["severity"] == "Critical"),
                 sum(1 for i in lint_issues if i["severity"] == "Warning"),
             )
-        issues = lint_issues + _parse_review_issues(llm_response)
+        issues = trial_issues + lint_issues + _parse_review_issues(llm_response)
         critical_count = sum(1 for i in issues if i["severity"].lower() == "critical")
         warning_count = sum(1 for i in issues if i["severity"].lower() == "warning")
         fix_iterations = state.get("fix_iterations", 0)

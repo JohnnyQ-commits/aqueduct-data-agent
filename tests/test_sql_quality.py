@@ -245,13 +245,13 @@ class TestExtractSelectStatements:
         assert len(result) == 1
         assert result[0].startswith("SELECT")
 
-    def test_skips_insert(self):
-        """跳过 INSERT INTO 语句。"""
+    def test_insert_head_stripped(self):
+        """P1-2: INSERT...SELECT 剥头取查询体（旧行为全跳过导致真实 ETL SQL 100% 不试跑）。"""
         sql = "INSERT INTO target SELECT * FROM source;\nSELECT count(*) FROM target"
         result = _extract_select_statements(sql)
-        # INSERT 不是 SELECT/WITH 开头，跳过
-        assert len(result) == 1
-        assert "count(*)" in result[0]
+        assert len(result) == 2
+        assert result[0].startswith("SELECT")
+        assert "count(*)" in result[1]
 
     def test_multiple_selects(self):
         """提取多条 SELECT。"""

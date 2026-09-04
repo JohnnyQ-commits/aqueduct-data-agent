@@ -96,7 +96,7 @@ class DataPlatformAdapter:
         }
 
     def _hive_submit(self, sql: str, window_id: str) -> int:
-        endpoint = "/data-platform-api/hive/execute"
+        endpoint = "/bdp-fc-ide-external-controller/hive/execute"
         payload = {
             "applicationId": 624,
             "async": True,
@@ -117,7 +117,7 @@ class DataPlatformAdapter:
         # 轮询检查状态
         for _attempt in range(60):  # Max 5 minutes
             time.sleep(5)
-            endpoint = "/data-platform-api/hive/executionStatus"
+            endpoint = "/bdp-fc-ide-external-controller/hive/executionStatus"
             payload = {"executionId": execution_id, "userId": self.user_id}
             resp = self.client.post(endpoint, json=payload)
             resp.raise_for_status()
@@ -132,7 +132,7 @@ class DataPlatformAdapter:
         raise TimeoutError("任务超时 (5 min)")
 
     def _hive_fetch(self, result_id: int, window_id: str) -> list[dict[str, Any]]:
-        endpoint = "/data-platform-api/hive/result"
+        endpoint = "/bdp-fc-ide-external-controller/hive/result"
         # 默认取前 1000 行，防止数据量过大
         payload = {
             "resultId": result_id,

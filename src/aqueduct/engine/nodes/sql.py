@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
@@ -178,10 +179,55 @@ def _auto_validate(state: WorkflowState, sql_path: str) -> None:
         logger.warning("SQL 校验失败，跳过", exc_info=True)
 
 
+def _run_trial_selects(sql_content: str) -> dict:
+    """对 SQL 中的 SELECT 查询体执行 LIMIT 10 试跑（P1-2 门禁核心）。
+
+    ETL 形态（INSERT OVERWRITE ... SELECT）剥掉 INSERT 头取查询体试跑，
+    实际执行比静态检查更能提前发现语法错误和字段不对齐。
+    executor 通过函数内 import 获取（patch 点统一 tools.registry.get_tool）。
+
+    Returns:
+        {"total": 可试跑语句数, "tested": 实际试跑数, "passed": 通过数, "errors": [错误信息]}
+    """
+    from ...tools.registry import get_tool
+
+    select_stmts = _extract_select_statements(sql_content)
+    if not select_stmts:
+        return {"total": 0, "tested": 0, "passed": 0, "errors": []}
+
+    executor = get_tool("executor")
+    trial_results: list[dict] = []
+    errors: list[str] = []
+
+    for i, stmt in enumerate(select_stmts[:3]):  # 最多试跑 3 条 SELECT
+        limited_stmt = stmt.rstrip().rstrip(";")
+        if not re.search(r"\blimit\b", limited_stmt, re.IGNORECASE):
+            limited_stmt += "\nLIMIT 10"
+
+        result = executor.execute(action="execute", sql=limited_stmt)
+        trial_results.append(
+            {
+                "index": i,
+                "success": result.success,
+                "error": result.error if not result.success else None,
+            }
+        )
+        if not result.success:
+            errors.append(f"SELECT #{i + 1}: {result.error}")
+
+    return {
+        "total": len(select_stmts),
+        "tested": len(trial_results),
+        "passed": len(trial_results) - len(errors),
+        "errors": errors,
+    }
+
+
 def _auto_trial_run(state: WorkflowState, sql_path: str) -> None:
     """试跑验证：对生成的 SQL 执行 LIMIT 10 试跑，提前发现语法错误。
 
-    仅在 execution_enabled=True 时执行。失败不阻塞管道，仅记录警告。
+    仅在 execution_enabled=True 时执行。失败不阻塞管道，仅记录警告
+    （P1-2 强制门禁在 review 侧注入 Critical issues 触发修复循环）。
     借鉴 ai-sql-generate 的 Stage 3 预验证思路：实际执行比静态检查更能发现问题。
     """
     try:
@@ -199,60 +245,35 @@ def _auto_trial_run(state: WorkflowState, sql_path: str) -> None:
             logger.warning("试跑跳过: 文件内容非有效 SQL（%d 字符）", len(sql_content))
             return
 
-        # 提取 SELECT 语句（跳过 CREATE/INSERT 等 DDL/DML）
-        select_stmts = _extract_select_statements(sql_content)
-        if not select_stmts:
+        trial = _run_trial_selects(sql_content)
+        if trial["total"] == 0:
             logger.info("试跑跳过: 未找到可试跑的 SELECT 语句")
             return
 
-        executor = get_tool("executor")
-        trial_results: list[dict] = []
-        errors: list[str] = []
-
-        for i, stmt in enumerate(select_stmts[:3]):  # 最多试跑 3 条 SELECT
-            # 追加 LIMIT 10
-            limited_stmt = stmt.rstrip().rstrip(";")
-            if "limit" not in limited_stmt.lower().split()[-1:]:
-                limited_stmt += "\nLIMIT 10"
-
-            result = executor.execute(action="execute", sql=limited_stmt)
-            trial_results.append(
-                {
-                    "index": i,
-                    "success": result.success,
-                    "error": result.error if not result.success else None,
-                }
-            )
-            if not result.success:
-                errors.append(f"SELECT #{i + 1}: {result.error}")
-
         # 记录结果
-        state["trial_run_result"] = {
-            "total": len(select_stmts),
-            "tested": len(trial_results),
-            "passed": len(trial_results) - len(errors),
-            "errors": errors,
-        }
+        state["trial_run_result"] = trial
 
-        if errors:
-            logger.warning("试跑发现 %d 个错误: %s", len(errors), "; ".join(errors))
+        if trial["errors"]:
+            logger.warning(
+                "试跑发现 %d 个错误: %s", len(trial["errors"]), "; ".join(trial["errors"])
+            )
         else:
-            logger.info("试跑通过: %d 条 SELECT 语句均成功", len(trial_results))
+            logger.info("试跑通过: %d 条 SELECT 语句均成功", trial["tested"])
 
         # 保存试跑报告
         report_lines = [
             "# SQL 试跑报告",
             "",
-            f"- **测试语句数**: {len(trial_results)}/{len(select_stmts)}",
-            f"- **通过**: {len(trial_results) - len(errors)}",
-            f"- **失败**: {len(errors)}",
+            f"- **测试语句数**: {trial['tested']}/{trial['total']}",
+            f"- **通过**: {trial['passed']}",
+            f"- **失败**: {len(trial['errors'])}",
             "",
         ]
-        for r in trial_results:
-            status = "✅" if r["success"] else "❌"
-            line = f"- {status} SELECT #{r['index'] + 1}"
-            if r["error"]:
-                line += f" — `{r['error'][:100]}`"
+        for i in range(trial["tested"]):
+            status = "✅" if i < trial["passed"] else "❌"
+            line = f"- {status} SELECT #{i + 1}"
+            if i >= trial["passed"] and i < trial["passed"] + len(trial["errors"]):
+                line += f" — `{trial['errors'][i - trial['passed']][:100]}`"
             report_lines.append(line)
 
         save_artifact(state, "Phase4-试跑报告.md", "\n".join(report_lines))
@@ -262,13 +283,13 @@ def _auto_trial_run(state: WorkflowState, sql_path: str) -> None:
 
 
 def _extract_select_statements(sql_content: str) -> list[str]:
-    """从 SQL 内容中提取独立的 SELECT 语句。
+    """从 SQL 内容中提取可试跑的 SELECT 查询体。
 
-    跳过 CREATE TABLE、INSERT INTO 等非查询语句。
-    简单按分号分割（不处理存储过程等复杂结构）。
+    P1-2: ETL SQL 是 `INSERT [OVERWRITE] TABLE ... [PARTITION(...)] SELECT`
+    单语句形态，按分号拆分后以 INSERT 开头——剥掉 INSERT 头取 SELECT
+    查询体（行首 select/with 定位，避开字符串字面量），否则试跑对真实
+    ETL SQL 100% 跳过。纯 INSERT VALUES（无查询体）不产出。
     """
-    import re
-
     # 去掉注释
     cleaned = re.sub(r"--.*$", "", sql_content, flags=re.MULTILINE)
     cleaned = re.sub(r"/\*.*?\*/", "", cleaned, flags=re.DOTALL)
@@ -276,12 +297,19 @@ def _extract_select_statements(sql_content: str) -> list[str]:
     # 按分号分割
     statements = [s.strip() for s in cleaned.split(";") if s.strip()]
 
-    # 只保留 SELECT 语句（含 WITH ... SELECT）
     selects = []
     for stmt in statements:
         upper = stmt.lstrip().upper()
         if upper.startswith("SELECT") or upper.startswith("WITH"):
             selects.append(stmt)
+        elif upper.startswith("INSERT"):
+            # 剥 INSERT 头：定位首个词边界 select/with——兼容单行
+            # `insert into t select ...` 与跨行 `... partition (...) \n select`。
+            # 头部含 values（INSERT VALUES）不产出：防 `'select'`/`'with'`
+            # 字符串字面量被误剥成垃圾语句试跑（零误报原则）
+            m = re.search(r"\b(select|with)\b", stmt, re.IGNORECASE)
+            if m and not re.search(r"\bvalues\b", stmt[: m.start()], re.IGNORECASE):
+                selects.append(stmt[m.start() :])
 
     return selects
 
