@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Eval layer — minimal eval loop (Agent-testing phase 1)**: `src/aqueduct/evals.py` turns the v0.6.0 quality gates into an eval harness — an eval run is one `dev` pipeline pass plus the gates re-assembled as scorers (imported, never copied: artifact presence, P0-2 structure contract, keyword anchors, P0-1 SQL linter with Critical-as-veto, P0-3 DQC case count with `[DQC降级]` as instant fail, P1-2 real trial run, pipeline errors), rendered into a Markdown scorecard (`evals/runs/report-YYYYMMDD.md`). Dataset `evals/` ships two desensitized cases covering both scenarios — greenfield (`examples/ecommerce_daily_stat.md`, referenced in place, not copied) and a new synthetic iterative requirement (`cases/order_refund_iterative.md`: refund metrics added to an existing table with backward-compatibility constraints); assertions anchor on required artifacts/keywords/gates, never full-text golden diffs (reusing the P0-2 "contract anchors, not goldens" lesson). Entry point `scripts/run_evals.py` (`--case` substring filter, exit 0/1) — positioned for template-change gating and periodic regression, deliberately never per-commit CI (one eval = one real LLM run, 43–96 min, and gateway instability pollutes scores). A contract test (`TestRealManifest`) guards `manifest.json` against artifact names the pipeline never writes — written after exactly that mistake (`Phase5-质量仪表盘.md` imported from the plugin-mode list) and would have caught it before a wasted 43-minute run; a live smoke against the real v5 output confirmed the scorer discriminates (v5's pre-P1-1 Phase3 rehearsal SQL correctly fails the DDL keyword anchor, its real Phase4 SQL passes the linter 0/0). 22 new sealed tests (autouse fixture seals the trial gate — local `.env` credentials otherwise leak `execution_enabled=True` into unit tests and reach the real platform), suite at 570.
+
 ## [0.6.0] - 2026-09-07
 
 ### Added

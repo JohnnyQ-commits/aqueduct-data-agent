@@ -52,6 +52,9 @@ workspace/
 output/
 node_modules/
 
+# 评估运行产物（评分卡与交付物副本——回归基准，非交付物）
+evals/runs/
+
 # 运行时缓存（表结构缓存、增量管道 manifest）
 .cache/
 .pipeline_manifest.json
@@ -65,6 +68,7 @@ knowledge/phase1-clarification-recording.md
 htmlcov/
 .ruff_cache/
 .claude_tmp/
+.tmp/
 
 # 内部文档（不提交到远程）
 internal/

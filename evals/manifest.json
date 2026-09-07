@@ -1,0 +1,64 @@
+{
+  "cases": [
+    {
+      "name": "ecommerce_greenfield",
+      "requirement": "../examples/ecommerce_daily_stat.md",
+      "scenario": "greenfield",
+      "required_artifacts": [
+        "Phase1-需求理解摘要.md",
+        "Phase2-设计方案.md",
+        "Phase3-表结构.sql",
+        "Phase4-ecommerce_daily_stat.sql",
+        "Phase5-数据质量测试.sql",
+        "Phase6-Design.md",
+        "Phase6-交付总报告.md",
+        "Phase6-知识沉淀.md"
+      ],
+      "required_keywords": {
+        "Phase3-表结构.sql": [
+          "dws_order_daily_stat_di",
+          "order_count",
+          "customer_count",
+          "gmv",
+          "avg_order_amount",
+          "inc_day"
+        ],
+        "Phase4-ecommerce_daily_stat.sql": [
+          "dwd_order_info_di",
+          "order_status",
+          "gmv",
+          "inc_day"
+        ]
+      },
+      "min_dqc_cases": 10
+    },
+    {
+      "name": "ecommerce_refund_iterative",
+      "requirement": "cases/order_refund_iterative.md",
+      "scenario": "iterative",
+      "required_artifacts": [
+        "Phase1-需求理解摘要.md",
+        "Phase2-设计方案.md",
+        "Phase3-表结构.sql",
+        "Phase4-order_refund_iterative.sql",
+        "Phase5-数据质量测试.sql",
+        "Phase6-Design.md",
+        "Phase6-交付总报告.md",
+        "Phase6-知识沉淀.md"
+      ],
+      "required_keywords": {
+        "Phase3-表结构.sql": [
+          "refund_order_count",
+          "refund_amount"
+        ],
+        "Phase4-order_refund_iterative.sql": [
+          "dwd_order_refund_info_di",
+          "refund_order_count",
+          "refund_amount",
+          "inc_day"
+        ]
+      },
+      "min_dqc_cases": 10
+    }
+  ]
+}
