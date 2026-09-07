@@ -337,9 +337,7 @@ class TestPhase4Redundancy:
             patch.object(SQLDevelopSkill, "execute", capture_execute),
             # 补丁目标必须是导入方绑定（sql.py: from .helpers import call_llm），
             # 此前打在 helpers 源模块上无效 → 真实 sql_gen LLM 调用（79s 测试债）
-            patch(
-                "src.aqueduct.engine.nodes.sql.call_llm", return_value="```sql\nSELECT 1\n```"
-            ),
+            patch("src.aqueduct.engine.nodes.sql.call_llm", return_value="```sql\nSELECT 1\n```"),
             patch("src.aqueduct.engine.nodes.sql.extract_sql_block", return_value="SELECT 1"),
             patch("src.aqueduct.engine.nodes.sql.save_artifact", return_value=""),
             patch("src.aqueduct.engine.nodes.sql.is_valid_sql", return_value=True),

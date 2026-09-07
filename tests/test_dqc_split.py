@@ -73,9 +73,7 @@ def _category_of(prompt: str) -> str:
 def _fake_llm_by_category(state, task_type, prompt):
     """按 prompt 中的类别名返回带标记的 SQL（可校验合并顺序）。"""
     name = _category_of(prompt)
-    return (
-        f"```sql\n-- [{name}-标记] 检查\nselect count(*) from t;\n```"
-    )
+    return f"```sql\n-- [{name}-标记] 检查\nselect count(*) from t;\n```"
 
 
 class TestCategoryPrompt:

@@ -36,7 +36,7 @@ _DQC_CATEGORIES: list[_DqcCategory] = [
         "focus": (
             "- 主键字段必须检查两种：重复（group by ... having count(*) > 1）与 NULL\n"
             "- 核心业务字段（度量值、维度键）逐个做非空检查\n"
-            "- 主键不明确时，标注\"主键待确认\"并给出候选主键的唯一性测试"
+            '- 主键不明确时，标注"主键待确认"并给出候选主键的唯一性测试'
         ),
         "example": (
             "-- [唯一性-主键重复] 检查 order_id 是否重复\n"
@@ -57,7 +57,7 @@ _DQC_CATEGORIES: list[_DqcCategory] = [
         "key": "refutation",
         "name": "业务逻辑反证",
         "focus": (
-            "- 从 domain_context 提取业务规则，反证\"不该出现的数据确实没出现\"\n"
+            '- 从 domain_context 提取业务规则，反证"不该出现的数据确实没出现"\n'
             "  （如负数金额、非法状态流转、未来日期）\n"
             "- 必须是业务语义反证，不能只检查 NULL\n"
             "- 业务规则有歧义时生成测试并加 -- TODO: clarify 注释"
@@ -217,17 +217,13 @@ def _generate_dqc_split(state: WorkflowState) -> str:
     with ThreadPoolExecutor(
         max_workers=max(1, len(prompts)), thread_name_prefix="dqc-split"
     ) as pool:
-        future_to_cat = {
-            pool.submit(_call_one, cat, prompt): cat for cat, prompt in prompts
-        }
+        future_to_cat = {pool.submit(_call_one, cat, prompt): cat for cat, prompt in prompts}
         for fut in as_completed(future_to_cat):
             cat = future_to_cat[fut]
             try:
                 results[cat["key"]] = fut.result()
             except Exception as e:
-                logger.warning(
-                    "DQC 类别「%s」生成失败（已降级跳过）: %s", cat["name"], e
-                )
+                logger.warning("DQC 类别「%s」生成失败（已降级跳过）: %s", cat["name"], e)
                 failures.append(cat["name"])
 
     if not results:
@@ -235,9 +231,7 @@ def _generate_dqc_split(state: WorkflowState) -> str:
 
     parts = [results[cat["key"]] for cat in _DQC_CATEGORIES if cat["key"] in results]
     if failures:
-        parts.append(
-            "-- [DQC降级] 类别「" + "、".join(failures) + "」本轮生成失败，已跳过该类测试"
-        )
+        parts.append("-- [DQC降级] 类别「" + "、".join(failures) + "」本轮生成失败，已跳过该类测试")
         logger.warning(
             "DQC 拆分生成部分降级: %d/%d 类成功，失败: %s",
             len(results),
@@ -278,9 +272,7 @@ def start_dqc_speculative(state: WorkflowState) -> None:
         state["_dqc_spec_future"] = future
         state["_dqc_spec_executor"] = executor
         state["_dqc_spec_input_hash"] = _dqc_input_hash(state)
-        logger.info(
-            "投机 DQC 拆分生成已在后台启动（5 类并行，与审查并行，PERF-9/P0-3）"
-        )
+        logger.info("投机 DQC 拆分生成已在后台启动（5 类并行，与审查并行，PERF-9/P0-3）")
     except Exception:
         logger.warning("投机 DQC 启动失败，Phase 5 走正常路径", exc_info=True)
         state.pop("_dqc_spec_future", None)

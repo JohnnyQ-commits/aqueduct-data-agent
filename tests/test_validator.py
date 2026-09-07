@@ -567,8 +567,7 @@ class TestReviewLintInjection:
         result = node_review(state)
         assert result["_needs_fix_loop"] is True
         assert any(
-            i["severity"] == "Critical" and "CTE" in i["message"]
-            for i in result["_review_issues"]
+            i["severity"] == "Critical" and "CTE" in i["message"] for i in result["_review_issues"]
         )
 
     @patch("src.aqueduct.engine.nodes.review.start_dqc_speculative")

@@ -252,17 +252,13 @@ class TestSpeculativeRestart:
         """重新启动投机时关闭旧 executor，替换为新 future。"""
 
         state = _make_state()
-        with patch(
-            "src.aqueduct.engine.nodes.dqc.call_llm", return_value=_resp("SPEC-1")
-        ):
+        with patch("src.aqueduct.engine.nodes.dqc.call_llm", return_value=_resp("SPEC-1")):
             start_dqc_speculative(state)
             state["_dqc_spec_future"].result(timeout=5)
         old_executor = state["_dqc_spec_executor"]
         old_future = state["_dqc_spec_future"]
 
-        with patch(
-            "src.aqueduct.engine.nodes.dqc.call_llm", return_value=_resp("SPEC-2")
-        ):
+        with patch("src.aqueduct.engine.nodes.dqc.call_llm", return_value=_resp("SPEC-2")):
             start_dqc_speculative(state)
             state["_dqc_spec_future"].result(timeout=5)
 

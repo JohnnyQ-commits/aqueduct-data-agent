@@ -215,9 +215,15 @@ class TestSpiralAbort:
 
         events = [
             # 思考增量：4000 汉字 ≈ 6000 tokens（estimate_tokens 1.5/字）
-            _event("content_block_delta", delta=SimpleNamespace(type="thinking_delta", thinking="思" * 4000)),
+            _event(
+                "content_block_delta",
+                delta=SimpleNamespace(type="thinking_delta", thinking="思" * 4000),
+            ),
             # 累计 12000 ≥ 阈值 12000 → 中止
-            _event("content_block_delta", delta=SimpleNamespace(type="thinking_delta", thinking="考" * 4000)),
+            _event(
+                "content_block_delta",
+                delta=SimpleNamespace(type="thinking_delta", thinking="考" * 4000),
+            ),
             # 不应到达
             _event("content_block_delta", delta=_delta("text_delta", "SELECT 1")),
         ]
@@ -237,7 +243,10 @@ class TestSpiralAbort:
 
         events = [
             # 4000 汉字 ≈ 6000 tokens < 12000
-            _event("content_block_delta", delta=SimpleNamespace(type="thinking_delta", thinking="思" * 4000)),
+            _event(
+                "content_block_delta",
+                delta=SimpleNamespace(type="thinking_delta", thinking="思" * 4000),
+            ),
             _event("content_block_delta", delta=_delta("text_delta", "SELECT 1")),
         ]
         stream = FakeEventStream(events)
