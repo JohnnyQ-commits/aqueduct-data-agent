@@ -336,6 +336,65 @@ class TestScoreCase:
 
         assert score.fix_iterations == 3
 
+    def test_trial_selfskip_renders_skip(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """平台不可用时 _trial_run_issues 自跳过返回 []——必须记 skip 而非 pass。
+
+        首次真实评估踩到：迭代用例评分时 cookie 已 302，试跑从未执行，
+        评分卡却记"试跑通过"。区分信号 = _trial_run_issues 真跑时会写
+        state["trial_run_result"]（review.py:205）。
+        """
+        out = tmp_path / "runs" / "demo_case"
+        _write_good_artifacts(out)
+        monkeypatch.setattr("src.aqueduct.evals._trial_enabled", lambda: True)
+        # 模拟 health_check 302 → 零误报自跳过（不写 trial_run_result）
+        monkeypatch.setattr("src.aqueduct.evals._trial_run_issues", lambda state: [])
+
+        score = score_case(_make_case(), out, _good_state())
+
+        check = _check(score, "真实试跑")
+        assert check.status == "skip"
+        assert score.passed  # skip 不拖垮整体
+
+    def test_trial_pass_only_when_actually_ran(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """真跑过的判定：_trial_run_issues 落盘 trial_run_result 才算 pass。"""
+        out = tmp_path / "runs" / "demo_case"
+        _write_good_artifacts(out)
+        monkeypatch.setattr("src.aqueduct.evals._trial_enabled", lambda: True)
+
+        def _real_run(state: dict) -> list:
+            state["trial_run_result"] = {"total": 2, "tested": 2, "passed": 2, "errors": []}
+            return []
+
+        monkeypatch.setattr("src.aqueduct.evals._trial_run_issues", _real_run)
+
+        score = score_case(_make_case(), out, _good_state())
+
+        check = _check(score, "真实试跑")
+        assert check.status == "pass"
+        assert "2" in check.detail  # 实测语句数进明细
+
+    def test_trial_stale_result_not_trusted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """管道遗留的陈旧 trial_run_result 不得采信——现场重跑后以新结果为准。"""
+        out = tmp_path / "runs" / "demo_case"
+        _write_good_artifacts(out)
+        monkeypatch.setattr("src.aqueduct.evals._trial_enabled", lambda: True)
+        # state 携带管道早前的"成功"结果，但现场重跑自跳过（不写新结果）
+        stale_state = _good_state() | {
+            "trial_run_result": {"total": 2, "tested": 2, "passed": 2, "errors": []}
+        }
+        monkeypatch.setattr("src.aqueduct.evals._trial_run_issues", lambda state: [])
+
+        score = score_case(_make_case(), out, stale_state)
+
+        check = _check(score, "真实试跑")
+        assert check.status == "skip"
+
 
 # ---------------------------------------------------------- render_scorecard --
 

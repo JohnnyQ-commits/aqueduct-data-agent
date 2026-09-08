@@ -199,13 +199,27 @@ def score_case(case: EvalCase, output_dir: Path | str, state: dict) -> CaseScore
             CheckResult(TRIAL_CHECK, "skip", "数据平台未启用（execution_enabled 非 True）")
         )
     else:
+        # 真跑过与否的区分信号：_trial_run_issues 执行时会写
+        # state["trial_run_result"]（review.py:205）；返回 [] 但未写 =
+        # 零误报自跳过（health_check 302 / SQL 无效），记 skip 而非 pass。
+        # 管道遗留的陈旧结果先清掉，只认现场这次。
+        state.pop("trial_run_result", None)
         issues = _trial_run_issues(state)
         if issues:
             checks.append(
                 CheckResult(TRIAL_CHECK, "fail", "; ".join(i["message"] for i in issues[:3]))
             )
+        elif "trial_run_result" not in state:
+            checks.append(CheckResult(TRIAL_CHECK, "skip", "平台不可用或 SQL 无效，试跑未执行"))
         else:
-            checks.append(CheckResult(TRIAL_CHECK, "pass", "试跑通过"))
+            trial = state["trial_run_result"]
+            checks.append(
+                CheckResult(
+                    TRIAL_CHECK,
+                    "pass",
+                    f"试跑通过（{trial.get('passed', '?')}/{trial.get('tested', '?')} 条语句）",
+                )
+            )
 
     # 7. 管道错误（含修复循环收敛后的遗留 errors）
     checks.append(

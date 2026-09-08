@@ -32,6 +32,12 @@ python scripts/run_evals.py --case iterative  # 按名称子串过滤单场景
 ## 判读注意
 
 - 真实试跑在无 DP_* 配置的环境自动 skip（`execution_enabled is not True` 严格判断，不算失败）
+- **FAIL 先查 task log 排除网关污染再判定质量退步**——首跑实例：迭代用例 Design.md 降级的
+  根因是 LLM 网关 `ConnectionRefused`（错误串被当正文落盘，门禁两次拦截后按设计降级），
+  SQL/linter/DQC 本体全净。评分卡 fail ≠ 模型退步，先看 `task.*.log` 里的超时/重试/5xx
+- **迭代用例的试跑维度不作为质量信号**：其目标表/退款源表是 demo 虚构表，真实平台不存在
+  （MCP 查不到），试跑按设计 skip 或报表不存在；试跑维度的有效信号来自全新用例
+  （其两张源表在平台真实存在）
 - 同一需求连跑 3 次的波动需先排除网关因素（重试次数 / 5xx / 中止次数）再判定退步
 - 模板（`.tpl.md` / skill prompt）有 diff 的改动必须附评估报告，分数不降才可合并（阶段 2 守门）
 - 数据集腐化防护：需求过时或网关换模型后，全量重跑建立新基线
