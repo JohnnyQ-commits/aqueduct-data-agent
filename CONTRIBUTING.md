@@ -56,6 +56,25 @@ Use the [Feature Request template](.github/ISSUE_TEMPLATE/feature_request.yml).
 
 5. Submit the PR and fill in the PR template
 
+#### Prompt/Template Changes Require an Eval Report
+
+Unit tests cannot catch prompt regressions: a `.tpl.md` edit, a skill-prompt tweak, or a change to how LLM calls are orchestrated can silently change what the model writes while every test stays green. If your PR touches any of these, the eval suite is the only regression net:
+
+```bash
+# One eval = one real dev-pipeline run per case (tens of minutes, real LLM calls —
+# this is why evals are a manual pre-merge gate, never per-commit CI)
+python scripts/run_evals.py                 # all cases
+python scripts/run_evals.py --case iterative  # single case by name substring
+```
+
+Attach the generated `evals/runs/report-YYYYMMDD.md` to the PR. Merge criteria:
+
+- Scores must not be lower than the last baseline (same cases, same scenario)
+- Check the report's **网关健康** (gateway health) column before judging a FAIL — a failure during LLM gateway anomalies (timeouts/retries) is an infra artifact, not a quality regression; re-run in a healthy window
+- Without data-platform credentials (`DP_*`) the real-trial check auto-skips — that's expected and not a failure
+
+See `evals/README.md` for the dataset layout and scoring dimensions.
+
 #### Commit Message Convention
 
 We follow [Conventional Commits](https://www.conventionalcommits.org/):

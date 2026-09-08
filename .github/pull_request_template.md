@@ -32,6 +32,18 @@ python -m pytest tests/ -v
 ruff check src/ tests/
 ```
 
+## Prompt/Template Changes (if applicable)
+
+<!-- Required ONLY if this PR touches prompt templates (.tpl.md), skill prompts,
+     or the orchestration of LLM calls. Unit tests cannot catch prompt regressions —
+     a template can change what the model writes while every test stays green.
+     See CONTRIBUTING.md "Prompt/Template Changes" for details. -->
+
+- [ ] This PR **does not** change prompts/templates/LLM orchestration
+- [ ] Eval report attached (`python scripts/run_evals.py`, output `evals/runs/report-YYYYMMDD.md`)
+- [ ] Scores are not lower than the last baseline (same cases, same scenario)
+- [ ] The report's 网关健康 (gateway health) column was checked — a FAIL during gateway anomalies is not a quality regression
+
 ## Checklist
 
 - [ ] Code follows the project's style guidelines (`ruff check` passes)
