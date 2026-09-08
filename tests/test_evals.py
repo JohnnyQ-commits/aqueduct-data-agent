@@ -425,6 +425,111 @@ class TestRenderScorecard:
         assert "FAIL" in md
 
 
+# ------------------------------------------------------- 运行健康度（网关附注）--
+
+# 取自首跑迭代用例 task.2026-09-07.log 的真实污染指纹
+POLLUTED_LOG_LINES = [
+    "2026-09-07 19:48:29 [WARNING] aqueduct.engine.nodes.sql: 试跑发现 1 个错误: "
+    "SELECT #1: Redirect response '302 Found' for url "
+    "'https://data.sf-express.com/bdp-fc-ide-external-controller/hive/execute'",
+    "For more information check: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/302",
+    "2026-09-07 20:02:25 [INFO] aqueduct.engine.nodes.dqc: DQC 执行跳过: "
+    "连接失败: Redirect response '302 Found' for url 'https://example.com/hive/execute'",
+    "2026-09-07 20:17:25 [ERROR] aqueduct.llm.claude: [model=claude-opus-4-8] "
+    "LLM CLI 调用超时: timeout=900s, attempt=1/3, prompt_size=20791 字符",
+    "2026-09-07 20:17:25 [WARNING] aqueduct.llm.claude: [model=claude-opus-4-8] "
+    "LLM 超时，1s 后以相同超时（900s）重试",
+    "2026-09-07 20:23:34 [WARNING] aqueduct.engine.contract: [Phase6-Design.md] "
+    "结构契约重生成后仍缺: 需求背景，降级落盘",
+    "2026-09-07 20:23:34 [WARNING] aqueduct.engine.nodes.report: "
+    "Design.md 结构缺章降级落盘: 需求背景",
+]
+CLEAN_LOG_LINES = [
+    "2026-09-07 17:22:03 [INFO] aqueduct.engine.nodes.requirement: MCP 查询到 2 个表的结构",
+    "2026-09-07 17:51:27 [INFO] aqueduct.core: 管道结束: success=True, halted=False, artifacts=14",
+]
+
+
+def _write_log(out: Path, lines: list[str]) -> None:
+    _write(out / "task.2026-09-07.log", "\n".join(lines) + "\n")
+
+
+class TestExtractRunHealth:
+    def test_counts_from_polluted_log(self, tmp_path: Path) -> None:
+        from src.aqueduct.evals import extract_run_health
+
+        out = tmp_path / "runs" / "demo_case"
+        _write_log(out, POLLUTED_LOG_LINES)
+
+        health = extract_run_health(out)
+
+        assert health.llm_timeouts == 1
+        assert health.llm_retries == 1
+        assert health.platform_errors == 2  # 试跑 302 + DQC 执行 302
+        assert health.degradations == 2
+        assert health.llm_polluted
+
+    def test_clean_log(self, tmp_path: Path) -> None:
+        from src.aqueduct.evals import extract_run_health
+
+        out = tmp_path / "runs" / "demo_case"
+        _write_log(out, CLEAN_LOG_LINES)
+
+        health = extract_run_health(out)
+
+        assert health.llm_timeouts == 0
+        assert health.llm_retries == 0
+        assert health.platform_errors == 0
+        assert health.degradations == 0
+        assert not health.llm_polluted
+        assert health.summary() == "净"
+
+    def test_no_log_is_zero(self, tmp_path: Path) -> None:
+        from src.aqueduct.evals import extract_run_health
+
+        health = extract_run_health(tmp_path)
+
+        assert health.llm_timeouts == 0
+        assert not health.llm_polluted
+
+    def test_health_attached_to_score(self, tmp_path: Path) -> None:
+        out = tmp_path / "runs" / "demo_case"
+        _write_good_artifacts(out)
+        _write_log(out, POLLUTED_LOG_LINES)
+
+        score = score_case(_make_case(), out, _good_state())
+
+        assert score.health.llm_timeouts == 1
+        assert score.health.platform_errors == 2
+
+    def test_scorecard_annotates_polluted_failure(self, tmp_path: Path) -> None:
+        """FAIL + LLM 网关异常 → 评分卡必须标注污染警示（首跑实测教训）。"""
+        out = tmp_path / "runs" / "demo_case"
+        _write_good_artifacts(out)
+        _write_log(out, POLLUTED_LOG_LINES)
+        (out / "Phase6-Design.md").unlink()  # 制造 FAIL
+
+        score = score_case(_make_case(), out, _good_state())
+        md = render_scorecard([score], date="2026-09-07")
+
+        assert not score.passed
+        assert score.health.llm_polluted
+        assert "疑似网关污染" in md
+        assert "LLM超时1" in md  # 汇总列带计数
+
+    def test_scorecard_clean_pass_no_warning(self, tmp_path: Path) -> None:
+        out = tmp_path / "runs" / "demo_case"
+        _write_good_artifacts(out)
+        _write_log(out, CLEAN_LOG_LINES)
+
+        score = score_case(_make_case(), out, _good_state())
+        md = render_scorecard([score], date="2026-09-07")
+
+        assert score.passed
+        assert "疑似网关污染" not in md
+        assert "净" in md
+
+
 # ----------------------------------------------------------------- run_evals --
 
 

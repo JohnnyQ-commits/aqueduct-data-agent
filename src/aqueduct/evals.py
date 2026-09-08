@@ -60,11 +60,64 @@ class CheckResult:
 
 
 @dataclass
+class RunHealth:
+    """运行健康度计数（从 task log 提取，FAIL 归因用——不做门禁）。
+
+    首跑教训：迭代用例 FAIL 的根因是 LLM 网关 ConnectionRefused，
+    评分卡能抓失败但不能自归因；把网关指纹计进评分卡，判定退步
+    先排除污染（对齐规划的风险对策表）。
+    """
+
+    llm_timeouts: int = 0  # "LLM CLI 调用超时"（ERROR）
+    llm_retries: int = 0  # "…以相同超时（…）重试"（WARNING）
+    platform_errors: int = 0  # 数据平台 302 / 连接失败（cookie 过期等）
+    degradations: int = 0  # 各类降级落盘（结构缺章 / DQC 降级）
+
+    @property
+    def llm_polluted(self) -> bool:
+        """LLM 网关是否异常——True 时该用例的 FAIL 可能是污染非退步。"""
+        return self.llm_timeouts > 0 or self.llm_retries > 0
+
+    def summary(self) -> str:
+        parts = []
+        if self.llm_timeouts:
+            parts.append(f"LLM超时{self.llm_timeouts}")
+        if self.llm_retries:
+            parts.append(f"重试{self.llm_retries}")
+        if self.platform_errors:
+            parts.append(f"平台连接异常{self.platform_errors}")
+        if self.degradations:
+            parts.append(f"降级{self.degradations}")
+        return "·".join(parts) if parts else "净"
+
+
+def extract_run_health(output_dir: Path | str) -> RunHealth:
+    """从产物目录的 task.*.log 提取健康度计数。
+
+    模式取自首跑真实日志（llm/claude.py、contract.py、dqc.py 的落日志点）；
+    MCP「表不存在」不计——demo 虚构表属数据集特性，非运行异常。
+    """
+    health = RunHealth()
+    for log in sorted(Path(output_dir).glob("task.*.log")):
+        for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+            if "LLM CLI 调用超时" in line:
+                health.llm_timeouts += 1
+            elif "重试" in line and "aqueduct.llm" in line:
+                health.llm_retries += 1
+            if "302 Found" in line or "连接失败" in line:
+                health.platform_errors += 1
+            if "降级" in line:
+                health.degradations += 1
+    return health
+
+
+@dataclass
 class CaseScore:
     case: EvalCase
     checks: list[CheckResult]
     errors: list[str]
     fix_iterations: int = 0
+    health: RunHealth = field(default_factory=RunHealth)
 
     @property
     def passed(self) -> bool:
@@ -230,7 +283,13 @@ def score_case(case: EvalCase, output_dir: Path | str, state: dict) -> CaseScore
         )
     )
 
-    return CaseScore(case=case, checks=checks, errors=errors, fix_iterations=fix_iterations)
+    return CaseScore(
+        case=case,
+        checks=checks,
+        errors=errors,
+        fix_iterations=fix_iterations,
+        health=extract_run_health(output_dir),
+    )
 
 
 def render_scorecard(scores: list[CaseScore], date: str) -> str:
@@ -242,19 +301,30 @@ def render_scorecard(scores: list[CaseScore], date: str) -> str:
         f"- 日期：{date}",
         f"- 结果：通过 {passed}/{len(scores)}",
         "",
-        "| 用例 | 场景 | 结果 | 修复轮数 | 失败项 |",
-        "|---|---|---|---|---|",
+        "| 用例 | 场景 | 结果 | 修复轮数 | 网关健康 | 失败项 |",
+        "|---|---|---|---|---|---|",
     ]
     for s in scores:
         failed = [c.name for c in s.checks if c.status == "fail"]
         lines.append(
             f"| {s.case.name} | {s.case.scenario} | {'PASS' if s.passed else 'FAIL'} "
-            f"| {s.fix_iterations} | {', '.join(failed) or '—'} |"
+            f"| {s.fix_iterations} | {s.health.summary()} | {', '.join(failed) or '—'} |"
         )
+    # 网关污染警示：FAIL 且 LLM 网关异常时，退步判定前先查 task log
+    for s in scores:
+        if not s.passed and s.health.llm_polluted:
+            lines += [
+                "",
+                f"> ⚠️ **{s.case.name} 评估期间 LLM 网关异常（{s.health.summary()}）"
+                "——疑似网关污染，先查 task log 排除网关因素再判定质量退步。**",
+            ]
     lines += ["", "## 明细", ""]
     for s in scores:
         lines += [
             f"### {s.case.name}（{s.case.scenario}）",
+            "",
+            f"- 网关健康：{s.health.summary()}",
+            "- 管道遗留错误：" + ("；".join(s.errors) if s.errors else "无"),
             "",
             "| 检查 | 结果 | 说明 |",
             "|---|---|---|",
