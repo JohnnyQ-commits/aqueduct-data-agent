@@ -10,11 +10,13 @@ manifest 存储格式（JSON）：
     {
         "requirement_hash": "sha256hex...",
         "updated_at": "2026-07-14T12:00:00",
-        "phase1_outputs": {
+        "phase1_outputs": {                      # OPT-7：Phase 1-3 可缓存输出
             "requirement_summary": "...",
             "design_scheme": "...",
             "ddl_content": "..."
-        }
+        },
+        "phases_completed": ["requirement", ...],  # P1-3：已完成 Phase 前缀
+        "state_snapshot": {...}                    # P1-3：最后完成 Phase 的可序列化 state 快照
     }
 
 用法:
@@ -23,6 +25,11 @@ manifest 存储格式（JSON）：
         analyzer.restore_phase1_outputs(state)
     # ... 执行 Phase 1 ...
     analyzer.save_manifest(requirement, state)
+
+断点续跑（P1-3，PERF-6）:
+    每个 Phase 成功完成后 save_checkpoint 落快照；
+    重跑时 load_checkpoint + restore_state 跳过已完成前缀，从断点继续。
+    v5 场景实锤：Phase 5 失败后重跑只需 Phase 5（~10min），不用 96min 全重来。
 """
 
 from __future__ import annotations
@@ -45,6 +52,18 @@ _PHASE1_CACHED_FIELDS = (
     "requirement_summary",
     "design_scheme",
     "ddl_content",
+)
+
+# P1-3 断点续跑：不进快照的运行时对象键
+# （进程退出后无意义且不可 JSON 序列化：表结构缓存 / 线程池 / Future）
+_CHECKPOINT_RUNTIME_KEYS = frozenset(
+    {
+        "_table_schema_cache",
+        "_lineage_future",
+        "_lineage_executor",
+        "_dqc_spec_future",
+        "_dqc_spec_executor",
+    }
 )
 
 
@@ -170,6 +189,91 @@ class ChangeAnalyzer:
             logger.info("manifest 已保存: %s", path)
         except Exception as e:
             logger.warning("保存 manifest 失败: %s", e)
+
+    # ------------------------------------------------------------------
+    # P1-3 断点续跑（PERF-6）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def snapshot_state(state: WorkflowState) -> dict[str, Any]:
+        """提取 state 的可序列化快照（排除运行时对象键）。
+
+        其余字段全保留——包括 _review_issues / _needs_fix_loop 等
+        可序列化的下划线状态（修复循环中间态跨进程才有意义）。
+        """
+        return {k: v for k, v in state.items() if k not in _CHECKPOINT_RUNTIME_KEYS}
+
+    @staticmethod
+    def restore_state(state: WorkflowState, snapshot: dict[str, Any]) -> None:
+        """把快照字段写回 state。
+
+        metadata 做合并而非整体覆盖，且当前运行的键优先——
+        resume 到不同 output_dir 时，requirement_name/output_dir 不被旧值倒退。
+        """
+        for key, value in snapshot.items():
+            if key == "metadata":
+                continue
+            state[key] = value  # type: ignore[literal-required]
+        if "metadata" in snapshot:
+            merged = {**snapshot["metadata"], **state.get("metadata", {})}
+            state["metadata"] = merged  # type: ignore[typeddict-item]
+
+    def load_checkpoint(self, requirement: str) -> dict[str, Any] | None:
+        """加载断点续跑 checkpoint。
+
+        条件：manifest 可读、需求哈希匹配、含非空 phases_completed 与 state_snapshot。
+        v0.6 旧版 manifest（仅 phase1_outputs）不满足 → 返回 None 走全量。
+
+        Returns:
+            {"phases_completed": [...], "state_snapshot": {...}}，不满足返回 None。
+        """
+        manifest = self._load_manifest()
+        if manifest is None:
+            return None
+
+        if self.compute_requirement_hash(requirement) != manifest.get("requirement_hash", ""):
+            logger.info("需求已变更，checkpoint 不适用")
+            return None
+
+        phases_completed = manifest.get("phases_completed")
+        snapshot = manifest.get("state_snapshot")
+        if not isinstance(phases_completed, list) or not phases_completed:
+            return None
+        if not isinstance(snapshot, dict) or not snapshot:
+            return None
+
+        return {"phases_completed": phases_completed, "state_snapshot": snapshot}
+
+    def save_checkpoint(
+        self,
+        requirement: str,
+        phases_completed: list[str],
+        state: WorkflowState,
+    ) -> None:
+        """保存断点续跑 checkpoint 到 manifest。
+
+        每个 Phase 真正完成后由管道回调；同步派生 phase1_outputs
+        保持 OPT-7 增量跳过兼容。IO 失败只告警（checkpoint 不阻塞管道）。
+        """
+        path = self._manifest_path()
+        if path is None:
+            return
+
+        snapshot = self.snapshot_state(state)
+        phase1_outputs = {f: snapshot[f] for f in _PHASE1_CACHED_FIELDS if snapshot.get(f)}
+        manifest = {
+            "requirement_hash": self.compute_requirement_hash(requirement),
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "phases_completed": list(phases_completed),
+            "state_snapshot": snapshot,
+            "phase1_outputs": phase1_outputs,
+        }
+
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception as e:
+            logger.warning("保存 checkpoint 失败: %s", e)
 
     @staticmethod
     def analyze_diff(old_requirement: str, new_requirement: str) -> dict[str, Any]:

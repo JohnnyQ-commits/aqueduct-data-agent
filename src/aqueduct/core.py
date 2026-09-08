@@ -66,6 +66,22 @@ _CHANGE_PHASES: list[tuple[str, Any]] = [
 ConfirmCallback = Callable[[WorkflowState], bool]
 # 进度回调类型：接收 (阶段名, 阶段序号, 总阶段数, 状态)
 ProgressCallback = Callable[[str, int, int, WorkflowState], None]
+# Phase 完成回调类型：接收 (阶段名, 状态) —— P1-3 断点续跑 checkpoint 落盘点
+PhaseCompleteCallback = Callable[[str, WorkflowState], None]
+
+
+def _completed_prefix_len(completed: list[str], phase_names: list[str]) -> int:
+    """计算 completed 与当前 Phase 序列一致的真前缀长度。
+
+    防御异构/损坏 manifest：首项不匹配即 0（全量重跑），
+    尾部未知 Phase 名截断到已知前缀。
+    """
+    n = 0
+    for done, current in zip(completed, phase_names, strict=False):
+        if done != current:
+            break
+        n += 1
+    return n
 
 
 def _is_halt_error(error_msg: str) -> bool:
@@ -196,6 +212,7 @@ def _run_pipeline(
     confirm_after: str | None = None,
     on_confirm: ConfirmCallback | None = None,
     on_progress: ProgressCallback | None = None,
+    on_phase_complete: PhaseCompleteCallback | None = None,
 ) -> AqueductResult:
     """统一的工作流管线执行器。
 
@@ -206,6 +223,9 @@ def _run_pipeline(
         confirm_after: 在该阶段完成后触发确认回调（如 "requirement"）。
         on_confirm: 确认回调函数。
         on_progress: 进度回调函数。
+        on_phase_complete: Phase 真正完成后的回调（P1-3 断点续跑 checkpoint）。
+            触发时机：节点成功返回且未 halt；审查→修复回环中不触发
+            （回环 continue 跳过），回环收敛后触发一次。回调异常只告警不阻塞管道。
 
     Returns:
         AqueductResult 包含所有产出物和状态。
@@ -328,6 +348,14 @@ def _run_pipeline(
                     i = review_idx
                     continue
 
+        # P1-3 断点续跑：Phase 真正完成后落 checkpoint
+        # （halt 的 Phase、回环 continue 重审中的 review 均不会走到这里）
+        if on_phase_complete is not None and not halted:
+            try:
+                on_phase_complete(phase_name, state)
+            except Exception:
+                logger.warning("断点续跑 checkpoint 回调异常（不阻塞管道）", exc_info=True)
+
         # 交互确认：在指定阶段完成后暂停等待用户确认
         if (
             interactive
@@ -445,6 +473,7 @@ class Aqueduct:
         on_confirm: ConfirmCallback | None = None,
         on_progress: ProgressCallback | None = None,
         external_sql_path: str | None = None,
+        resume: bool = False,
     ) -> AqueductResult:
         """开发模式：从需求文档到完整交付。
 
@@ -455,6 +484,9 @@ class Aqueduct:
             on_confirm: 确认回调（interactive=True 时用于 Phase 1 后确认）。
             on_progress: 进度回调，每个阶段开始时调用。
             external_sql_path: 外部 SQL 文件路径。非空时 Phase 4 跳过 LLM 生成。
+            resume: 断点续跑（P1-3）。True 时读取 output_dir 的 checkpoint，
+                需求哈希匹配则跳过已完成 Phase 前缀，从断点继续；
+                无 checkpoint / 需求已变更时自动退化为全量运行。
 
         Returns:
             AqueductResult 包含所有产出物和内容。
@@ -492,13 +524,50 @@ class Aqueduct:
             persist_path=cache_persist_path,
         )
 
+        # P1-3 断点续跑：读取 checkpoint，跳过已完成 Phase 前缀
+        phases = _DEV_PHASES
+        completed_phases: list[str] = []
+        if resume:
+            from .engine.nodes.helpers import get_output_dir
+            from .utils.change_analyzer import ChangeAnalyzer
+
+            checkpoint = ChangeAnalyzer(output_dir=get_output_dir(state)).load_checkpoint(
+                requirement_text
+            )
+            if checkpoint is not None:
+                # 快照不含运行时对象（表结构缓存等），dev() 已注入的实例保持有效
+                ChangeAnalyzer.restore_state(state, checkpoint["state_snapshot"])
+                prefix_len = _completed_prefix_len(
+                    checkpoint["phases_completed"], [name for name, _ in _DEV_PHASES]
+                )
+                completed_phases = checkpoint["phases_completed"][:prefix_len]
+                phases = _DEV_PHASES[prefix_len:]
+                logger.info(
+                    "[task=%s] 断点续跑: 跳过已完成 Phase %s",
+                    req_name,
+                    completed_phases,
+                )
+                if not phases:
+                    logger.info("[task=%s] 断点续跑: 全部 Phase 已完成，直接返回上次结果", req_name)
+                    return AqueductResult(state, halted=False)
+
+        def _save_checkpoint(phase_name: str, st: WorkflowState) -> None:
+            from .engine.nodes.helpers import get_output_dir
+            from .utils.change_analyzer import ChangeAnalyzer
+
+            completed_phases.append(phase_name)
+            ChangeAnalyzer(output_dir=get_output_dir(st)).save_checkpoint(
+                st.get("requirement", ""), completed_phases, st
+            )
+
         return _run_pipeline(
             state,
-            _DEV_PHASES,
+            phases,
             interactive=interactive,
             confirm_after="requirement",
             on_confirm=on_confirm,
             on_progress=on_progress,
+            on_phase_complete=_save_checkpoint,
         )
 
     def change(
