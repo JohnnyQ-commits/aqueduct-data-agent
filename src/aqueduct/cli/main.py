@@ -251,6 +251,7 @@ def _dev_mode(args: argparse.Namespace) -> int:
         on_confirm=_make_confirm_callback(),
         on_progress=_make_progress_callback(),
         external_sql_path=external_sql_path,
+        resume=getattr(args, "resume", False),
     )
 
     _print_result(result)
@@ -472,6 +473,11 @@ def create_parser() -> argparse.ArgumentParser:
     )
     dev_parser.add_argument("requirement", help="Requirement document path (.md file)")
     dev_parser.add_argument("--output", "-o", help="Output directory")
+    dev_parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume from the last checkpoint (skip completed phases, P1-3)",
+    )
     dev_parser.add_argument(
         "--sql-file",
         help="External SQL file path (skip LLM SQL generation in Phase 4)",
