@@ -15,6 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Productivity dashboard DQC counts were always zero (double wiring defect)**: the board generator read `state["dqc_result"]` — which holds the DQC *SQL text* (a string, set in `dqc.py`) — into a dict-shaped accessor whose branch could never fire, and even with the right key the field name was wrong (it checked `status == "PASSED"` while the real execution results, `state["dqc_results"]`, are a list whose pass criterion is the `success` boolean — the same criterion the DQC execution report uses). Result: `Phase6-提效看板.md` always showed "暂无 DQC 数据" even after a real platform execution. The board now counts `dqc_tests_run`/`dqc_auto_fixes` from the execution results list; runs without platform execution (skipped/no credentials) still yield 0/0 honestly. 2 new tests (`tests/test_productivity_board.py`)
+
 - **Eval trial scorer three-state fix (caught by the first real eval run)**: when the data platform is unreachable mid-run (health_check 302 on an expired cookie), `_trial_run_issues` self-skips and returns `[]` — indistinguishable from a genuinely passing trial, so the scorecard recorded "试跑通过" for a trial that never executed. The scorer now distinguishes the states by the signal the real gate already writes (`state["trial_run_result"]`, set only when statements actually execute): issues → fail, result present → pass with tested/passed counts, absent → skip ("平台不可用或 SQL 无效，试跑未执行"); stale pipeline-left results are popped and re-verified live rather than trusted. 3 new tests (25 in `test_evals.py`); the seal now covers the enabled-and-selfskip path the autouse fixture previously masked.
 
 ### Added

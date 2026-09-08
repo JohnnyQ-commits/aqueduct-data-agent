@@ -107,11 +107,14 @@ def node_report(state: WorkflowState) -> WorkflowState:
         # 生成提效看板
         try:
             prod_tool = get_tool("productivity")
-            dqc_results = state.get("dqc_result") or {}
-            dqc_data = dqc_results.get("results", []) if isinstance(dqc_results, dict) else []
+            # DQC 计数来自执行结果列表（dqc.py state["dqc_results"]，list[dict]，
+            # PASS 口径 m["success"]）；state["dqc_result"] 是 DQC SQL 文本，勿混用
+            dqc_data = state.get("dqc_results") or []
+            if not isinstance(dqc_data, list):
+                dqc_data = []
             prod_result = prod_tool.execute(
                 dqc_tests_run=len(dqc_data),
-                dqc_auto_fixes=sum(1 for r in dqc_data if r.get("status") == "PASSED"),
+                dqc_auto_fixes=sum(1 for r in dqc_data if r.get("success")),
             )
             if prod_result.success:
                 board_content = prod_result.data.get("report", "")
