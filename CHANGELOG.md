@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Scorecard gateway-health annotation (phase-2 轨迹指标 pulled forward)**: the first real eval run proved the need — the scorecard caught the iterative case's FAIL but couldn't self-attribute it to the LLM gateway (`ConnectionRefused` mid-run produced a 55-char degenerate response that the structure gate correctly degraded). `RunHealth` now extracts the gateway fingerprint from each run's `task.*.log` (LLM timeouts, LLM retries, platform 302/connection failures, degradation events; MCP table-not-found deliberately excluded as a dataset trait, not a runtime anomaly) and the scorecard renders it as a 网关健康 column plus an automatic ⚠️ pollution warning on any FAIL whose run shows LLM-gateway anomalies — "判定退步先排除网关因素" is now mechanical instead of a manual log-reading step. The re-rendered first baseline demonstrates it end-to-end: greenfield `平台连接异常2` (two cookie 302s, honestly counted), iterative `LLM超时1·重试1·平台连接异常2·降级2` with the warning attached. 6 new tests using the real log lines as fixtures (31 in `test_evals.py`); summary rows also gain 管道遗留错误 detail lines.
+
 ### Fixed
 
 - **Eval trial scorer three-state fix (caught by the first real eval run)**: when the data platform is unreachable mid-run (health_check 302 on an expired cookie), `_trial_run_issues` self-skips and returns `[]` — indistinguishable from a genuinely passing trial, so the scorecard recorded "试跑通过" for a trial that never executed. The scorer now distinguishes the states by the signal the real gate already writes (`state["trial_run_result"]`, set only when statements actually execute): issues → fail, result present → pass with tested/passed counts, absent → skip ("平台不可用或 SQL 无效，试跑未执行"); stale pipeline-left results are popped and re-verified live rather than trusted. 3 new tests (25 in `test_evals.py`); the seal now covers the enabled-and-selfskip path the autouse fixture previously masked.
