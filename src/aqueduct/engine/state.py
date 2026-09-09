@@ -114,6 +114,7 @@ class WorkflowState(TypedDict):
 
     # === 可选：Phase 4.5 代码审查 ===
     review_result: NotRequired[str]
+    review_confirmations: NotRequired[list]  # PERF-11: [Confirm] 级待确认事项（不进修复循环）
     fix_iterations: NotRequired[int]  # 审查→修复循环当前迭代次数
 
     # === 可选：Phase 5 DQC ===

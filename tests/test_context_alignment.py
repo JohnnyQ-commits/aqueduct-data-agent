@@ -40,11 +40,13 @@ class TestPhase45RequirementDesc:
         }
 
     def test_review_node_passes_requirement_desc(self):
-        """review 节点应将 requirement_summary 作为 requirement_desc 传入 Skill。"""
+        """review 节点应将 requirement_summary 作为 requirement_desc 传入维度审查 Skill。"""
         state = self._make_state()
         captured_input = {}
 
-        original_execute = CodeReviewSkill.execute
+        from src.aqueduct.skills.code_review import CodeReviewDimensionSkill
+
+        original_execute = CodeReviewDimensionSkill.execute
 
         def capture_execute(self_skill, context: SkillContext):
             inp = context.input if isinstance(context.input, dict) else {}
@@ -52,10 +54,13 @@ class TestPhase45RequirementDesc:
             return original_execute(self_skill, context)
 
         with (
-            patch.object(CodeReviewSkill, "execute", capture_execute),
+            patch.object(CodeReviewDimensionSkill, "execute", capture_execute),
             # 补丁目标必须是导入方绑定（review.py: from .helpers import call_llm），
             # 此前打在 helpers 源模块上无效 → 真实 LLM 调用（79s 测试债）
-            patch("src.aqueduct.engine.nodes.review.call_llm", return_value="审查结果"),
+            patch(
+                "src.aqueduct.engine.nodes.review.call_llm",
+                return_value="审查结果\n**审查结论**: Critical: 0, Warning: 0, Confirm: 0",
+            ),
             patch("src.aqueduct.engine.nodes.review.save_artifact", return_value="output/test.md"),
             # PERF-9 投机 DQC 同样走真实 call_llm，一并静默
             patch("src.aqueduct.engine.nodes.review.start_dqc_speculative"),

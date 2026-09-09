@@ -391,6 +391,7 @@ class TestP0AutoHalt:
 
         review_report = (
             "# 审查报告\n- [Critical] JOIN 条件缺失导致笛卡尔积\n- [Warning] 缺少分区过滤\n"
+            "**审查结论**: Critical: 1, Warning: 1, Confirm: 0\n"
         )
 
         with (
@@ -426,7 +427,10 @@ class TestP0AutoHalt:
             "fix_iterations": 2,
         }
 
-        review_report = "# 审查报告\n- [Warning] 缺少分区过滤\n"
+        review_report = (
+            "# 审查报告\n- [Warning] 缺少分区过滤\n"
+            "**审查结论**: Critical: 0, Warning: 1, Confirm: 0\n"
+        )
 
         with (
             patch("src.aqueduct.engine.nodes.review.get_skill") as mock_skill,
@@ -588,7 +592,10 @@ class TestEarlyTermination:
             "fix_iterations": 0,  # 还未到上限
         }
 
-        review_report = "# 审查报告\n- [Warning] 缺少分区过滤\n- [Warning] 使用了 SELECT *\n"
+        review_report = (
+            "# 审查报告\n- [Warning] 缺少分区过滤\n- [Warning] 使用了 SELECT *\n"
+            "**审查结论**: Critical: 0, Warning: 2, Confirm: 0\n"
+        )
 
         with (
             patch("src.aqueduct.engine.nodes.review.get_skill") as mock_skill,
@@ -625,7 +632,10 @@ class TestEarlyTermination:
             "fix_iterations": 0,
         }
 
-        review_report = "# 审查报告\n- [Critical] JOIN 条件缺失\n- [Warning] 缺少分区过滤\n"
+        review_report = (
+            "# 审查报告\n- [Critical] JOIN 条件缺失\n- [Warning] 缺少分区过滤\n"
+            "**审查结论**: Critical: 1, Warning: 1, Confirm: 0\n"
+        )
 
         with (
             patch("src.aqueduct.engine.nodes.review.get_skill") as mock_skill,

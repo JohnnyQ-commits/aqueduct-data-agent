@@ -1,4 +1,11 @@
-"""Phase 4.5: 代码审查节点。"""
+"""Phase 4.5: 代码审查节点。
+
+PERF-11: 单块审查拆 3 维度并行（P0-3 DQC 拆分范式）——同输入不同
+审查透镜，每维一次小调用，固定顺序合并。配套解析契约修复：输出锁定
+`- [Critical/Warning/Confirm] ` 列表行（原模板教模型输出表格，解析器
+只认方括号行——LLM 审查发现从未进过修复循环，2026-09-09 四个 eval
+报告实录：报告含高质量 Critical 但可解析格式匹配数为 0）。
+"""
 
 from __future__ import annotations
 
@@ -6,8 +13,9 @@ import logging
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import TypedDict
 
-from ...exceptions import WorkflowHaltError
+from ...exceptions import LLMError, WorkflowHaltError
 from ...skills.base import SkillContext
 from ...skills.registry import get_skill
 from ..state import WorkflowState
@@ -16,6 +24,55 @@ from .helpers import call_llm, is_valid_sql, save_artifact
 from .report import start_knowledge_speculative
 
 logger = logging.getLogger(__name__)
+
+
+class _ReviewDimension(TypedDict):
+    """审查维度定义（PERF-11 拆分生成的单元）。"""
+
+    key: str  # 唯一标识（合并排序键）
+    name: str  # 维度名（prompt 注入 + 合并章节标题）
+    focus: str  # 本维度审查要点（单维 prompt 的核心指令）
+
+
+# PERF-11: 单块审查拆 3 维度的定义（源自 code_review.tpl.md 全量模板的
+# 任务清单/推理步骤/禁止项，顺序即合并顺序）。设计约束：focus 不含其他
+# 维度的完整名（测试按 prompt 中的维度名路由识别）。
+_REVIEW_DIMENSIONS: list[_ReviewDimension] = [
+    {
+        "key": "alignment",
+        "name": "需求与设计对齐",
+        "focus": (
+            "- 需求覆盖度：需求摘要中的每个指标、口径、过滤条件是否都在 SQL 中体现，逐项核对\n"
+            "- 取数逻辑、字段映射与设计方案核对：SQL 实现与设计方案的口径是否一致\n"
+            "- SELECT 字段与目标表 DDL 对齐：字段名、类型、顺序、分区字段逐一对齐\n"
+            "- INSERT 目标表名与 DDL 建表名一致"
+        ),
+    },
+    {
+        "key": "logic",
+        "name": "逻辑正确性",
+        "focus": (
+            "- 解析 SQL 结构：识别所有源表、JOIN、WHERE、GROUP BY、分层子查询\n"
+            "- 缺陷检测：JOIN 扇出（维表非唯一放大 sum 类指标）、聚合口径错误、"
+            "映射不一致、逻辑矛盾、遗漏处理\n"
+            "- 边界条件：空值传播（NULL 参与聚合/比较）、空分区（当日无数据的指标兜底）、"
+            "除零保护\n"
+            "- 幂等性：重跑/补数结果是否一致（排序键无 tie-breaker 等不确定取数）"
+        ),
+    },
+    {
+        "key": "standards",
+        "name": "规范与影响",
+        "focus": (
+            "- 强制规范逐项核对：每个源表有分区过滤、禁 SELECT * 列出全部字段、"
+            "可空数值字段 COALESCE 兜底、除法 NULLIF 保护、JOIN 显式 CAST 无隐式"
+            "类型转换、WHERE 不对分区字段做函数转换、子查询嵌套不超 2 层"
+            "（超了应拆 TMP 临时表）、文件头元数据注释\n"
+            "- 性能风险：全表扫描、count(distinct) 双层聚合\n"
+            "- 下游影响：目标表口径变化对下游消费方的影响（新表标注无下游）"
+        ),
+    },
+]
 
 
 # ── SQL 分块工具 ──────────────────────────────────────────────────────────────
@@ -212,24 +269,25 @@ def _trial_run_issues(state: WorkflowState) -> list[dict[str, str]]:
 
 
 def _parse_review_issues(review_result: str) -> list[dict[str, str]]:
-    """从审查报告中提取 Critical/Warning 级别问题。
+    """从审查报告中提取 Critical/Warning/Confirm 级别问题。
 
     解析格式如：
     - [Critical] ...
     - [Warning] ...
+    - [Confirm] ...（PERF-11：需人工确认的口径/依赖问题，不进修复循环）
     - **Critical**: ...
     """
     issues: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
 
-    # 匹配 [Critical] / [Warning] / [INFO] 格式
+    # 匹配 [Critical] / [Warning] / [INFO] / [Confirm] 格式
     bracket_pattern = re.compile(
-        r"\[(Critical|Warning|INFO)\]\s*(.+?)(?=\n|$)",
+        r"\[(Critical|Warning|INFO|Confirm)\]\s*(.+?)(?=\n|$)",
         re.IGNORECASE,
     )
     # 匹配 **Critical**: 格式
     bold_pattern = re.compile(
-        r"\*\*(Critical|Warning|INFO)\*\*\s*[:：]\s*(.+?)(?=\n|$)",
+        r"\*\*(Critical|Warning|INFO|Confirm)\*\*\s*[:：]\s*(.+?)(?=\n|$)",
         re.IGNORECASE,
     )
 
@@ -257,9 +315,11 @@ def _should_parallel_review(sql_content: str) -> bool:
 def node_review(state: WorkflowState) -> WorkflowState:
     """Phase 4.5: 代码审查节点。
 
-    调用 CodeReviewSkill 生成 prompt -> LLM 审查 SQL。
-    SQL 超过 100 行且包含多个语句时，自动分块并行审查。
-    审查后检查 Critical/Warning 问题，决定是否需要修复循环。
+    PERF-11: 单块审查拆 3 维度并行（需求与设计对齐/逻辑正确性/规范与
+    影响），固定顺序合并报告。SQL 超过 100 行且包含多个语句时走分块
+    并行审查（全量模板逐块，不拆维度）。
+    审查后检查 Critical/Warning 问题，决定是否需要修复循环；
+    Confirm 级（需人工确认）落 state 不进修复循环。
     """
     req_name = state.get("metadata", {}).get("requirement_name", "unknown")
     start = time.time()
@@ -277,14 +337,14 @@ def node_review(state: WorkflowState) -> WorkflowState:
         # Phase 6 只剩 doc_gen；哈希护栏见 report.take_speculative_knowledge。
         start_knowledge_speculative(state)
 
-        # ── 并行分块审查 ──
+        # ── 并行分块审查（>100 行多语句：全量模板逐块，不拆维度） ──
         if _should_parallel_review(sql_content):
             llm_response = _parallel_review(state, sql_content, req_name)
         else:
-            # ── 单块审查（原路径） ──
-            llm_response = _single_review(state, sql_content)
+            # ── 单块审查（PERF-11: 3 维度拆分并行） ──
+            llm_response = _review_by_dimensions(state, sql_content, req_name)
             if llm_response is None:
-                state.setdefault("errors", []).append("代码审查失败: Skill 执行异常")
+                state.setdefault("errors", []).append("代码审查失败: 全部审查维度生成失败")
                 return state
 
         req_name = state.get("metadata", {}).get("requirement_name", "code_review")
@@ -313,7 +373,20 @@ def node_review(state: WorkflowState) -> WorkflowState:
                 sum(1 for i in lint_issues if i["severity"] == "Critical"),
                 sum(1 for i in lint_issues if i["severity"] == "Warning"),
             )
-        issues = trial_issues + lint_issues + _parse_review_issues(llm_response)
+        # PERF-11: Confirm 级（需人工确认的口径/依赖问题）单独路由——
+        # 改代码无法消除，不进修复循环（greenfield 待确认是常态，
+        # 归 Critical 会触发修复空转/halt）；结构化落 state 供人工跟进
+        parsed = _parse_review_issues(llm_response)
+        confirmations = [i for i in parsed if i["severity"].lower() == "confirm"]
+        llm_issues = [i for i in parsed if i["severity"].lower() != "confirm"]
+        state["review_confirmations"] = confirmations
+        if confirmations:
+            logger.info(
+                "[task=%s] 审查发现 %d 项待确认事项（Confirm，不触发修复循环）",
+                req_name,
+                len(confirmations),
+            )
+        issues = trial_issues + lint_issues + llm_issues
         critical_count = sum(1 for i in issues if i["severity"].lower() == "critical")
         warning_count = sum(1 for i in issues if i["severity"].lower() == "warning")
         fix_iterations = state.get("fix_iterations", 0)
@@ -437,29 +510,121 @@ def _parallel_review(state: WorkflowState, sql_content: str, req_name: str) -> s
     return combined
 
 
-def _single_review(state: WorkflowState, sql_content: str) -> str | None:
-    """单块审查（原路径）：构建 prompt → 单次 LLM 调用。
+def _build_dimension_prompt(state: WorkflowState, dimension: _ReviewDimension) -> str | None:
+    """构建单维度审查 prompt（PERF-11 拆分模式）。
 
     Returns:
-        LLM 审查报告文本。Skill 执行失败时返回 None。
+        prompt 文本。Skill 执行失败时返回 None。
     """
-    skill = get_skill("code_review")
+    skill = get_skill("code_review_dimension")
     context = SkillContext(
         input={
             "requirement_desc": state.get("requirement_summary", ""),
-            "sql_content": sql_content,
+            "sql_content": state.get("sql_content", ""),
             "domain_context": state.get("domain_context", ""),
             "validation_result": state.get("validation_result", {}),
             "design_scheme": state.get("design_scheme", ""),
             "ddl_content": state.get("ddl_content", ""),
+            "dimension": dict(dimension),
         },
         state=state,
     )
     result = skill.execute(context)
-
     if not result.success:
-        # 保存失败信息到 state 并提前返回
-        return None  # 调用方需要检查
+        return None
+    return result.data.get("prompt", "")
 
-    prompt = result.data.get("prompt", "")
-    return call_llm(state, "sql_review", prompt)
+
+def _has_review_conclusion(response: str) -> bool:
+    """检查审查响应是否含结论标记行（解析契约的有效性门）。
+
+    与维度模板的输出契约一致：无 `审查结论` 标记的响应视为无效
+    （网关拥塞时返回的罐头错误文本非空但无结构，曾被静默当成功）。
+    """
+    return "审查结论" in response
+
+
+def _review_by_dimensions(state: WorkflowState, sql_content: str, req_name: str) -> str | None:
+    """PERF-11: 单块审查拆 3 维度并行 —— 每维一次小调用，固定顺序合并。
+
+    同输入不同审查透镜（每维都能看到全部上下文，只有审查指令不同），
+    消除跨维度盲区；单维失败重试一次，仍失败降级（章节 banner +
+    errors 记录，对齐 P0-3 DQC 降级模式），全维失败返回 None（调用方
+    走既有审查失败降级路径）。
+
+    Returns:
+        合并后的审查报告（按 _REVIEW_DIMENSIONS 顺序）。全部维度失败
+        时返回 None。
+    """
+    prompts: list[tuple[_ReviewDimension, str]] = []
+    failures: dict[str, str] = {}  # 维度名 -> 错误（含 prompt 构建失败/调用失败）
+
+    for dim in _REVIEW_DIMENSIONS:
+        prompt = _build_dimension_prompt(state, dim)
+        if prompt is None:
+            logger.warning("审查维度「%s」prompt 构建失败，该维降级", dim["name"])
+            failures[dim["name"]] = "prompt 构建失败"
+            continue
+        prompts.append((dim, prompt))
+
+    if not prompts:
+        return None
+
+    results: dict[str, str] = {}  # key -> 该维度响应
+
+    def _call_one(dim: _ReviewDimension, prompt: str) -> str:
+        """单维审查：响应无审查结论标记视为无效（罐头错误/答非所问），
+        重试一次，仍无效抛错（由外层降级）。"""
+        for attempt in (1, 2):
+            response = call_llm(state, "sql_review", prompt)
+            if response and _has_review_conclusion(response):
+                return response
+            logger.warning(
+                "审查维度「%s」响应无结论标记（尝试 %d/2），响应片段: %.80r",
+                dim["name"],
+                attempt,
+                response,
+            )
+        raise LLMError(f"维度「{dim['name']}」响应无审查结论标记（格式不符）")
+
+    with ThreadPoolExecutor(
+        max_workers=max(1, len(prompts)), thread_name_prefix="review-split"
+    ) as pool:
+        future_to_dim = {pool.submit(_call_one, dim, prompt): dim for dim, prompt in prompts}
+        for fut in as_completed(future_to_dim):
+            dim = future_to_dim[fut]
+            try:
+                results[dim["key"]] = fut.result()
+            except Exception as e:
+                logger.warning("审查维度「%s」失败（已降级）: %s", dim["name"], e)
+                failures[dim["name"]] = str(e)
+
+    if not results:
+        logger.error(
+            "[task=%s] 审查维度拆分全部失败: %s",
+            req_name,
+            "、".join(failures),
+        )
+        return None
+
+    # 固定顺序合并（失败维度保留降级 banner，报告可读性完整）
+    parts: list[str] = []
+    for dim in _REVIEW_DIMENSIONS:
+        if dim["key"] in results:
+            parts.append(f"## 维度审查: {dim['name']}\n\n{results[dim['key']]}")
+        else:
+            err = failures.get(dim["name"], "未知错误")
+            parts.append(
+                f"## 维度审查: {dim['name']}\n\n"
+                f"[审查降级] 本维度审查失败（已重试），结果缺失: {err}"
+            )
+            state.setdefault("errors", []).append(f"审查维度「{dim['name']}」降级: {err}")
+    combined = "\n\n---\n\n".join(parts)
+    logger.info(
+        "[task=%s] 维度拆分审查完成: %d/%d 维成功, 合并报告=%d 字符",
+        req_name,
+        len(results),
+        len(_REVIEW_DIMENSIONS),
+        len(combined),
+    )
+    return combined
