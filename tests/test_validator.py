@@ -458,6 +458,69 @@ class TestCheckDivisionCalibration:
         assert v.results[0]["level"] == "ERROR"
 
 
+class TestDivisionCaseGuard:
+    """检查 4 补全：CASE WHEN 分母守护识别（跨行/同行形态）。
+
+    回归来源：2026-09-09 perf4-check eval——canonical SQL 写的是
+    case when t1.order_count = 0 then null else cast(t1.gmv / t1.order_count ...)，
+    旧逻辑只认"上一行 when ... > 0"单行形态：跨行守护 + = 0 判零 + 限定名
+    分母（t1.order_count 捕获成 t1）三重漏判，eval 误判 FAIL。
+    """
+
+    def test_multiline_case_zero_guard_ok(self):
+        """跨行 = 0 守护（eval 实际形态）：零分支置 null、除法在 else，合法。"""
+        v = Validator("")
+        v.lines = [
+            "select",
+            "    case when t1.order_count = 0 then null",
+            "        else cast(t1.gmv / t1.order_count as decimal(20,4))",
+            "    end as avg_order_amount",
+            "from t1;",
+        ]
+        v.check_division()
+        assert len(v.results) == 0
+
+    def test_one_line_case_zero_guard_ok(self):
+        """守护与除法同行：case when x = 0 then null else ... / x，合法。"""
+        v = Validator("")
+        v.lines = [
+            "select case when order_count = 0 then null else cast(gmv / order_count as decimal(20,4)) end as x from t;",
+        ]
+        v.check_division()
+        assert len(v.results) == 0
+
+    def test_positive_guard_then_branch_ok(self):
+        """> 0 守护 + 除法在 then 分支（守护成立才除），合法。"""
+        v = Validator("")
+        v.lines = [
+            "select case when order_count > 0 then gmv / order_count else null end as x from t;",
+        ]
+        v.check_division()
+        assert len(v.results) == 0
+
+    def test_division_in_zero_branch_still_flagged(self):
+        """除法位于 = 0 分支内（恰在分母为零时执行）——必须仍报，修复不得过度放行。"""
+        v = Validator("")
+        v.lines = [
+            "select case when order_count = 0 then gmv / order_count else null end as x from t;",
+        ]
+        v.check_division()
+        assert len(v.results) == 1
+
+    def test_guard_on_other_column_still_flagged(self):
+        """守护条件是别的字段（与分母无关）——必须仍报。"""
+        v = Validator("")
+        v.lines = [
+            "select",
+            "    case when other_flag = 0 then null",
+            "        else cast(t1.gmv / t1.order_count as decimal(20,4))",
+            "    end as x",
+            "from t;",
+        ]
+        v.check_division()
+        assert len(v.results) == 1
+
+
 class TestCheckKeywordCaseLevel:
     """检查 3 校准：关键字大写升级为 ERROR（§2.1 硬规范，金样本校准确认）。"""
 

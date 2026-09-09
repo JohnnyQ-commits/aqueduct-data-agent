@@ -189,11 +189,30 @@ def _run_fix_loop(state: WorkflowState) -> WorkflowState:
     # 保存修复后的 SQL
     fix_iterations = state.get("fix_iterations", 0)
     req_name = state.get("metadata", {}).get("requirement_name", "etl_sql")
+    # 规范文件回写：Phase4-{req}.sql 是交付物本体（evals 对全部 Phase4-*.sql
+    # 做 linter、下游按规范文件消费），_fixN 只作审计副本——不回写等于
+    # 交付物停留在修复前版本
+    canonical_sql_file = state.get("sql_file", "")
     sql_path = save_artifact(state, f"Phase4-{req_name}_fix{fix_iterations + 1}.sql", fixed_sql)
     state["sql_content"] = fixed_sql
-    state["sql_file"] = sql_path
+    state["sql_file"] = canonical_sql_file or sql_path
     state["fix_iterations"] = fix_iterations + 1
     state["_needs_fix_loop"] = False
+
+    if canonical_sql_file:
+        try:
+            from .engine.nodes.sql import _resolve_sql_path
+
+            _resolve_sql_path(state, canonical_sql_file).write_text(fixed_sql, encoding="utf-8")
+            logger.info(
+                "[task=%s] 修复循环: 修复 SQL 已回写规范文件 %s", req_name, canonical_sql_file
+            )
+        except Exception:
+            logger.warning(
+                "[task=%s] 修复循环: 规范 SQL 文件回写失败（审计副本已保存）",
+                req_name,
+                exc_info=True,
+            )
 
     logger.info(
         "[task=%s] 修复循环完成: fix_iterations=%d, fixed_sql=%d 字符",

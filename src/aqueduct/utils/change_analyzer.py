@@ -55,7 +55,9 @@ _PHASE1_CACHED_FIELDS = (
 )
 
 # P1-3 断点续跑：不进快照的运行时对象键
-# （进程退出后无意义且不可 JSON 序列化：表结构缓存 / 线程池 / Future）
+# （进程退出后无意义且不可 JSON 序列化：表结构缓存 / 线程池 / Future /
+#   ModelRouter——call_llm 首调即写入 state，漏排除会让每阶段 checkpoint
+#   的 json.dumps 全部失败，断点续跑形同虚设）
 _CHECKPOINT_RUNTIME_KEYS = frozenset(
     {
         "_table_schema_cache",
@@ -63,6 +65,7 @@ _CHECKPOINT_RUNTIME_KEYS = frozenset(
         "_lineage_executor",
         "_dqc_spec_future",
         "_dqc_spec_executor",
+        "_llm_router",
     }
 )
 

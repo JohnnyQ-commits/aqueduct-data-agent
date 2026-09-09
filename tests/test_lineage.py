@@ -1,13 +1,16 @@
 """Lineage 工具单元测试。
 
-覆盖血缘解析器的表级和字段级解析。
+覆盖血缘解析器的表级和字段级解析，以及 wait_for_lineage 的
+mermaid 提取落 state 契约（PERF-4 Design.md 本地拼装的上游）。
 """
 
 from __future__ import annotations
 
 import tempfile
+from concurrent.futures import Future
 from pathlib import Path
 
+from src.aqueduct.engine.nodes.sql import wait_for_lineage
 from src.aqueduct.tools.lineage import LineageParser
 from src.aqueduct.tools.registry import get_tool
 
@@ -171,3 +174,77 @@ class TestLineageTool:
             assert "mermaid" in result.data
         finally:
             path.unlink()
+
+
+# ============================================================
+# wait_for_lineage — mermaid 提取落 state（PERF-4 Design.md 拼装上游）
+# ============================================================
+
+
+class TestWaitForLineageMermaid:
+    """血缘 LLM 输出的 mermaid 块落入 state["lineage_result"]["mermaid"]。
+
+    回归来源：2026-09-09 perf4-check eval——Phase4-字段级血缘图.md 有合法
+    mermaid，但 wait_for_lineage 丢弃 future.result() 返回值，state 里的
+    lineage_result 从未被赋值，Design.md 血缘图章只能渲染
+    "（血缘分析未完成）"。
+    """
+
+    @staticmethod
+    def _done_future(result: str) -> Future:
+        future = Future()
+        future.set_result(result)
+        return future
+
+    _RESPONSE = (
+        "### 第一部分：Mermaid 血缘图\n\n"
+        "```mermaid\n"
+        "graph LR\n"
+        "    A[源表] --> B[目标表]\n"
+        "```\n\n"
+        "### 第二部分：字段映射表\n\n"
+        "| 字段 | 来源 |\n"
+    )
+
+    def test_mermaid_extracted_into_state_without_fences(self):
+        """mermaid 块内容（无围栏）写入 lineage_result，线程资源清理。"""
+        state = {"_lineage_future": self._done_future(self._RESPONSE)}
+
+        wait_for_lineage(state)
+
+        mermaid = state["lineage_result"]["mermaid"]
+        assert mermaid == "graph LR\n    A[源表] --> B[目标表]"
+        assert "```" not in mermaid
+        assert "_lineage_future" not in state
+        assert "_lineage_executor" not in state
+
+    def test_merges_into_existing_lineage_result(self):
+        """已有 lineage_result 键（如 sources）保留，仅补 mermaid。"""
+        state = {
+            "_lineage_future": self._done_future(self._RESPONSE),
+            "lineage_result": {"sources": ["dw_demo.dwd_order_info_di"]},
+        }
+
+        wait_for_lineage(state)
+
+        assert state["lineage_result"]["sources"] == ["dw_demo.dwd_order_info_di"]
+        assert "graph LR" in state["lineage_result"]["mermaid"]
+
+    def test_response_without_mermaid_leaves_result_untouched(self):
+        """响应无 mermaid 围栏——不写 lineage_result（Design.md 走未完成注记）。"""
+        state = {"_lineage_future": self._done_future("只有字段映射表，没有图。")}
+
+        wait_for_lineage(state)
+
+        assert "lineage_result" not in state
+
+    def test_failed_future_leaves_result_untouched_and_cleans_up(self):
+        """后台血缘异常——不炸流程、不写 lineage_result、线程资源仍清理。"""
+        future = Future()
+        future.set_exception(RuntimeError("boom"))
+        state = {"_lineage_future": future}
+
+        wait_for_lineage(state)
+
+        assert "lineage_result" not in state
+        assert "_lineage_future" not in state

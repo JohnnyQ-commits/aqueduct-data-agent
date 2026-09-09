@@ -27,7 +27,12 @@ class TestSnapshotState:
     """state 快照：排除不可序列化的运行时对象，保留其余全部字段。"""
 
     def test_excludes_runtime_objects(self):
-        """缓存/线程池/Future 等运行时对象不进快照（进程退出后无意义）。"""
+        """缓存/线程池/Future/ModelRouter 等运行时对象不进快照（进程退出后无意义）。
+
+        _llm_router 回归来源：call_llm 首调即写入 state，ModelRouter 不可
+        JSON 序列化——2026-09-09 eval 实证：真跑 manifest 无 state_snapshot，
+        每阶段 checkpoint 保存全部静默失败，断点续跑形同虚设。
+        """
         state = {
             "requirement": "需求",
             "sql_content": "SELECT 1",
@@ -36,6 +41,7 @@ class TestSnapshotState:
             "_lineage_executor": object(),
             "_dqc_spec_future": object(),
             "_dqc_spec_executor": object(),
+            "_llm_router": object(),
         }
         snap = ChangeAnalyzer.snapshot_state(state)
         for key in (
@@ -44,6 +50,7 @@ class TestSnapshotState:
             "_lineage_executor",
             "_dqc_spec_future",
             "_dqc_spec_executor",
+            "_llm_router",
         ):
             assert key not in snap
         assert snap["sql_content"] == "SELECT 1"
