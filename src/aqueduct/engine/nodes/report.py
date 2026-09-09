@@ -12,6 +12,7 @@ from ...skills.base import SkillContext
 from ...skills.registry import get_skill
 from ...tools.registry import get_tool
 from ..contract import (
+    _add_banner,
     build_retry_prompt,
     ensure_structure,
     scan_degradation,
@@ -22,6 +23,10 @@ from .helpers import call_llm, save_artifact
 from .sql import wait_for_lineage
 
 logger = logging.getLogger(__name__)
+
+# 洞察章节空值兜底注记（章节头永不下线，保结构契约确定性通过）
+_INSIGHT_FALLBACK_BG = "（需求背景生成失败，请人工补充）"
+_INSIGHT_FALLBACK_Q = "（待确认问题清单生成失败，请人工补充）"
 
 
 def node_report(state: WorkflowState) -> WorkflowState:
@@ -38,13 +43,12 @@ def node_report(state: WorkflowState) -> WorkflowState:
     wait_for_lineage(state)
 
     try:
+        # PERF-4 拆分：doc_gen 只产洞察两章（需求背景/待确认问题清单），
+        # 设计方案/DDL/SQL/血缘图由 _assemble_design_doc 本地拼装
         inp = {
             "requirement_name": state.get("metadata", {}).get("requirement_name", ""),
             "design_scheme": state.get("design_scheme", ""),
-            "ddl_content": state.get("ddl_content", ""),
-            "sql_content": state.get("sql_content", ""),
             "dqc_result": state.get("dqc_result", ""),
-            "lineage_result": state.get("lineage_result") or {},
             "domain_context": state.get("domain_context", ""),
         }
 
@@ -64,19 +68,39 @@ def node_report(state: WorkflowState) -> WorkflowState:
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix="report") as executor:
             doc_future = executor.submit(call_llm, state, "doc_gen", prompt)
             kn_future = executor.submit(_generate_knowledge_doc, state)
-            llm_response = doc_future.result()
+            insights = doc_future.result()
             knowledge_doc = kn_future.result()
 
-        # P0-2: Phase6-Design.md 结构门禁——缺章 1 次定向重生成，仍缺降级横幅 + errors
-        def _regen_design(missing: list[str]) -> str:
-            return call_llm(
-                state, "doc_gen", build_retry_prompt(prompt, "Phase6-Design.md", missing)
-            )
+        # 洞察拆章 → 本地拼装
+        background, questions = _extract_insight_chapters(insights)
 
-        llm_response, design_missing = ensure_structure(
-            "Phase6-Design.md", llm_response, _regen_design
+        # P0-2 结构门禁（PERF-4 形态）：4 个本地章节确定性过契约，唯一依赖
+        # LLM 的需求背景缺失 → 1 次定向重生成洞察 + 重拼装；仍缺横幅降级 + errors
+        design_missing: list[str] = []
+        if not background:
+            design_missing = ["需求背景"]
+            logger.warning("[task=%s, phase=6] 洞察缺需求背景章，定向重生成 1 次", req_name)
+            retry_insights = call_llm(
+                state,
+                "doc_gen",
+                build_retry_prompt(prompt, "Phase6-Design.md", design_missing),
+            )
+            background, questions = _extract_insight_chapters(retry_insights)
+            if background:
+                design_missing = []
+
+        design_doc = _assemble_design_doc(
+            requirement_name=req_name,
+            design_scheme=state.get("design_scheme", ""),
+            ddl_content=state.get("ddl_content", ""),
+            sql_content=state.get("sql_content", ""),
+            lineage_mermaid=_lineage_mermaid(state),
+            background=background,
+            open_questions=questions,
         )
+
         if design_missing:
+            design_doc = _add_banner(design_doc, "Phase6-Design.md", design_missing)
             state.setdefault("errors", []).append(
                 f"Phase6-Design.md 结构缺章（定向重生成 1 次后仍缺）: {'、'.join(design_missing)}"
             )
@@ -86,7 +110,7 @@ def node_report(state: WorkflowState) -> WorkflowState:
                 "、".join(design_missing),
             )
 
-        save_artifact(state, "Phase6-Design.md", llm_response)
+        save_artifact(state, "Phase6-Design.md", design_doc)
 
         delivery_report = _generate_delivery_report(state)
         save_artifact(state, "Phase6-交付总报告.md", delivery_report)
@@ -143,6 +167,122 @@ def node_report(state: WorkflowState) -> WorkflowState:
         )
 
     return state
+
+
+# ── PERF-4: Design.md 拆分（洞察 LLM 生成 + 结构本地拼装） ───────────────────
+
+
+def _extract_insight_chapters(text: str) -> tuple[str, str]:
+    """从 LLM 洞察响应中拆出（需求背景, 待确认问题清单）两章正文。
+
+    需求背景是必需锚点章——缺失时整个响应视为不可用，返回 ("", "")，
+    由节点触发定向重生成（2026-09-08 三跑实证：网关降质时整段空响应，
+    部分响应不值得信任）。容忍 H2/H3 标题与整体 markdown 围栏；章节
+    正文止于下一个标题行；多余章节直接丢弃（本地填充说了算）。
+    """
+    if not text or not text.strip():
+        return "", ""
+
+    stripped = text.strip()
+    # 整体围栏剥离（```markdown ... ``` / ``` ... ```）
+    if stripped.startswith("```"):
+        stripped = re.sub(r"^```[\w-]*[ \t]*\n?", "", stripped)
+        stripped = re.sub(r"\n?```[ \t]*$", "", stripped)
+
+    background = ""
+    questions = ""
+    headers = list(re.finditer(r"^#{1,6}[ \t]+([^\n]+)$", stripped, re.MULTILINE))
+    for idx, m in enumerate(headers):
+        title = _normalize_header(m.group(1))
+        body_end = headers[idx + 1].start() if idx + 1 < len(headers) else len(stripped)
+        body = stripped[m.end() : body_end].strip()
+        if not background and ("需求背景" in title or title.startswith("背景")):
+            background = body
+        elif not questions and "待确认" in title:
+            questions = body
+
+    if not background:
+        return "", ""
+    return background, questions
+
+
+def _normalize_header(title: str) -> str:
+    """标题规整：去序号前缀（一、/1.）与加粗修饰。"""
+    t = title.strip().strip("*").strip()
+    return re.sub(r"^[（(【\[]?[一二三四五六七八九十\d]{1,3}[)）】\]、.．]*\s*", "", t)
+
+
+def _strip_leading_h1(text: str) -> str:
+    """剥离首行 H1（拼装文档提供自己的文档级标题），其余原样保留。"""
+    if re.match(r"^#[ \t]", text):
+        return text.split("\n", 1)[1].lstrip("\n") if "\n" in text else ""
+    return text
+
+
+def _lineage_mermaid(state: WorkflowState) -> str:
+    """从 state 提取血缘 mermaid 文本（异常形状兜底空串）。"""
+    lineage = state.get("lineage_result") or {}
+    if isinstance(lineage, dict):
+        return lineage.get("mermaid", "") or ""
+    return ""
+
+
+def _assemble_design_doc(
+    requirement_name: str,
+    design_scheme: str,
+    ddl_content: str,
+    sql_content: str,
+    lineage_mermaid: str,
+    background: str,
+    open_questions: str,
+) -> str:
+    """本地拼装 Phase6-Design.md（PERF-4：零 LLM、零转写失真）。
+
+    6 章头永远在场：设计方案/表结构/核心 SQL/血缘图逐字取自管道产物，
+    需求背景/待确认问题清单来自 LLM 洞察（空值兜底注记——章节头由
+    拼装兜底永不下线，保结构契约确定性通过）。
+    """
+    scheme = _strip_leading_h1(design_scheme.strip())
+
+    parts = [
+        f"# {requirement_name} — 设计文档",
+        "",
+        "## 需求背景",
+        "",
+        background.strip() or _INSIGHT_FALLBACK_BG,
+        "",
+        "## 设计方案",
+        "",
+        scheme or "（设计方案未生成）",
+        "",
+        "## 表结构(DDL)",
+        "",
+    ]
+    if ddl_content.strip():
+        parts += ["```sql", ddl_content.rstrip(), "```"]
+    else:
+        parts.append("（DDL 未生成）")
+
+    parts += ["", "## 核心 SQL", ""]
+    if sql_content.strip():
+        parts += ["```sql", sql_content.rstrip(), "```"]
+    else:
+        parts.append("（核心 SQL 未生成）")
+
+    parts += ["", "## 血缘图", ""]
+    if lineage_mermaid.strip():
+        parts += ["```mermaid", lineage_mermaid.rstrip(), "```"]
+    else:
+        parts.append("（血缘分析未完成）")
+
+    parts += [
+        "",
+        "## 待确认问题清单",
+        "",
+        open_questions.strip() or _INSIGHT_FALLBACK_Q,
+        "",
+    ]
+    return "\n".join(parts)
 
 
 def _generate_delivery_report(state: WorkflowState) -> str:

@@ -1,7 +1,9 @@
 """报告交付 Skill — ReportDeliverySkill。
 
 对应 Phase 6: 交付与沉淀。
-负责整合全流程产出物，生成 Design.md、交付总报告、知识沉淀文档。
+PERF-4 拆分：doc_gen 只生成洞察章节（需求背景/待确认问题清单），
+设计方案/表结构/核心 SQL/血缘图由 report 节点从 state 产物本地拼装
+（零 LLM、零转写失真，prompt 不再包含转写类内容）。
 """
 
 from __future__ import annotations
@@ -19,20 +21,15 @@ class ReportDeliverySkill(BaseSkill):
     """报告交付 Skill — 注册到全局 Skill 注册中心。"""
 
     name = "report_delivery"
-    description = "报告交付 — 整合全流程产出物，生成设计文档、交付报告、知识沉淀"
-    version = "1.0.0"
-    prompt_template_path = "report_delivery.tpl.md"
+    description = "报告交付 — 洞察章节生成（设计方案/DDL/SQL/血缘图由节点本地拼装）"
+    version = "2.0.0"
+    prompt_template_path = "report_delivery_insights.tpl.md"
 
     def execute(self, context: SkillContext) -> SkillResult:
-        """执行报告交付流程。
+        """构建 doc_gen 洞察 prompt。
 
-        步骤:
-          1. 收集全流程产出物（DDL、SQL、DQC、血缘图）
-          2. 生成 Design.md（按 templates/design.md）
-          3. 生成 交付总报告.md（按 templates/report.md）
-          4. 生成 知识沉淀.md
-          5. 更新 knowledge/domains/{domain_id}/domain.json
-          6. 自动重新生成 semantic-model.md + INDEX.md（由 report 节点调用 SemanticTool）
+        输入只含洞察素材（设计方案/DQC/语义模型）——转写类产物
+        （DDL/SQL/血缘图）不进 prompt，由节点本地填充。
         """
         inp = context.input if isinstance(context.input, dict) else {}
         metadata = context.state.get("metadata", {})
@@ -41,24 +38,14 @@ class ReportDeliverySkill(BaseSkill):
             "requirement_name", "交付报告"
         )
         design_scheme = inp.get("design_scheme") or context.state.get("design_scheme", "")
-        ddl_content = inp.get("ddl_content") or context.state.get("ddl_content", "")
-        sql_content = inp.get("sql_content") or context.state.get("sql_content", "")
         dqc_result = inp.get("dqc_result") or context.state.get("dqc_result", "")
+        domain_context = inp.get("domain_context") or context.state.get("domain_context", "")
 
-        lineage_result = inp.get("lineage_result") or context.state.get("lineage_result", {})
-        lineage_mermaid = ""
-        if isinstance(lineage_result, dict):
-            lineage_mermaid = lineage_result.get("mermaid", "")
-
-        # 加载 Prompt 模板
         prompt = self.load_prompt_template(
             requirement_name=requirement_name,
             design_scheme=design_scheme,
-            ddl_content=ddl_content,
-            sql_content=sql_content,
             dqc_result=dqc_result,
-            domain_context=context.state.get("domain_context", ""),
-            lineage_mermaid=lineage_mermaid,
+            domain_context=domain_context,
         )
 
         return SkillResult(

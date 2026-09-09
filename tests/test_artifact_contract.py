@@ -68,7 +68,8 @@ VALID_PHASE2_OPT4 = """## 取数逻辑
 - 上游: dwd.order_detail
 """
 
-# report_delivery.tpl.md「推理步骤 6」的 Design.md 章节要求
+# Design.md 章节要求（report.py _assemble_design_doc 本地拼装 + 契约校验，
+# PERF-4 前为 report_delivery.tpl.md「推理步骤 6」）
 # （需求背景 / 设计方案 / 表结构 / 核心 SQL / 血缘图）
 VALID_DESIGN_DOC = """# 每日订单统计 — 设计文档
 
@@ -451,33 +452,17 @@ class TestNodeReportGate:
 
         return state, doc_prompts, kn_prompts, saved
 
+    # PERF-4 后 doc_gen 只产洞察两章，血缘图等 4 章由节点本地拼装、确定性在场——
+    # 「doc_gen 响应缺血缘图」场景已不可能。Design 门禁的缺章重试/降级
+    # （唯一可缺章 = 需求背景）由 tests/test_design_split.py 覆盖。
+
     def test_design_doc_pass_no_retry(self):
-        """doc_gen 响应符合 Design 契约 → 单次调用无降级。"""
+        """doc_gen 响应含需求背景 → 单次调用无降级。"""
         state, doc_prompts, _, saved = self._run_report([VALID_DESIGN_DOC], [VALID_KNOWLEDGE])
 
         assert len(doc_prompts) == 1
         assert not saved["Phase6-Design.md"].startswith(">")
         assert state["errors"] == []
-
-    def test_design_doc_retry_then_recover(self):
-        """doc_gen 首次缺血缘图 → 定向重生成补全 → 落盘干净无 errors。"""
-        bad_doc = VALID_DESIGN_DOC.replace("## 血缘图", "## 数据流").replace("mermaid", "text")
-        state, doc_prompts, _, saved = self._run_report(
-            [bad_doc, VALID_DESIGN_DOC], [VALID_KNOWLEDGE]
-        )
-
-        assert len(doc_prompts) == 2
-        assert "结构警示" in doc_prompts[1]
-        assert not saved["Phase6-Design.md"].startswith(">")
-        assert state["errors"] == []
-
-    def test_design_doc_still_missing_degrades(self):
-        """doc_gen 重生成仍缺 → 横幅落盘 + errors 记录。"""
-        bad_doc = VALID_DESIGN_DOC.replace("## 血缘图", "## 数据流").replace("mermaid", "text")
-        state, _, _, saved = self._run_report([bad_doc, bad_doc], [VALID_KNOWLEDGE])
-
-        assert saved["Phase6-Design.md"].startswith("> ⚠️")
-        assert any("Phase6-Design.md" in e and "缺章" in e for e in state["errors"])
 
     def test_knowledge_doc_retry_then_degrade(self):
         """knowledge_extract 缺章 → 重生成 1 次 → 仍缺 → 横幅落盘 + errors 记录。"""
