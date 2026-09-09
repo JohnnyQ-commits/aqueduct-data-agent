@@ -16,9 +16,7 @@ requirement_summary（Phase 1 的浓缩摘要）与 SQL 本身，审查器无法
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
-from src.aqueduct.engine.nodes.review import _build_chunk_prompt, _single_review
+from src.aqueduct.engine.nodes.review import _build_chunk_prompt, _build_dimension_prompt
 from src.aqueduct.skills.base import SkillContext
 from src.aqueduct.skills.code_review import CodeReviewSkill
 
@@ -100,14 +98,13 @@ class TestReviewNodeDesignContext:
         assert "zz_ddl_marker" in prompt
 
     def test_single_review_passes_design_context(self):
-        """单块审查路径：_single_review 送入 call_llm 的 prompt 含设计上下文。"""
+        """单块审查路径（PERF-11 维度拆分）：维度 prompt 含设计上下文。"""
         state = _make_state()
-        captured: dict = {}
-        with patch(
-            "src.aqueduct.engine.nodes.review.call_llm",
-            side_effect=lambda s, t, p: captured.update(prompt=p) or "审查报告",
-        ):
-            _single_review(state, _SQL)
+        from src.aqueduct.engine.nodes.review import _REVIEW_DIMENSIONS
 
-        assert "zz_design_marker" in captured["prompt"]
-        assert "zz_ddl_marker" in captured["prompt"]
+        for dim in _REVIEW_DIMENSIONS:
+            prompt = _build_dimension_prompt(state, dim)
+            assert prompt is not None
+            assert "zz_design_marker" in prompt, f"维度 {dim['key']} 应含设计方案"
+            assert "zz_ddl_marker" in prompt, f"维度 {dim['key']} 应含目标表 DDL"
+            assert dim["name"] in prompt

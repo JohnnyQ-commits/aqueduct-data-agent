@@ -72,9 +72,14 @@ class TestSpeculativeStart:
 
         def fake_review_llm(state, task_type, prompt):
             # sql_review：标记自身启动，并确认投机 DGC 已在跑
+            # （PERF-11：响应带审查结论标记行才是合法维度响应）
             review_started.set()
             overlapped = spec_started.wait(timeout=3)
-            return "review-" + ("OVERLAP" if overlapped else "SERIAL")
+            return (
+                "review-"
+                + ("OVERLAP" if overlapped else "SERIAL")
+                + ("\n**审查结论**: Critical: 0, Warning: 0, Confirm: 0")
+            )
 
         calls: list[str] = []
 
@@ -108,7 +113,8 @@ class TestSpeculativeStart:
             # 投机结果应被 Phase 5 复用（无第二次 dqc_gen 调用）
             node_dqc(state)
 
-        assert state["review_result"] == "review-OVERLAP"
+        # PERF-11: 维度拆分合并报告含 3 个同名章节，用 in 断言
+        assert "review-OVERLAP" in state["review_result"]
         # P0-3: 投机拆分为 5 类并行调用，Phase 5 复用投机结果不重复调用
         assert sorted(calls) == ["dqc_gen"] * 5
         assert "dqc-OVERLAP" in state["dqc_result"]

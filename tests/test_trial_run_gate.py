@@ -310,7 +310,7 @@ class TestNodeReviewTrialGate:
             patch("src.aqueduct.engine.nodes.review.get_skill") as mock_skill,
             patch(
                 "src.aqueduct.engine.nodes.review.call_llm",
-                return_value="# 审查报告\n无问题",
+                return_value="# 审查报告\n无问题\n**审查结论**: Critical: 0, Warning: 0, Confirm: 0",
             ),
             patch("src.aqueduct.engine.nodes.review.save_artifact", return_value=""),
             # 投机 DQC 线程在 with 退出后仍会跑（patch 已解除→真连 LLM），

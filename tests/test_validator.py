@@ -686,7 +686,9 @@ class TestReviewLintInjection:
         """LLM 审查通过但 SQL 含 CTE → 规范 Critical 注入 issues 并触发修复循环。"""
         from src.aqueduct.engine.nodes.review import node_review
 
-        mock_llm.return_value = "审查通过，未发现问题。"
+        mock_llm.return_value = (
+            "审查通过，未发现问题。\n**审查结论**: Critical: 0, Warning: 0, Confirm: 0"
+        )
         state = {
             "sql_content": (
                 "with base as (\n"
@@ -713,7 +715,9 @@ class TestReviewLintInjection:
         """干净 SQL + LLM 审查通过 → 不触发修复循环。"""
         from src.aqueduct.engine.nodes.review import node_review
 
-        mock_llm.return_value = "审查通过，未发现问题。"
+        mock_llm.return_value = (
+            "审查通过，未发现问题。\n**审查结论**: Critical: 0, Warning: 0, Confirm: 0"
+        )
         state = {
             "sql_content": (
                 "insert overwrite table dw_demo.ads_x partition (inc_day = '20260101')\n"
