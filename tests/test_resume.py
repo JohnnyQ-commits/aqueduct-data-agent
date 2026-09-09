@@ -366,6 +366,95 @@ class TestPipelineCheckpointHook:
             fn.assert_called_once()
 
 
+class TestDegradedPhaseFreeze:
+    """降级 Phase（errors 增长但未 halt、管道继续）不进 checkpoint 前缀，并冻结后续 checkpoint。
+
+    缺陷实录（fixbatch-check，2026-09-09）：sql_gen 三连 900s 超时降级
+    （errors+1、sql_content 缺失、管道继续跑完），仍被标记 completed——
+    对该失败运行 --resume 是 no-op，跳过失败部分直接"续跑"下游，
+    与断点续跑"只重跑失败部分"的动机相悖。
+    判定用"上次干净 checkpoint 时的 errors 基线"而非单次 pass 增量：
+    修复循环回跳重审时，降级 errors 产生在上一 pass 的 _run_fix_loop 里，
+    单 pass 增量会漏判（复核后干净 ≠ 全程干净）。
+    """
+
+    @staticmethod
+    def _make_state(name: str = "test_req") -> dict:
+        return {
+            "requirement": "test requirement",
+            "mode": "dev",
+            "metadata": {"requirement_name": name},
+            "errors": [],
+            "artifacts": [],
+        }
+
+    def test_degraded_phase_not_checkpointed(self):
+        """本 Phase 新增 errors → 不记入前缀；其后干净 Phase 也不记（前缀完整性）。"""
+        state = self._make_state()
+
+        def degraded(s):
+            s.setdefault("errors", []).append("sql: SQL 开发异常: LLM 调用超时")
+            return s
+
+        calls: list[str] = []
+        phases: list[tuple[str, object]] = [
+            ("a", MagicMock(side_effect=lambda s: s)),
+            ("sql", degraded),
+            ("c", MagicMock(side_effect=lambda s: s)),
+        ]
+
+        result = _run_pipeline(state, phases, on_phase_complete=lambda n, s: calls.append(n))
+
+        assert result.success is False  # 降级：errors 非空
+        assert calls == ["a"]
+
+    def test_fix_loop_degradation_freezes_review_checkpoint(self, monkeypatch):
+        """修复循环降级（sql_fix 失败记 errors 保留原 SQL）后，复审干净也不 checkpoint。"""
+        state = self._make_state()
+
+        def review_node(s):
+            # 仅初审要求修复回环；复审放行
+            if not s.get("_review_first_pass_done"):
+                s["_review_first_pass_done"] = True
+                s["_needs_fix_loop"] = True
+            return s
+
+        def degrading_fix_loop(s):
+            s["_needs_fix_loop"] = False
+            s.setdefault("errors", []).append("sql_fix: 空响应重试耗尽，保留原 SQL")
+            return s
+
+        monkeypatch.setattr("src.aqueduct.core._run_fix_loop", degrading_fix_loop)
+
+        calls: list[str] = []
+        phases: list[tuple[str, object]] = [
+            ("a", MagicMock(side_effect=lambda s: s)),
+            ("review", review_node),
+            ("c", MagicMock(side_effect=lambda s: s)),
+        ]
+
+        result = _run_pipeline(state, phases, on_phase_complete=lambda n, s: calls.append(n))
+
+        assert result.success is False
+        assert calls == ["a"]
+
+    def test_preexisting_errors_do_not_freeze_clean_phases(self):
+        """resume 恢复的历史 errors 不误冻结——基线取管道启动时的 errors 长度。"""
+        state = self._make_state()
+        state["errors"] = ["design: 历史降级"]
+        phases = self._make_phases_stub("a", "b")
+        calls: list[str] = []
+
+        result = _run_pipeline(state, phases, on_phase_complete=lambda n, s: calls.append(n))
+
+        assert result.success is False  # 历史 errors 仍在
+        assert calls == ["a", "b"]
+
+    @staticmethod
+    def _make_phases_stub(*names: str) -> list[tuple[str, object]]:
+        return [(n, MagicMock(side_effect=lambda s: s)) for n in names]
+
+
 # ============================================================
 # Aqueduct.dev(resume=True) — 断点续跑端到端（假 Phase，无 LLM）
 # ============================================================
@@ -478,19 +567,29 @@ class TestDevResume:
         assert r2.state["report_done"] is True
         assert r2.state["artifacts"] == []
 
-    def test_resume_restores_errors_from_completed_phases(self, tmp_path, monkeypatch):
-        """已完成 Phase 的降级错误经快照恢复——轨迹不丢失（评估口径依赖）。"""
-        req, _executed, behavior = self._make_setup(tmp_path, monkeypatch, halt_at="dqc")
+    def test_resume_reruns_from_degraded_phase(self, tmp_path, monkeypatch):
+        """降级 Phase 不进 completed 前缀——resume 从首个降级 Phase 重跑，不跳过失败部分。
+
+        取代旧语义"降级 errors 随快照恢复"（fixbatch-check 实录证明其危害：
+        sql_gen 超时降级仍标记 completed，失败运行 resume 变 no-op）。
+        重跑后降级 errors 经重新执行再现，轨迹不丢失。
+        """
+        req, executed, behavior = self._make_setup(tmp_path, monkeypatch)
         behavior["design_error"] = True
         out = tmp_path / "out"
 
         r1 = Aqueduct().dev(str(req), output_dir=str(out))
-        assert r1.halted
+        assert r1.success is False  # design 降级，管道走完但带 errors
 
-        behavior["halt_at"] = None
+        manifest = json.loads((out / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+        assert manifest["phases_completed"] == ["requirement"]
+
+        executed.clear()
         r2 = Aqueduct().dev(str(req), output_dir=str(out), resume=True)
 
-        assert r2.success is False  # 快照恢复的历史 errors 仍在
+        # requirement 干净已 checkpoint 跳过；design 起全部重跑（含再次降级）
+        assert executed == ["design", "ddl", "sql", "review", "dqc", "report"]
+        assert r2.success is False
         assert "design: 降级警告，继续" in r2.state["errors"]
 
 
