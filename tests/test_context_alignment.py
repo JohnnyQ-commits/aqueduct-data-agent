@@ -59,6 +59,8 @@ class TestPhase45RequirementDesc:
             patch("src.aqueduct.engine.nodes.review.save_artifact", return_value="output/test.md"),
             # PERF-9 投机 DQC 同样走真实 call_llm，一并静默
             patch("src.aqueduct.engine.nodes.review.start_dqc_speculative"),
+            # P2-2 投机知识提取同样走真实 call_llm，一并静默
+            patch("src.aqueduct.engine.nodes.review.start_knowledge_speculative"),
         ):
             node_review(state)
 

@@ -65,6 +65,8 @@ _CHECKPOINT_RUNTIME_KEYS = frozenset(
         "_lineage_executor",
         "_dqc_spec_future",
         "_dqc_spec_executor",
+        "_kn_spec_future",
+        "_kn_spec_executor",
         "_llm_router",
     }
 )

@@ -41,6 +41,8 @@ class TestSnapshotState:
             "_lineage_executor": object(),
             "_dqc_spec_future": object(),
             "_dqc_spec_executor": object(),
+            "_kn_spec_future": object(),
+            "_kn_spec_executor": object(),
             "_llm_router": object(),
         }
         snap = ChangeAnalyzer.snapshot_state(state)
@@ -50,6 +52,8 @@ class TestSnapshotState:
             "_lineage_executor",
             "_dqc_spec_future",
             "_dqc_spec_executor",
+            "_kn_spec_future",
+            "_kn_spec_executor",
             "_llm_router",
         ):
             assert key not in snap
