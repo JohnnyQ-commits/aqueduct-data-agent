@@ -39,6 +39,12 @@ class DQCQualitySkill(BaseSkill):
         ddl_content = inp.get("ddl_content") or context.state.get("ddl_content", "")
         sql_content = inp.get("sql_content") or context.state.get("sql_content", "")
         domain_context = inp.get("domain_context") or context.state.get("domain_context", "")
+        # TODO-6: 需求摘要 + 设计方案（input 优先，state 兜底，缺失渲染占位）——
+        # DQC 用例要测「SQL 该做什么」，不只测「SQL 做了什么」
+        requirement_summary = inp.get("requirement_summary") or context.state.get(
+            "requirement_summary", ""
+        )
+        design_scheme = inp.get("design_scheme") or context.state.get("design_scheme", "")
         category = inp.get("category")
 
         if isinstance(category, dict) and category.get("name"):
@@ -48,6 +54,8 @@ class DQCQualitySkill(BaseSkill):
                 ddl_content=ddl_content,
                 sql_content=sql_content,
                 domain_context=domain_context,
+                requirement_summary=requirement_summary or "未获取",
+                design_scheme=design_scheme or "未获取",
                 category_name=category["name"],
                 category_focus=category.get("focus", ""),
                 category_example=category.get("example", ""),
@@ -58,6 +66,8 @@ class DQCQualitySkill(BaseSkill):
                 ddl_content=ddl_content,
                 sql_content=sql_content,
                 domain_context=domain_context,
+                requirement_summary=requirement_summary or "未获取",
+                design_scheme=design_scheme or "未获取",
             )
 
         return SkillResult(

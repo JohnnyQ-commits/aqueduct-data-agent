@@ -12,11 +12,17 @@
 
 - 目标表结构: $ddl_content
 - 核心 SQL: $sql_content
+- 需求摘要: $requirement_summary
+- 设计方案: $design_scheme
 - 业务域上下文: $domain_context
 
 ## 本类测试要求
 
 $category_focus
+
+业务口径依据：需求摘要与设计方案描述的过滤口径是测试判定的第一来源
+（如「仅统计有效订单」→ 反证用例检查无效订单确实没进来）；
+以需求口径为准，不以 SQL 现状反推。
 
 ## 格式规范（每个用例必须遵守）
 

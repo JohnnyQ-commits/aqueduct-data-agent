@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 
@@ -26,6 +27,21 @@ def _keyword_in_text(keyword: str, text: str) -> bool:
     if re.search(r"[a-zA-Z]", keyword):
         return bool(re.search(rf"\b{re.escape(keyword)}\b", text, re.IGNORECASE))
     return keyword in text
+
+
+# 规则条数渲染上限：动态域自动增量合并可能累积大量规则，控 prompt 体积
+_RULE_RENDER_CAP = 20
+
+
+def _format_rule_section(title: str, rules: dict) -> list[str]:
+    """规则章节行：非空才渲染，非字符串值 JSON 序列化为可读文本。"""
+    if not rules:
+        return []
+    lines = ["", f"### {title}"]
+    for key, value in list(rules.items())[:_RULE_RENDER_CAP]:
+        text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+        lines.append(f"- **{key}**: {text}")
+    return lines
 
 
 class KnowledgeRecall:
@@ -116,7 +132,7 @@ class KnowledgeRecall:
         scored_entities.sort(key=lambda x: x[0], reverse=True)
         entity_results = []
         for _score, entity_name, attrs in scored_entities[:max_entities]:
-            attr_str = ", ".join(a.name for a in attrs[:5])
+            attr_str = ", ".join(a.name for a in attrs[:15])
             entity_results.append(f"- {entity_name}: {attr_str}")
         result["entities"] = "\n".join(entity_results) if entity_results else ""
 
@@ -181,7 +197,7 @@ class KnowledgeRecall:
             if entity.description:
                 lines.append(f"  - {entity.description}")
             if entity.attributes:
-                attr_names = ", ".join(a.name for a in entity.attributes[:5])
+                attr_names = ", ".join(a.name for a in entity.attributes[:15])
                 lines.append(f"  - 属性: {attr_names}")
 
         if domain.metrics:
@@ -189,5 +205,8 @@ class KnowledgeRecall:
             lines.append("### 指标列表")
             for _mid, metric in domain.metrics.items():
                 lines.append(f"- **{metric.name}**: `{metric.expression}` ({metric.unit})")
+
+        lines.extend(_format_rule_section("业务规则", domain.business_rules))
+        lines.extend(_format_rule_section("过滤规则", domain.filter_rules))
 
         return "\n".join(lines)
