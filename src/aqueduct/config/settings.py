@@ -163,6 +163,18 @@ class Settings(BaseSettings):
         ),
     )
 
+    sql_self_fix_rounds: int = Field(
+        default=1,
+        description=(
+            "Phase 4 生成自检轮数（TODO-8，0=关闭）。sql_gen 后本地 linter 发现"
+            "ERROR 级违规时，在生成端就地调用 sql_fix 自修正（与审查侧修复同一"
+            "提示词契约）——linter Critical 若留到审查侧，需支付 review→fix→"
+            "re-review 两轮审查（~26min）的完整回环，就地修复只花一次 sql_fix。"
+            "修复必须让 ERROR 数严格下降才接受，否则回退原 SQL；修不动保持原状，"
+            "审查侧现场复检门禁照常兜底。"
+        ),
+    )
+
     # === LLM 重试配置 ===
 
     llm_backend: str = Field(

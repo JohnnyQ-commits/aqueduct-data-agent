@@ -12,7 +12,13 @@ from ...skills.base import SkillContext
 from ...skills.registry import get_skill
 from ...tools.registry import get_tool
 from ..state import WorkflowState
-from .helpers import call_llm, extract_sql_block, is_valid_sql, save_artifact
+from .helpers import (
+    build_sql_fix_prompt,
+    call_llm,
+    extract_sql_block,
+    is_valid_sql,
+    save_artifact,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +101,9 @@ def node_sql(state: WorkflowState) -> WorkflowState:
 
         # 自动运行 SQL 校验
         _auto_validate(state, sql_path)
+        # 生成自检（TODO-8）：linter ERROR 就地自修正——必须先于试跑/血缘/成本，
+        # 后续工具与审查均基于修复后的 SQL
+        _self_check_fix(state)
         # 试跑验证：LIMIT 10 提前发现语法错误和字段不对齐
         _auto_trial_run(state, sql_path)
         # 自动运行血缘解析（异步，不阻塞 review）
@@ -132,6 +141,108 @@ def _resolve_sql_path(state: WorkflowState, rel_path: str) -> Path:
     if p.is_absolute():
         return p
     return get_settings().project_root / rel_path
+
+
+def _self_check_fix(state: WorkflowState) -> None:
+    """生成自检（TODO-8）：linter ERROR 在 Phase 4 内就地自修正。
+
+    修复前移：linter Critical 留到审查侧要走 review(~13min) → sql_fix →
+    re-review(~13min) 的完整回环，而违规本身是本地零 token 可判定的——
+    生成端就地修复只花一次 sql_fix。
+    守护：仅 ERROR 级触发（与 review 侧 ERROR→Critical 映射同口径）；
+    修复必须让 ERROR 数严格下降才接受，否则回退原 SQL 并还原校验结果；
+    轮数上限 AQUEDUCT_SQL_SELF_FIX_ROUNDS（默认 1，0=关闭）；LLM 失败/
+    输出无效均保持原状——审查侧 P1-2 现场复检门禁照常兜底，语义不变。
+    """
+    from ...config.settings import get_settings
+
+    rounds_left = get_settings().sql_self_fix_rounds
+    if rounds_left < 1:
+        return
+
+    def _error_issues() -> list[dict]:
+        return [
+            i
+            for i in (state.get("validation_result") or {}).get("issues", [])
+            if i.get("level") == "ERROR"
+        ]
+
+    req_name = state.get("metadata", {}).get("requirement_name", "etl_sql")
+    canonical = state.get("sql_file") or ""
+    round_no = 0
+
+    while rounds_left > 0 and (errors := _error_issues()):
+        sql_content = state.get("sql_content", "")
+        issues_formatted = "\n".join(
+            f"{n}. [Critical] {i.get('message', '')} (line {i.get('line') or '?'})"
+            for n, i in enumerate(errors, 1)
+        )
+        round_no += 1
+        logger.info(
+            "[task=%s] 生成自检: linter %d 个 ERROR，就地自修正（第 %d 轮）",
+            req_name,
+            len(errors),
+            round_no,
+        )
+
+        try:
+            fix_response = call_llm(
+                state, "sql_fix", build_sql_fix_prompt(sql_content, issues_formatted)
+            )
+        except Exception as e:
+            logger.warning(
+                "[task=%s] 生成自检: LLM 调用失败，保持原 SQL 交审查侧兜底: %s", req_name, e
+            )
+            return
+
+        fixed_sql = extract_sql_block(fix_response)
+        if not is_valid_sql(fixed_sql):
+            logger.warning(
+                "[task=%s] 生成自检: 修复输出无效（%d 字符），保持原 SQL",
+                req_name,
+                len(fixed_sql),
+            )
+            return
+
+        # 试接受：审计副本 + 规范文件回写（Phase4-*.sql 是交付物本体）+ 复检
+        save_artifact(state, f"Phase4-{req_name}_selffix{round_no}.sql", fixed_sql)
+        state["sql_content"] = fixed_sql
+        if canonical:
+            try:
+                _resolve_sql_path(state, canonical).write_text(fixed_sql, encoding="utf-8")
+            except Exception:
+                logger.warning(
+                    "[task=%s] 生成自检: 规范文件回写失败（审计副本已保存）",
+                    req_name,
+                    exc_info=True,
+                )
+        _auto_validate(state, canonical)
+
+        if len(_error_issues()) >= len(errors):
+            # 修复未改善（甚至更差）→ 回退原 SQL 并还原校验结果，交审查侧兜底
+            logger.warning(
+                "[task=%s] 生成自检: 修复未让 ERROR 下降（%d → %d），回退原 SQL",
+                req_name,
+                len(errors),
+                len(_error_issues()),
+            )
+            state["sql_content"] = sql_content
+            if canonical:
+                try:
+                    _resolve_sql_path(state, canonical).write_text(sql_content, encoding="utf-8")
+                except Exception:
+                    logger.warning("[task=%s] 生成自检: 原SQL回写失败", req_name, exc_info=True)
+            _auto_validate(state, canonical)
+            return
+
+        logger.info(
+            "[task=%s] 生成自检: 第 %d 轮修复生效（%d → %d ERROR）",
+            req_name,
+            round_no,
+            len(errors),
+            len(_error_issues()),
+        )
+        rounds_left -= 1
 
 
 def _auto_validate(state: WorkflowState, sql_path: str) -> None:

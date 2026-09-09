@@ -129,34 +129,10 @@ def _run_fix_loop(state: WorkflowState) -> WorkflowState:
         issues_lines.append(f"{i}. [{severity}] {message}")
     issues_formatted = "\n".join(issues_lines)
 
-    # 读取 sql_fix 模板
-    try:
-        from string import Template
+    # 组装修复 prompt（与 Phase 4 生成自检共用同一提示词契约）
+    from .engine.nodes.helpers import build_sql_fix_prompt
 
-        from .config.settings import get_settings
-
-        settings = get_settings()
-        tpl_path = settings.prompt_dir / "sql_fix.tpl.md"
-        if tpl_path.exists():
-            raw_tpl = tpl_path.read_text(encoding="utf-8")
-            tpl = Template(raw_tpl)
-            prompt = tpl.safe_substitute(
-                sql_content=sql_content,
-                issues_formatted=issues_formatted,
-            )
-        else:
-            # 模板不存在时使用默认 prompt
-            prompt = (
-                f"你是一个 SQL 工程师。以下 SQL 在代码审查中发现了问题，请修复。\n\n"
-                f"## 原始 SQL\n```sql\n{sql_content}\n```\n\n"
-                f"## 审查发现的问题\n{issues_formatted}\n\n"
-                f"请修复上述问题，输出完整的修复后 SQL。"
-            )
-    except Exception:
-        prompt = (
-            f"请修复以下 SQL 的审查问题：\n\n{issues_formatted}\n\n"
-            f"原始 SQL：\n```sql\n{sql_content}\n```"
-        )
+    prompt = build_sql_fix_prompt(sql_content, issues_formatted)
 
     logger.info("[task=%s] 修复循环: 发送修复 prompt（%d 字符）", req_name, len(prompt))
 
