@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from src.aqueduct.core import _run_fix_loop, _run_pipeline
@@ -186,6 +187,37 @@ class TestRunFixLoop:
         assert result["sql_content"] == "SELECT 1 FROM dual WHERE 1=1"
         assert result["fix_iterations"] == 1
         assert result.get("_needs_fix_loop") is False
+
+    @patch(
+        "src.aqueduct.engine.nodes.helpers.save_artifact", side_effect=lambda s, n, c: f"output/{n}"
+    )
+    @patch("src.aqueduct.engine.nodes.helpers.is_valid_sql", return_value=True)
+    @patch("src.aqueduct.engine.nodes.helpers.extract_sql_block", side_effect=lambda x: x)
+    @patch(
+        "src.aqueduct.engine.nodes.helpers.call_llm", return_value="SELECT 1 FROM dual WHERE 1=1"
+    )
+    def test_fix_loop_rewrites_canonical_sql_file(
+        self, _mock_llm, _mock_extract, _mock_valid, _mock_save, tmp_path
+    ):
+        """修复 SQL 回写规范文件 Phase4-{req}.sql，_fixN 仅作审计副本。
+
+        回归来源：2026-09-09 perf4-check eval——只落 _fix1.sql 不回写规范文件，
+        交付物本体停留在修复前（CASE WHEN 形态），evals 对全部 Phase4-*.sql
+        做 linter，按规范文件判 FAIL。
+        """
+        canonical = tmp_path / "Phase4-test_req.sql"
+        canonical.write_text("SELECT 1 FROM dual", encoding="utf-8")
+
+        state = self._make_state_with_issues()
+        state["sql_file"] = str(canonical)
+
+        with patch("src.aqueduct.config.settings.get_settings") as mock_settings:
+            mock_settings.return_value.max_fix_iterations = 2
+            result = _run_fix_loop(state)
+
+        assert canonical.read_text(encoding="utf-8") == "SELECT 1 FROM dual WHERE 1=1"
+        # state 指向规范文件而非 _fixN 审计副本
+        assert Path(result["sql_file"]).name == "Phase4-test_req.sql"
 
     @patch(
         "src.aqueduct.engine.nodes.helpers.save_artifact", side_effect=lambda s, n, c: f"output/{n}"

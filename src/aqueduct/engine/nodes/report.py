@@ -219,6 +219,18 @@ def _strip_leading_h1(text: str) -> str:
     return text
 
 
+def _strip_leading_matching_header(text: str, title: str) -> str:
+    """剥离与指定标题等价的首行标题（H1-H6，规整去序号后比对）。
+
+    design_scheme 等中间产物常自带"## 设计方案"章头，拼装再补一个
+    章头会得到连续同名标题；只剥首行、只剥等价标题，其余原样保留。
+    """
+    m = re.match(r"^\s*#{1,6}[ \t]+([^\n]+)", text)
+    if m and _normalize_header(m.group(1)) == _normalize_header(title):
+        return text[m.end() :].lstrip("\n")
+    return text
+
+
 def _lineage_mermaid(state: WorkflowState) -> str:
     """从 state 提取血缘 mermaid 文本（异常形状兜底空串）。"""
     lineage = state.get("lineage_result") or {}
@@ -242,7 +254,7 @@ def _assemble_design_doc(
     需求背景/待确认问题清单来自 LLM 洞察（空值兜底注记——章节头由
     拼装兜底永不下线，保结构契约确定性通过）。
     """
-    scheme = _strip_leading_h1(design_scheme.strip())
+    scheme = _strip_leading_matching_header(_strip_leading_h1(design_scheme.strip()), "设计方案")
 
     parts = [
         f"# {requirement_name} — 设计文档",

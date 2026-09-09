@@ -29,7 +29,7 @@ class Issue(TypedDict):
 _RE_SELECT_STAR = re.compile(r"\bselect\s+\*", re.IGNORECASE)
 _RE_UNION = re.compile(r"\bunion\s+all\b|\bunion\b", re.IGNORECASE)
 _RE_WHERE = re.compile(r"\bwhere\b", re.IGNORECASE)
-_RE_DIVISION_VAR = re.compile(r"[a-zA-Z0-9_)]\s*/\s*([a-zA-Z_]\w*)")
+_RE_DIVISION_VAR = re.compile(r"[a-zA-Z0-9_)]\s*/\s*([a-zA-Z_][\w.]*)")
 _RE_WHEN_ZERO = re.compile(r"when\s+.+?>\s*0", re.IGNORECASE)
 _RE_SUM_NVL = re.compile(r"\bSUM\s*\(\s*(nvl|coalesce|case)", re.IGNORECASE)
 _RE_SUM_RAW = re.compile(r"\bSUM\s*\(\s*[a-zA-Z_]", re.IGNORECASE)
@@ -170,6 +170,8 @@ class Validator:
         金样本校准：分母为 nullif/nvl/coalesce/if/case/count 视为已保护；
         字符串与行中注释先剥离再匹配，防止 'yyyy/MM/dd' 格式串、
         注释里的斜杠短语（label_time/label_name）误报。
+        CASE WHEN 守护（= 0 / is null / > 0 + then 置空，跨行或同行）同样
+        视为已保护——_division_case_guarded 识别；除法在零分支内仍报。
         """
         for i, line in enumerate(self.lines, 1):
             if RE_COMMENT.match(line):
@@ -179,7 +181,45 @@ class Validator:
             if m and m.group(1).lower() not in _DIV_DENOM_SAFE:
                 if i > 1 and _RE_WHEN_ZERO.search(self.lines[i - 2]):
                     continue
+                if self._division_case_guarded(i - 1, m.group(1), m.start()):
+                    continue
                 self._log("ERROR", "除法未做判空判零保护，应写为 a / nullif(b, 0)（§7.2）", i)
+
+    def _division_case_guarded(self, div_idx: int, denom: str, div_start: int) -> bool:
+        """识别分母的 CASE WHEN 守护：从除法行向上（含本行）扫 ≤6 行。
+
+        守护形态：分母 = 0 / is null / > 0，且与除法同属一个 CASE 分支
+        （守护与除法之间存在 then）；= 0 / is null 守护还要求 then 分支置
+        null/0——除法在零分支内（恰在分母为零时执行）不算守护。
+        同行守护须在除法之前；守护与除法之间出现 end / ; 视为跨 scope，止步。
+        """
+        guard_re = re.compile(
+            rf"\b{re.escape(denom)}\s*(?:=\s*0\b|is\s+null\b|>\s*0\b)", re.IGNORECASE
+        )
+        for j in range(div_idx, max(div_idx - 6, -1), -1):
+            clean = _strip_literals_and_comments(self.lines[j])
+            m = guard_re.search(clean)
+            if m and (j < div_idx or m.end() <= div_start):
+                if j == div_idx:
+                    between = clean[m.end() : div_start]
+                else:
+                    between = clean[m.end() :]
+                    for k in range(j + 1, div_idx):
+                        between += " " + _strip_literals_and_comments(self.lines[k])
+                    between += " " + _strip_literals_and_comments(self.lines[div_idx])[:div_start]
+                if re.search(r"\bend\b", between, re.IGNORECASE):
+                    return False
+                if not re.search(r"\bthen\b", between, re.IGNORECASE):
+                    return False
+                # = 0 / is null 守护：then 分支须置 null/0（除法在零分支内仍危险）
+                zero_guard = re.search(r"(?:=\s*0|is\s+null)\s*$", m.group(0), re.IGNORECASE)
+                then_null = re.search(r"\bthen\s+(?:null|0)\b", between, re.IGNORECASE)
+                return not (zero_guard and not then_null)
+            if j != div_idx and (
+                clean.rstrip().endswith(";") or re.search(r"\bend\b", clean, re.IGNORECASE)
+            ):
+                break
+        return False
 
     def check_join_without_on(self) -> None:
         """检查 5: JOIN 未指定关联条件。"""

@@ -16,6 +16,9 @@ from .helpers import call_llm, extract_sql_block, is_valid_sql, save_artifact
 
 logger = logging.getLogger(__name__)
 
+# 血缘 LLM 输出中的 mermaid 围栏（wait_for_lineage 提取落 state 用）
+_RE_MERMAID_FENCE = re.compile(r"```mermaid\s*\n(.*?)```", re.DOTALL)
+
 
 def node_sql(state: WorkflowState) -> WorkflowState:
     """Phase 4: SQL 开发节点。
@@ -363,10 +366,21 @@ def _run_lineage_llm(state: WorkflowState, prompt: str) -> str:
     return result
 
 
+def _extract_mermaid(text: str) -> str:
+    """从血缘 LLM 输出中提取首个 mermaid 块内容（无围栏；无块返回空串）。"""
+    if not text:
+        return ""
+    m = _RE_MERMAID_FENCE.search(text)
+    return m.group(1).strip() if m else ""
+
+
 def wait_for_lineage(state: WorkflowState) -> None:
     """等待后台血缘 LLM 调用完成（OPT-5）。
 
     在需要血缘产出物的节点（如 report）前调用。
+    LLM 输出中的 mermaid 块提取后落入 state["lineage_result"]["mermaid"]——
+    PERF-4 Design.md 本地拼装取此处，不再经 doc_gen 转写（此前返回值被
+    丢弃，lineage_result 从未落 state，血缘图章只能渲染未完成注记）。
     """
     future: Future | None = state.get("_lineage_future")
     executor: ThreadPoolExecutor | None = state.get("_lineage_executor")
@@ -375,7 +389,13 @@ def wait_for_lineage(state: WorkflowState) -> None:
         return
 
     try:
-        future.result(timeout=300)  # 最多等待 5 分钟
+        result = future.result(timeout=300)  # 最多等待 5 分钟
+        mermaid = _extract_mermaid(result)
+        if mermaid:
+            state["lineage_result"] = {
+                **(state.get("lineage_result") or {}),
+                "mermaid": mermaid,
+            }
         logger.info("后台血缘生成已完成")
     except Exception:
         logger.warning("后台血缘生成异常，不阻塞流程", exc_info=True)

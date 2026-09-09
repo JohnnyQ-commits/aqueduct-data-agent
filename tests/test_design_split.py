@@ -172,6 +172,32 @@ class TestAssembleDesignDoc:
         assert "# Phase2 设计方案" not in doc
         assert "## 取数逻辑" in doc
 
+    def test_design_scheme_leading_matching_h2_stripped(self):
+        """design_scheme 自带"## 设计方案"头时剥离，避免与拼装章头重复。
+
+        回归来源：2026-09-09 perf4-check eval——Phase2 产出以"## 设计方案"
+        开头，拼装再补一个章头，Design.md 出现连续两个同名标题。
+        """
+        state = _make_state()
+        state["design_scheme"] = "## 设计方案\n\n### 取数逻辑\n\n- 主表: dwd.order_detail"
+        doc = _assemble(state)
+        assert doc.count("## 设计方案") == 1
+        assert "### 取数逻辑" in doc
+
+    def test_design_scheme_numbered_header_variant_stripped(self):
+        """序号变体（## 二、设计方案）同样剥离——规整去序号后等价。"""
+        state = _make_state()
+        state["design_scheme"] = "## 二、设计方案\n\n正文。"
+        doc = _assemble(state)
+        assert doc.count("## 设计方案") == 1
+
+    def test_design_scheme_non_matching_leading_header_kept(self):
+        """首行标题与"设计方案"不等价（如"## 设计方案摘要"）——原样保留。"""
+        state = _make_state()
+        state["design_scheme"] = "## 设计方案摘要\n\n正文。"
+        doc = _assemble(state)
+        assert "## 设计方案摘要" in doc
+
     def test_empty_ddl_gets_note_but_header_present(self):
         state = _make_state()
         state["ddl_content"] = ""
