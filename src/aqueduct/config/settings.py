@@ -152,6 +152,17 @@ class Settings(BaseSettings):
         description="审查→修复循环最大迭代次数。",
     )
 
+    auto_resume_attempts: int = Field(
+        default=1,
+        description=(
+            "管道失败后自动断点续跑次数（0=关闭）。降级收尾（success=False 且未 halt）"
+            "且存在干净 checkpoint 前缀时，自动带 resume 重启、只重跑降级部分"
+            "（网关停摆窗实录：全量 45min 损失 → 续跑仅 ~12min）。防确定性缺陷"
+            "空转：新尝试的前缀无增长即提前停止。首 Phase 降级（无前缀可复用）"
+            "和 halt（用户终止）不自动续跑。"
+        ),
+    )
+
     # === LLM 重试配置 ===
 
     llm_backend: str = Field(

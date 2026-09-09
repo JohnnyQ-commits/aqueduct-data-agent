@@ -529,6 +529,11 @@ class Aqueduct:
                 需求哈希匹配则跳过已完成 Phase 前缀，从断点继续；
                 无 checkpoint / 需求已变更时自动退化为全量运行。
 
+        失败自动断点续跑（AQUEDUCT_AUTO_RESUME_ATTEMPTS，默认 1）：降级收尾
+        （success=False 且未 halt）且有干净 checkpoint 前缀时，自动带 resume
+        重启只重跑降级部分；前缀无增长（确定性缺陷）即停，首 Phase 降级与
+        halt 不续跑。
+
         Returns:
             AqueductResult 包含所有产出物和内容。
         """
@@ -542,74 +547,108 @@ class Aqueduct:
             requirement_text = requirement
             req_name = "requirement"
 
-        state: WorkflowState = {
-            "requirement": requirement_text,
-            "mode": "dev",
-            "metadata": {"requirement_name": req_name},
-            "errors": [],
-            "artifacts": [],
-        }
-        if output_dir:
-            state["metadata"]["output_dir"] = output_dir
-        if external_sql_path:
-            state["external_sql_path"] = external_sql_path
-
-        # 注入表结构缓存（跨 Phase 共享，避免重复 MCP 查询）
         from .config.settings import get_settings
         from .utils.table_cache import TableSchemaCache
 
         settings = get_settings()
-        cache_persist_path = settings.project_root / ".cache" / "table_schemas.json"
-        state["_table_schema_cache"] = TableSchemaCache(
-            ttl_seconds=86400,  # 24 小时
-            persist_path=cache_persist_path,
-        )
+        auto_attempts_left = settings.auto_resume_attempts
 
-        # P1-3 断点续跑：读取 checkpoint，跳过已完成 Phase 前缀
-        phases = _DEV_PHASES
-        completed_phases: list[str] = []
-        if resume:
-            from .engine.nodes.helpers import get_output_dir
-            from .utils.change_analyzer import ChangeAnalyzer
+        # 失败自动断点续跑：降级收尾时带 resume 重启（外层循环）。
+        # 每次尝试从干净基态重建 state + 快照覆盖——降级尝试残留的
+        # 中间产物（sql_content 等）不得泄漏进下一次尝试（手动 resume
+        # 的干净语义同样适用于进程内自动续跑）。
+        while True:
+            state: WorkflowState = {
+                "requirement": requirement_text,
+                "mode": "dev",
+                "metadata": {"requirement_name": req_name},
+                "errors": [],
+                "artifacts": [],
+            }
+            if output_dir:
+                state["metadata"]["output_dir"] = output_dir
+            if external_sql_path:
+                state["external_sql_path"] = external_sql_path
 
-            checkpoint = ChangeAnalyzer(output_dir=get_output_dir(state)).load_checkpoint(
-                requirement_text
+            # 注入表结构缓存（跨 Phase 共享，避免重复 MCP 查询）
+            cache_persist_path = settings.project_root / ".cache" / "table_schemas.json"
+            state["_table_schema_cache"] = TableSchemaCache(
+                ttl_seconds=86400,  # 24 小时
+                persist_path=cache_persist_path,
             )
-            if checkpoint is not None:
-                # 快照不含运行时对象（表结构缓存等），dev() 已注入的实例保持有效
-                ChangeAnalyzer.restore_state(state, checkpoint["state_snapshot"])
-                prefix_len = _completed_prefix_len(
-                    checkpoint["phases_completed"], [name for name, _ in _DEV_PHASES]
+
+            # P1-3 断点续跑：读取 checkpoint，跳过已完成 Phase 前缀
+            phases = _DEV_PHASES
+            completed_phases: list[str] = []
+            restored_prefix_len = 0
+            if resume:
+                from .engine.nodes.helpers import get_output_dir
+                from .utils.change_analyzer import ChangeAnalyzer
+
+                checkpoint = ChangeAnalyzer(output_dir=get_output_dir(state)).load_checkpoint(
+                    requirement_text
                 )
-                completed_phases = checkpoint["phases_completed"][:prefix_len]
-                phases = _DEV_PHASES[prefix_len:]
+                if checkpoint is not None:
+                    # 快照不含运行时对象（表结构缓存等），dev() 已注入的实例保持有效
+                    ChangeAnalyzer.restore_state(state, checkpoint["state_snapshot"])
+                    prefix_len = _completed_prefix_len(
+                        checkpoint["phases_completed"], [name for name, _ in _DEV_PHASES]
+                    )
+                    completed_phases = checkpoint["phases_completed"][:prefix_len]
+                    restored_prefix_len = prefix_len
+                    phases = _DEV_PHASES[prefix_len:]
+                    logger.info(
+                        "[task=%s] 断点续跑: 跳过已完成 Phase %s",
+                        req_name,
+                        completed_phases,
+                    )
+                    if not phases:
+                        logger.info(
+                            "[task=%s] 断点续跑: 全部 Phase 已完成，直接返回上次结果", req_name
+                        )
+                        return AqueductResult(state, halted=False)
+
+            def _save_checkpoint(
+                phase_name: str, st: WorkflowState, _completed: list[str] = completed_phases
+            ) -> None:
+                from .engine.nodes.helpers import get_output_dir
+                from .utils.change_analyzer import ChangeAnalyzer
+
+                _completed.append(phase_name)
+                ChangeAnalyzer(output_dir=get_output_dir(st)).save_checkpoint(
+                    st.get("requirement", ""), _completed, st
+                )
+
+            result = _run_pipeline(
+                state,
+                phases,
+                interactive=interactive,
+                confirm_after="requirement",
+                on_confirm=on_confirm,
+                on_progress=on_progress,
+                on_phase_complete=_save_checkpoint,
+            )
+
+            # 失败自动断点续跑：降级收尾（未 halt）且有干净前缀可复用、
+            # 本轮前缀有增长（确定性缺陷重跑不增长，立即停）时带 resume 重启
+            if (
+                not result.success
+                and not result.halted
+                and auto_attempts_left > 0
+                and len(completed_phases) > restored_prefix_len
+            ):
+                auto_attempts_left -= 1
+                resume = True
                 logger.info(
-                    "[task=%s] 断点续跑: 跳过已完成 Phase %s",
+                    "[task=%s] 自动断点续跑: 管道失败收尾（errors=%d），"
+                    "从干净前缀 %s 续跑（剩余自动续跑 %d 次）",
                     req_name,
+                    len(result.errors),
                     completed_phases,
+                    auto_attempts_left,
                 )
-                if not phases:
-                    logger.info("[task=%s] 断点续跑: 全部 Phase 已完成，直接返回上次结果", req_name)
-                    return AqueductResult(state, halted=False)
-
-        def _save_checkpoint(phase_name: str, st: WorkflowState) -> None:
-            from .engine.nodes.helpers import get_output_dir
-            from .utils.change_analyzer import ChangeAnalyzer
-
-            completed_phases.append(phase_name)
-            ChangeAnalyzer(output_dir=get_output_dir(st)).save_checkpoint(
-                st.get("requirement", ""), completed_phases, st
-            )
-
-        return _run_pipeline(
-            state,
-            phases,
-            interactive=interactive,
-            confirm_after="requirement",
-            on_confirm=on_confirm,
-            on_progress=on_progress,
-            on_phase_complete=_save_checkpoint,
-        )
+                continue
+            return result
 
     def change(
         self,
