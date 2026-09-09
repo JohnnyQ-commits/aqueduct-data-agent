@@ -15,10 +15,8 @@ from src.aqueduct.engine.nodes.report import node_report
 _PAD = "x" * 120
 
 # P0-2: Phase6 文档结构契约要求的章节骨架（无骨架的响应会被门禁降级加横幅）
-_VALID_DOC = (
-    "# 测试 — 设计文档\n\n## 需求背景\n背景。\n\n## 设计方案\n方案。\n\n"
-    "## 表结构(DDL)\nDDL。\n\n## 核心 SQL\nSQL。\n\n## 血缘图\n血缘。\n"
-)
+# PERF-4: doc_gen 只产洞察两章——重叠标记必须写进章节正文才会进拼装后的 Design.md
+_VALID_INSIGHTS = "## 需求背景\n\n背景。doc-{marker}\n\n## 待确认问题清单\n\n无\n"
 _VALID_KN = (
     "# 知识沉淀 — 测试\n\n### 一、业务域知识\n实体。\n\n### 二、表结构经验\n经验。\n\n"
     "### 三、SQL 开发经验\n模式。\n\n### 四、指标口径\n口径。\n\n### 五、待确认事项\n无。\n"
@@ -57,7 +55,7 @@ class TestReportParallelCalls:
             if task_type == "doc_gen":
                 started_doc.set()
                 overlapped = started_kn.wait(timeout=3)
-                return _VALID_DOC + f"\n\ndoc-{'PARALLEL' if overlapped else 'SERIAL'}\n"
+                return _VALID_INSIGHTS.format(marker="PARALLEL" if overlapped else "SERIAL")
             if task_type == "knowledge_extract":
                 started_kn.set()
                 overlapped = started_doc.wait(timeout=3)

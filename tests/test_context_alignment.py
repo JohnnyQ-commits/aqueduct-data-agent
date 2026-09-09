@@ -274,14 +274,11 @@ class TestPhase6Redundancy:
         ):
             node_report(state)
 
-        # Skill 实际使用的键
+        # Skill 实际使用的键（PERF-4：只传洞察素材，转写类产物由节点本地拼装）
         expected_keys = {
             "requirement_name",
             "design_scheme",
-            "ddl_content",
-            "sql_content",
             "dqc_result",
-            "lineage_result",
             "domain_context",
         }
         # 不应传递的冗余键
@@ -293,6 +290,10 @@ class TestPhase6Redundancy:
             "validation_result",
             "cost_result",
             "artifacts",
+            # PERF-4：转写类产物不进 Skill 输入（性能契约，见 test_design_split）
+            "ddl_content",
+            "sql_content",
+            "lineage_result",
         }
 
         for key in redundant_keys:
@@ -472,16 +473,13 @@ class TestAllPhaseKeyAlignment:
         assert "业务规则: 金额>0" in prompt
 
     def test_phase6_keys(self):
-        """Phase 6: report node → report_delivery skill。"""
+        """Phase 6: report node → report_delivery skill（PERF-4：只传洞察素材）。"""
         skill = ReportDeliverySkill()
         context = SkillContext(
             input={
                 "requirement_name": "测试需求",
                 "design_scheme": "设计方案",
-                "ddl_content": "CREATE TABLE t (id bigint)",
-                "sql_content": "SELECT 1",
-                "dqc_result": "DQC 通过",
-                "lineage_result": {"mermaid": "graph LR"},
+                "dqc_result": "DQC SQL 文本",
                 "domain_context": "域知识",
             },
             state={"metadata": {"requirement_name": "测试需求"}},
@@ -490,7 +488,9 @@ class TestAllPhaseKeyAlignment:
         assert result.success
         prompt = result.data["prompt"]
         assert "测试需求" in prompt
-        assert "graph LR" in prompt
+        assert "设计方案" in prompt
+        assert "DQC SQL 文本" in prompt
+        assert "域知识" in prompt
 
 
 class TestPhase4TableSchemas:

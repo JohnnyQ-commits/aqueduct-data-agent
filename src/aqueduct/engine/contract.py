@@ -45,8 +45,8 @@ CONTRACTS: dict[str, tuple[SectionRule, ...]] = {
         SectionRule("字段映射", re.compile(r"^#{2,4}\s*字段映射", re.MULTILINE)),
         SectionRule("上下游依赖", re.compile(r"^#{2,4}\s*上下游依赖", re.MULTILINE)),
     ),
-    # report_delivery.tpl.md「推理步骤 6」：Design.md 章节要求；
-    # 血缘关系可用标题表达，也可仅用 mermaid 块表达
+    # Design.md 章节要求（PERF-4 后由 report.py _assemble_design_doc 本地拼装，
+    # 洞察章需求背景唯一依赖 LLM）；血缘关系可用标题表达，也可仅用 mermaid 块表达
     "Phase6-Design.md": (
         SectionRule("需求背景", re.compile(_H + r"背景", re.MULTILINE)),
         SectionRule("设计方案", re.compile(_H + r"设计方案", re.MULTILINE)),
