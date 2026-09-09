@@ -271,6 +271,12 @@ def _run_pipeline(
     # 初始化错误恢复策略
     recovery = RecoveryStrategy()
 
+    # P1-3 降级冻结基线：上次干净 checkpoint 时的 errors 长度（errors 只增不减，
+    # 超过基线 = 出现过降级）。resume 恢复的旧快照若含历史 errors，基线随
+    # 管道启动时的 errors 初始化，不误冻结干净 Phase。
+    checkpoint_errors_baseline = len(state.get("errors") or [])
+    checkpoint_frozen = False
+
     i = 0
     while i < len(phases):
         phase_name, node_func = phases[i]
@@ -369,11 +375,27 @@ def _run_pipeline(
 
         # P1-3 断点续跑：Phase 真正完成后落 checkpoint
         # （halt 的 Phase、回环 continue 重审中的 review 均不会走到这里）
-        if on_phase_complete is not None and not halted:
-            try:
-                on_phase_complete(phase_name, state)
-            except Exception:
-                logger.warning("断点续跑 checkpoint 回调异常（不阻塞管道）", exc_info=True)
+        # 降级冻结：本 Phase 起出现降级（节点吞异常继续跑）时不记入
+        # completed 前缀并冻结后续 checkpoint——前缀必须是干净前缀，
+        # --resume 才能从首个降级 Phase 重跑而非跳过失败部分
+        # （fixbatch-check 实录：sql_gen 超时降级仍被标记 completed，
+        # 失败运行 resume 变 no-op）。判定用基线而非单次 pass 增量：
+        # 修复循环降级的 errors 产生在上一 pass 的 _run_fix_loop 里。
+        if on_phase_complete is not None and not halted and not checkpoint_frozen:
+            if len(state.get("errors") or []) > checkpoint_errors_baseline:
+                checkpoint_frozen = True
+                logger.info(
+                    "[task=%s] 断点续跑: phase=%s 降级完成（errors=%d），"
+                    "checkpoint 冻结在上一干净 Phase，--resume 将从该 Phase 重跑",
+                    req_name,
+                    phase_name,
+                    len(state.get("errors") or []),
+                )
+            else:
+                try:
+                    on_phase_complete(phase_name, state)
+                except Exception:
+                    logger.warning("断点续跑 checkpoint 回调异常（不阻塞管道）", exc_info=True)
 
         # 交互确认：在指定阶段完成后暂停等待用户确认
         if (
