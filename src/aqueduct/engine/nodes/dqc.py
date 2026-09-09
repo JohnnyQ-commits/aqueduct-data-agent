@@ -157,6 +157,10 @@ def build_dqc_category_prompt(state: WorkflowState, category: _DqcCategory) -> s
             "ddl_content": state.get("ddl_content", ""),
             "sql_content": state.get("sql_content", ""),
             "domain_context": state.get("domain_context", ""),
+            # TODO-6: 需求摘要 + 设计方案直达 DQC——从 SQL 反推业务规则是
+            # 循环论证，业务反证类用例必须知道「SQL 该做什么」
+            "requirement_summary": state.get("requirement_summary", ""),
+            "design_scheme": state.get("design_scheme", ""),
             "category": dict(category),
         },
         state=state,

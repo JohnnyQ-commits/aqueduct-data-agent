@@ -33,6 +33,10 @@ class CodeReviewSkill(BaseSkill):
         inp = context.input if isinstance(context.input, dict) else {}
 
         sql_content = inp.get("sql_content") or context.state.get("sql_content", "")
+        # TODO-5: 设计上下文直达审查（input 优先，state 兜底，缺失渲染占位）——
+        # 审查器要能核对 SQL 与设计方案取数逻辑、目标表 DDL 字段的对齐
+        design_scheme = inp.get("design_scheme") or context.state.get("design_scheme", "")
+        ddl_content = inp.get("ddl_content") or context.state.get("ddl_content", "")
         online_sql = inp.get("online_sql") or context.state.get("online_sql", "")
         changed_sql = inp.get("changed_sql") or context.state.get("changed_sql", "")
         requirement_desc = (
@@ -57,7 +61,7 @@ class CodeReviewSkill(BaseSkill):
         else:
             validation_text = str(validation_result)
 
-        # 加载 Prompt 模板
+        # 加载 Prompt 模板（设计上下文缺失渲染「未获取」占位，不泄漏 $变量）
         prompt = self.load_prompt_template(
             requirement_desc=requirement_desc,
             online_sql=online_sql,
@@ -65,6 +69,8 @@ class CodeReviewSkill(BaseSkill):
             sql_content=sql_content,
             domain_context=context.state.get("domain_context", ""),
             validation_result=validation_text,
+            design_scheme=design_scheme or "未获取",
+            ddl_content=ddl_content or "未获取",
         )
 
         return SkillResult(

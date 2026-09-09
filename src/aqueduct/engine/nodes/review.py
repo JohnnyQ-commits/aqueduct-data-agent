@@ -125,6 +125,8 @@ def _build_chunk_prompt(
             "sql_content": sql_block,
             "domain_context": state.get("domain_context", ""),
             "validation_result": state.get("validation_result", {}),
+            "design_scheme": state.get("design_scheme", ""),
+            "ddl_content": state.get("ddl_content", ""),
         },
         state=state,
     )
@@ -443,6 +445,8 @@ def _single_review(state: WorkflowState, sql_content: str) -> str | None:
             "sql_content": sql_content,
             "domain_context": state.get("domain_context", ""),
             "validation_result": state.get("validation_result", {}),
+            "design_scheme": state.get("design_scheme", ""),
+            "ddl_content": state.get("ddl_content", ""),
         },
         state=state,
     )
