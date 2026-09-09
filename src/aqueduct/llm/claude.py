@@ -245,7 +245,11 @@ class ClaudeLLM(BaseLLM):
 
         # PERF-7: 思考预算 —— 限档始终思考模型（如 glm-5.3）的思考量。
         # 思考计入 max_tokens：无预算时思考可能烧光额度导致正文为空（实测空响应根因）。
-        thinking_budget = get_settings().llm_thinking_budget_tokens
+        # PERF-8: call_llm 已按任务分档解析并经 kwargs 传入；
+        # 直接调用 chat 未传时回退全局单值（旧路径行为不变）。
+        thinking_budget = kwargs.pop("thinking_budget", None)
+        if thinking_budget is None:
+            thinking_budget = get_settings().llm_thinking_budget_tokens
         if thinking_budget > 0:
             kwargs["thinking"] = {
                 "type": "enabled",

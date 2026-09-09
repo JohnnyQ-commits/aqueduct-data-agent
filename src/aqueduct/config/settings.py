@@ -183,6 +183,16 @@ class Settings(BaseSettings):
         ),
     )
 
+    llm_thinking_budget_by_task: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "思考预算按任务分档覆盖（PERF-8），JSON 映射 task_type → token 数："
+            'AQUEDUCT_LLM_THINKING_BUDGET_BY_TASK=\'{"sql_gen": 20000, "summarize": 1024}\'。'
+            "未列出的任务回退 llm_thinking_budget_tokens 全局单值；映射值 0 = 该任务"
+            "不发思考参数。空默认（不设置）行为与全局单值完全一致。"
+        ),
+    )
+
     llm_spiral_abort_tokens: int = Field(
         default=24000,
         description=(
@@ -317,6 +327,10 @@ class Settings(BaseSettings):
                 ", ".join(empty),
             )
         return self
+
+    def thinking_budget_for(self, task_type: str) -> int:
+        """PERF-8: 解析任务的思考预算——按任务分档覆盖优先，未列出回退全局单值。"""
+        return self.llm_thinking_budget_by_task.get(task_type, self.llm_thinking_budget_tokens)
 
 
 @lru_cache(maxsize=1)

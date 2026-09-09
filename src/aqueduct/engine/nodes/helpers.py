@@ -94,6 +94,11 @@ def call_llm(state: WorkflowState, task_type: str, prompt: str) -> str:
 
     llm = router.route(task_type)
 
+    # PERF-8: 思考预算按任务分档——任务覆盖 > 全局单值（默认空映射零行为变化）
+    from ...config.settings import get_settings
+
+    thinking_budget = get_settings().thinking_budget_for(task_type)
+
     logger.info(
         "[task=%s] LLM 调用开始: task_type=%s, model=%s, prompt=%d 字符",
         req_name,
@@ -110,7 +115,7 @@ def call_llm(state: WorkflowState, task_type: str, prompt: str) -> str:
         start_time = time.time()
         try:
             messages = [LLMMessage(role="user", content=prompt)]
-            response = llm.chat(messages, max_tokens=32768)
+            response = llm.chat(messages, max_tokens=32768, thinking_budget=thinking_budget)
             elapsed = time.time() - start_time
             last_content = response.content
 
