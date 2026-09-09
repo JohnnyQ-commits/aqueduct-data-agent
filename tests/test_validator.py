@@ -520,6 +520,77 @@ class TestDivisionCaseGuard:
         v.check_division()
         assert len(v.results) == 1
 
+    def test_multiline_ne_zero_guard_ok(self):
+        """跨行 != 0 守护：then 支路除法（守护成立才除），合法。"""
+        v = Validator("")
+        v.lines = [
+            "select",
+            "    case when a.order_count != 0 then",
+            "        cast(a.gmv / a.order_count as decimal(18,4))",
+            "    else null end as avg_order_amount",
+            "from t1;",
+        ]
+        v.check_division()
+        assert len(v.results) == 0
+
+    def test_one_line_ne_zero_guard_ok(self):
+        """同行 != 0 守护 + 限定名分母：case when t1.cnt != 0 then t1.gmv / t1.cnt。"""
+        v = Validator("")
+        v.lines = [
+            "select case when t1.cnt != 0 then t1.gmv / t1.cnt else null end as x from t;",
+        ]
+        v.check_division()
+        assert len(v.results) == 0
+
+    def test_angle_bracket_ne_zero_guard_ok(self):
+        """<> 0 守护形态（标准 SQL 不等号写法）。"""
+        v = Validator("")
+        v.lines = [
+            "select case when order_count <> 0 then gmv / order_count end as x from t;",
+        ]
+        v.check_division()
+        assert len(v.results) == 0
+
+    def test_ne_zero_with_not_null_combo_ok(self):
+        """is not null and != 0 复合守护：先判空再判零，合法。"""
+        v = Validator("")
+        v.lines = [
+            "select case when b is not null and b != 0 then a / b else null end as x from t;",
+        ]
+        v.check_division()
+        assert len(v.results) == 0
+
+    def test_ne_zero_division_in_else_branch_flagged(self):
+        """!= 0 守护下除法在 else 支路（恰在分母为零时执行）——必须仍报。"""
+        v = Validator("")
+        v.lines = [
+            "select case when order_count != 0 then null else gmv / order_count end as x from t;",
+        ]
+        v.check_division()
+        assert len(v.results) == 1
+
+    def test_gt_zero_division_in_else_branch_flagged(self):
+        """> 0 守护下除法在 else 支路——同样必须报（正守护只保护 then 支路）。"""
+        v = Validator("")
+        v.lines = [
+            "select case when order_count > 0 then null else gmv / order_count end as x from t;",
+        ]
+        v.check_division()
+        assert len(v.results) == 1
+
+    def test_prev_line_positive_guard_then_null_flagged(self):
+        """上一行正守护 + then 置空、除法在下一行 else 支路——旧单行捷径误放行，必须报。"""
+        v = Validator("")
+        v.lines = [
+            "select",
+            "    case when order_count > 0 then null",
+            "        else gmv / order_count",
+            "    end as x",
+            "from t;",
+        ]
+        v.check_division()
+        assert len(v.results) == 1
+
 
 class TestCheckKeywordCaseLevel:
     """检查 3 校准：关键字大写升级为 ERROR（§2.1 硬规范，金样本校准确认）。"""

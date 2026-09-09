@@ -30,7 +30,6 @@ _RE_SELECT_STAR = re.compile(r"\bselect\s+\*", re.IGNORECASE)
 _RE_UNION = re.compile(r"\bunion\s+all\b|\bunion\b", re.IGNORECASE)
 _RE_WHERE = re.compile(r"\bwhere\b", re.IGNORECASE)
 _RE_DIVISION_VAR = re.compile(r"[a-zA-Z0-9_)]\s*/\s*([a-zA-Z_][\w.]*)")
-_RE_WHEN_ZERO = re.compile(r"when\s+.+?>\s*0", re.IGNORECASE)
 _RE_SUM_NVL = re.compile(r"\bSUM\s*\(\s*(nvl|coalesce|case)", re.IGNORECASE)
 _RE_SUM_RAW = re.compile(r"\bSUM\s*\(\s*[a-zA-Z_]", re.IGNORECASE)
 
@@ -170,8 +169,9 @@ class Validator:
         金样本校准：分母为 nullif/nvl/coalesce/if/case/count 视为已保护；
         字符串与行中注释先剥离再匹配，防止 'yyyy/MM/dd' 格式串、
         注释里的斜杠短语（label_time/label_name）误报。
-        CASE WHEN 守护（= 0 / is null / > 0 + then 置空，跨行或同行）同样
-        视为已保护——_division_case_guarded 识别；除法在零分支内仍报。
+        CASE WHEN 守护（= 0 / is null / > 0 / != 0 / <> 0，跨行或同行）
+        同样视为已保护——_division_case_guarded 识别；除法位于危险支路
+        （零守护的零分支、正守护的 else/后续 when）仍报。
         """
         for i, line in enumerate(self.lines, 1):
             if RE_COMMENT.match(line):
@@ -179,8 +179,6 @@ class Validator:
             clean = _strip_literals_and_comments(line)
             m = _RE_DIVISION_VAR.search(clean)
             if m and m.group(1).lower() not in _DIV_DENOM_SAFE:
-                if i > 1 and _RE_WHEN_ZERO.search(self.lines[i - 2]):
-                    continue
                 if self._division_case_guarded(i - 1, m.group(1), m.start()):
                     continue
                 self._log("ERROR", "除法未做判空判零保护，应写为 a / nullif(b, 0)（§7.2）", i)
@@ -188,13 +186,19 @@ class Validator:
     def _division_case_guarded(self, div_idx: int, denom: str, div_start: int) -> bool:
         """识别分母的 CASE WHEN 守护：从除法行向上（含本行）扫 ≤6 行。
 
-        守护形态：分母 = 0 / is null / > 0，且与除法同属一个 CASE 分支
-        （守护与除法之间存在 then）；= 0 / is null 守护还要求 then 分支置
-        null/0——除法在零分支内（恰在分母为零时执行）不算守护。
-        同行守护须在除法之前；守护与除法之间出现 end / ; 视为跨 scope，止步。
+        守护形态：分母 = 0 / is null（零守护）或 > 0 / != 0 / <> 0（正守护），
+        且与除法同属一个 CASE 分支（守护与除法之间存在 then）。
+        零守护要求除法在 else 支路（between 见 then 置空）；正守护要求除法
+        在 then 支路（between 出现 then 置空说明除法在 else/后续 when——
+        恰在守护不成立时执行，仍危险）。同行守护须在除法之前；守护与除法
+        之间出现 end / ; 视为跨 scope，止步。
         """
         guard_re = re.compile(
-            rf"\b{re.escape(denom)}\s*(?:=\s*0\b|is\s+null\b|>\s*0\b)", re.IGNORECASE
+            rf"\b{re.escape(denom)}\s*(?:"
+            rf"(?P<zero>=\s*0\b|is\s+null\b)|"
+            rf"(?P<pos>!=\s*0\b|<>\s*0\b|>\s*0\b)"
+            rf")",
+            re.IGNORECASE,
         )
         for j in range(div_idx, max(div_idx - 6, -1), -1):
             clean = _strip_literals_and_comments(self.lines[j])
@@ -211,10 +215,10 @@ class Validator:
                     return False
                 if not re.search(r"\bthen\b", between, re.IGNORECASE):
                     return False
-                # = 0 / is null 守护：then 分支须置 null/0（除法在零分支内仍危险）
-                zero_guard = re.search(r"(?:=\s*0|is\s+null)\s*$", m.group(0), re.IGNORECASE)
                 then_null = re.search(r"\bthen\s+(?:null|0)\b", between, re.IGNORECASE)
-                return not (zero_guard and not then_null)
+                # 零守护：除法须在 else 支路（then 置空）；正守护：除法须在
+                # then 支路（then 置空出现在 between = 除法在危险支路）
+                return bool(then_null) if m.group("zero") else not then_null
             if j != div_idx and (
                 clean.rstrip().endswith(";") or re.search(r"\bend\b", clean, re.IGNORECASE)
             ):
