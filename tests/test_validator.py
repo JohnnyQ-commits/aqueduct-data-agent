@@ -678,10 +678,11 @@ class TestContentMode:
 class TestReviewLintInjection:
     """review 节点注入确定性校验结果：ERROR → Critical → 触发修复循环。"""
 
+    @patch("src.aqueduct.engine.nodes.review.start_knowledge_speculative")
     @patch("src.aqueduct.engine.nodes.review.start_dqc_speculative")
     @patch("src.aqueduct.engine.nodes.review.save_artifact")
     @patch("src.aqueduct.engine.nodes.review.call_llm")
-    def test_review_injects_lint_critical(self, mock_llm, mock_save, mock_spec):
+    def test_review_injects_lint_critical(self, mock_llm, mock_save, mock_spec, mock_kn_spec):
         """LLM 审查通过但 SQL 含 CTE → 规范 Critical 注入 issues 并触发修复循环。"""
         from src.aqueduct.engine.nodes.review import node_review
 
@@ -704,10 +705,11 @@ class TestReviewLintInjection:
             i["severity"] == "Critical" and "CTE" in i["message"] for i in result["_review_issues"]
         )
 
+    @patch("src.aqueduct.engine.nodes.review.start_knowledge_speculative")
     @patch("src.aqueduct.engine.nodes.review.start_dqc_speculative")
     @patch("src.aqueduct.engine.nodes.review.save_artifact")
     @patch("src.aqueduct.engine.nodes.review.call_llm")
-    def test_review_clean_sql_no_loop(self, mock_llm, mock_save, mock_spec):
+    def test_review_clean_sql_no_loop(self, mock_llm, mock_save, mock_spec, mock_kn_spec):
         """干净 SQL + LLM 审查通过 → 不触发修复循环。"""
         from src.aqueduct.engine.nodes.review import node_review
 

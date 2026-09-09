@@ -20,7 +20,6 @@
 - 设计方案: $design_scheme
 - 目标表 DDL: $ddl_content
 - 核心 SQL: $sql_content
-- 审查结果: $review_result
 - 已有域知识: $domain_context
 - 表结构信息: $table_schemas
 
@@ -77,7 +76,7 @@
 
 ### 五、待确认 / 待沉淀事项
 
-从审查结果和 SQL 逻辑中提取：
+从 SQL 逻辑和设计方案中提取：
 
 1. **上线前需验证的假设**：枚举值是否完整、过滤条件是否覆盖所有场景
 2. **已知风险**：数据倾斜、性能瓶颈、字段可能变更

@@ -316,6 +316,7 @@ class TestNodeReviewTrialGate:
             # 投机 DQC 线程在 with 退出后仍会跑（patch 已解除→真连 LLM），
             # 试跑门禁测试不关心 DQC，直接禁用
             patch("src.aqueduct.engine.nodes.review.start_dqc_speculative"),
+            patch("src.aqueduct.engine.nodes.review.start_knowledge_speculative"),
             patch(
                 "src.aqueduct.config.settings.get_settings",
                 return_value=_ok_settings(),

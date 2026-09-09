@@ -93,6 +93,7 @@ class TestSpeculativeStart:
                 side_effect=fake_review_llm,
             ),
             patch("src.aqueduct.engine.nodes.review.save_artifact", return_value=""),
+            patch("src.aqueduct.engine.nodes.review.start_knowledge_speculative"),
             patch("src.aqueduct.engine.nodes.dqc.call_llm", side_effect=fake_dqc_llm),
             patch("src.aqueduct.engine.nodes.dqc.save_artifact", return_value=""),
             patch(

@@ -13,6 +13,7 @@ from ...skills.registry import get_skill
 from ..state import WorkflowState
 from .dqc import start_dqc_speculative
 from .helpers import call_llm, is_valid_sql, save_artifact
+from .report import start_knowledge_speculative
 
 logger = logging.getLogger(__name__)
 
@@ -271,6 +272,10 @@ def node_review(state: WorkflowState) -> WorkflowState:
         # DQC 输入不依赖审查结果，唯一串行原因是修复循环改写 SQL——
         # node_dqc 消费时用输入哈希护栏兜住（见 dqc.take_speculative_dqc）。
         start_dqc_speculative(state)
+
+        # P2-2: 投机启动知识提取（同范式）——151–186s 藏进审查窗口，
+        # Phase 6 只剩 doc_gen；哈希护栏见 report.take_speculative_knowledge。
+        start_knowledge_speculative(state)
 
         # ── 并行分块审查 ──
         if _should_parallel_review(sql_content):

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
 
 from ...skills.base import SkillContext
@@ -19,7 +19,7 @@ from ..contract import (
     validate_structure,
 )
 from ..state import WorkflowState
-from .helpers import call_llm, save_artifact
+from .helpers import call_llm, is_valid_sql, save_artifact
 from .sql import wait_for_lineage
 
 logger = logging.getLogger(__name__)
@@ -27,6 +27,95 @@ logger = logging.getLogger(__name__)
 # 洞察章节空值兜底注记（章节头永不下线，保结构契约确定性通过）
 _INSIGHT_FALLBACK_BG = "（需求背景生成失败，请人工补充）"
 _INSIGHT_FALLBACK_Q = "（待确认问题清单生成失败，请人工补充）"
+
+
+def _knowledge_input_hash(state: WorkflowState) -> int:
+    """计算投机知识提取的输入指纹（prompt 的全部输入，见 _generate_knowledge_doc）。
+
+    修复循环改写 SQL 后哈希变化，node_report 据此丢弃过期投机结果。
+    """
+    return hash(
+        (
+            state.get("requirement", ""),
+            state.get("design_scheme", ""),
+            state.get("ddl_content", ""),
+            state.get("sql_content", ""),
+            state.get("domain_context", ""),
+            str(sorted((state.get("table_schemas") or {}).items())),
+        )
+    )
+
+
+def start_knowledge_speculative(state: WorkflowState) -> None:
+    """投机启动知识提取（P2-2）：与 Phase 4.5 审查并行。
+
+    knowledge_extract 的输入（需求/设计方案/DDL/SQL/域知识/表结构）不依赖
+    审查结果，唯一串行原因是修复循环可能改写 SQL——node_report 消费时用
+    输入哈希护栏兜住：哈希不一致即丢弃、走正常重新生成
+    （见 take_speculative_knowledge）。151–186s 的调用由此藏进审查窗口
+    （458–518s），Phase 6 只剩 doc_gen。
+
+    Future/executor 存 state（同 _lineage_future / _dqc_spec_future 范式）；
+    修复循环回跳重跑 review 时，本函数会关闭并替换上一轮的投机。
+    失败不阻塞：不启动投机，Phase 6 走正常路径。
+    """
+    executor = None
+    try:
+        # 清理上一轮（修复循环回跳 review）的旧投机
+        old_executor = state.pop("_kn_spec_executor", None)
+        state.pop("_kn_spec_future", None)
+        state.pop("_kn_spec_input_hash", None)
+        if old_executor:
+            old_executor.shutdown(wait=False)
+
+        # 与血缘/DQC 守卫一致：无效/过短 SQL 不启动（含单测短 SQL 场景）
+        if not is_valid_sql(state.get("sql_content", "")):
+            return
+
+        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="kn-spec")
+        future = executor.submit(_generate_knowledge_doc, state)
+        state["_kn_spec_future"] = future
+        state["_kn_spec_executor"] = executor
+        state["_kn_spec_input_hash"] = _knowledge_input_hash(state)
+        logger.info("投机知识提取已在后台启动（与审查并行，P2-2）")
+    except Exception:
+        logger.warning("投机知识提取启动失败，Phase 6 走正常路径", exc_info=True)
+        state.pop("_kn_spec_future", None)
+        state.pop("_kn_spec_input_hash", None)
+        if executor:
+            executor.shutdown(wait=False)
+
+
+def take_speculative_knowledge(state: WorkflowState) -> str | None:
+    """消费投机知识提取结果：输入哈希一致才复用，否则丢弃。
+
+    Returns:
+        知识沉淀文档文本。无投机/哈希不一致/调用失败时返回 None（调用方走正常路径）。
+    """
+    future: Future | None = state.pop("_kn_spec_future", None)
+    executor: ThreadPoolExecutor | None = state.pop("_kn_spec_executor", None)
+    input_hash = state.pop("_kn_spec_input_hash", None)
+
+    if future is None:
+        return None
+
+    try:
+        if input_hash != _knowledge_input_hash(state):
+            logger.info("投机知识提取丢弃：SQL 已被修复循环改写（输入哈希不一致）")
+            return None
+
+        from ...config.settings import get_settings
+
+        timeout = get_settings().llm_timeout_seconds
+        response = future.result(timeout=timeout)
+        logger.info("投机知识提取命中：复用与审查并行生成的结果（P2-2）")
+        return response
+    except Exception:
+        logger.warning("投机知识提取消费失败，走正常路径", exc_info=True)
+        return None
+    finally:
+        if executor:
+            executor.shutdown(wait=False)
 
 
 def node_report(state: WorkflowState) -> WorkflowState:
@@ -65,11 +154,18 @@ def node_report(state: WorkflowState) -> WorkflowState:
         # PERF-3: doc_gen 与 knowledge_extract 输入互相独立（都来自 state），
         # 并行执行使 Phase 6 耗时 ≈ max(两次调用) 而非求和。
         # 与 Phase 4 血缘异步（sql.py wait_for_lineage）同为线程池范式。
+        # P2-2: 先提交 doc_gen 再消费投机知识（审查窗口后台生成）——等待
+        # 期间 doc_gen 已在跑，两者不串行；投机未命中走原并行路径。
         with ThreadPoolExecutor(max_workers=2, thread_name_prefix="report") as executor:
             doc_future = executor.submit(call_llm, state, "doc_gen", prompt)
-            kn_future = executor.submit(_generate_knowledge_doc, state)
-            insights = doc_future.result()
-            knowledge_doc = kn_future.result()
+            kn_spec = take_speculative_knowledge(state)
+            if kn_spec is not None:
+                knowledge_doc = kn_spec
+                insights = doc_future.result()
+            else:
+                kn_future = executor.submit(_generate_knowledge_doc, state)
+                insights = doc_future.result()
+                knowledge_doc = kn_future.result()
 
         # 洞察拆章 → 本地拼装
         background, questions = _extract_insight_chapters(insights)
@@ -428,13 +524,15 @@ def _generate_knowledge_doc(state: WorkflowState) -> str:
             return _generate_knowledge_doc_fallback(state)
 
         content = tpl_path.read_text(encoding="utf-8")
+        # P2-2 输入瘦身：review_result 不进 prompt——回跳审查时它是上一轮的
+        # 过期结果（投机启动点在审查入口），且 review 派生的待确认事项已由
+        # Design.md 待确认问题清单（doc_gen 洞察章）承载
         prompt = Template(content).safe_substitute(
             requirement_name=req_name,
             requirement=state.get("requirement", "")[:3000],
             design_scheme=state.get("design_scheme", "")[:3000],
             ddl_content=state.get("ddl_content", "")[:2000],
             sql_content=state.get("sql_content", "")[:5000],
-            review_result=(state.get("review_result") or "")[:3000],
             domain_context=state.get("domain_context", "")[:2000],
             table_schemas=_format_table_schemas(state.get("table_schemas", {})),
         )
