@@ -175,6 +175,33 @@ def call_llm(state: WorkflowState, task_type: str, prompt: str) -> str:
     )
 
 
+def build_sql_fix_prompt(sql_content: str, issues_formatted: str) -> str:
+    """组装 sql_fix 修复 prompt（sql_fix.tpl.md 优先，缺模板/异常走内置回退）。
+
+    审查修复循环（core._run_fix_loop）与 Phase 4 生成自检（sql._self_check_fix）
+    共用同一提示词契约：$sql_content + $issues_formatted。
+    """
+    try:
+        from string import Template
+
+        from ...config.settings import get_settings
+
+        tpl_path = get_settings().prompt_dir / "sql_fix.tpl.md"
+        if tpl_path.exists():
+            return Template(tpl_path.read_text(encoding="utf-8")).safe_substitute(
+                sql_content=sql_content,
+                issues_formatted=issues_formatted,
+            )
+    except Exception:
+        logger.warning("sql_fix 模板加载失败，使用内置回退 prompt", exc_info=True)
+    return (
+        f"你是一个 SQL 工程师。以下 SQL 在校验中发现了问题，请修复。\n\n"
+        f"## 原始 SQL\n```sql\n{sql_content}\n```\n\n"
+        f"## 发现的问题\n{issues_formatted}\n\n"
+        f"请修复上述问题，输出完整的修复后 SQL。"
+    )
+
+
 def _is_empty_response(content: str) -> bool:
     """判断 LLM 响应是否为实质空内容（含 CLI 后端的占位符）。"""
     if not content:
