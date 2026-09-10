@@ -422,14 +422,9 @@ def node_review(state: WorkflowState) -> WorkflowState:
                     req_name,
                     warning_count,
                 )
-            if critical_count > 0 or warning_count > 0:
-                logger.info(
-                    "[task=%s] 审查发现 %d Critical + %d Warning，但已达最大修复次数（%d），跳过",
-                    req_name,
-                    critical_count,
-                    warning_count,
-                    max_fix_iterations,
-                )
+            # 注：旧分支“Critical + Warning 但已达最大修复次数”已删除——
+            # Critical 在上方 halt 分支已处理，走到这里 critical_count 必为 0，
+            # 该消息只剩对 warning-only 场景打假话（perf11-check2 实录）
 
         elapsed = time.time() - start
         logger.info(
