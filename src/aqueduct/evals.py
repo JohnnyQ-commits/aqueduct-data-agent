@@ -118,6 +118,17 @@ class CaseScore:
     errors: list[str]
     fix_iterations: int = 0
     health: RunHealth = field(default_factory=RunHealth)
+    # PERF-11 观测：审查发现计数（来自管道终态 _review_issues / review_confirmations）
+    review_critical: int = 0
+    review_warning: int = 0
+    review_confirmations: int = 0
+
+    @property
+    def review_summary(self) -> str:
+        """审查发现汇总列：全零（审查未跑）渲染 —。"""
+        if not (self.review_critical or self.review_warning or self.review_confirmations):
+            return "—"
+        return f"C{self.review_critical} W{self.review_warning} · 确认{self.review_confirmations}"
 
     @property
     def passed(self) -> bool:
@@ -150,6 +161,12 @@ def score_case(case: EvalCase, output_dir: Path | str, state: dict) -> CaseScore
     output_dir = Path(output_dir)
     errors = list(state.get("errors") or [])
     fix_iterations = int(state.get("fix_iterations") or 0)
+    # PERF-11 观测：解析契约修复后审查发现首次可解析——计数进记分卡，
+    # 未来模板/审查变更的守门不再只看"修复轮数"这一个间接信号
+    review_issues = list(state.get("_review_issues") or [])
+    review_critical = sum(1 for i in review_issues if i.get("severity") == "Critical")
+    review_warning = sum(1 for i in review_issues if i.get("severity") == "Warning")
+    review_confirmations = len(list(state.get("review_confirmations") or []))
     checks: list[CheckResult] = []
 
     # 1. 产物完整
@@ -289,6 +306,9 @@ def score_case(case: EvalCase, output_dir: Path | str, state: dict) -> CaseScore
         errors=errors,
         fix_iterations=fix_iterations,
         health=extract_run_health(output_dir),
+        review_critical=review_critical,
+        review_warning=review_warning,
+        review_confirmations=review_confirmations,
     )
 
 
@@ -301,14 +321,15 @@ def render_scorecard(scores: list[CaseScore], date: str) -> str:
         f"- 日期：{date}",
         f"- 结果：通过 {passed}/{len(scores)}",
         "",
-        "| 用例 | 场景 | 结果 | 修复轮数 | 网关健康 | 失败项 |",
-        "|---|---|---|---|---|---|",
+        "| 用例 | 场景 | 结果 | 修复轮数 | 审查发现 | 网关健康 | 失败项 |",
+        "|---|---|---|---|---|---|---|",
     ]
     for s in scores:
         failed = [c.name for c in s.checks if c.status == "fail"]
         lines.append(
             f"| {s.case.name} | {s.case.scenario} | {'PASS' if s.passed else 'FAIL'} "
-            f"| {s.fix_iterations} | {s.health.summary()} | {', '.join(failed) or '—'} |"
+            f"| {s.fix_iterations} | {s.review_summary} | {s.health.summary()} "
+            f"| {', '.join(failed) or '—'} |"
         )
     # 网关污染警示：FAIL 且 LLM 网关异常时，退步判定前先查 task log
     for s in scores:
@@ -324,6 +345,8 @@ def render_scorecard(scores: list[CaseScore], date: str) -> str:
             f"### {s.case.name}（{s.case.scenario}）",
             "",
             f"- 网关健康：{s.health.summary()}",
+            f"- 审查发现：{s.review_summary}"
+            + (f"（修复轮数 {s.fix_iterations}）" if s.fix_iterations else ""),
             "- 管道遗留错误：" + ("；".join(s.errors) if s.errors else "无"),
             "",
             "| 检查 | 结果 | 说明 |",
