@@ -475,7 +475,30 @@ def _generate_delivery_report(state: WorkflowState) -> str:
             "",
             "---",
             "",
-            "## 五、交付物清单",
+            "## 五、待确认事项（审查）",
+            "",
+        ]
+    )
+    # PERF-11 收尾：审查 [Confirm] 项（需人工确认的口径/依赖问题，不进修复循环）
+    # 此前止步于 state 键——交付总报告是验收人真正读的汇总，待确认清单应直达
+    confirmations = state.get("review_confirmations") or []
+    if confirmations:
+        lines.append(
+            f"> 代码审查发现 **{len(confirmations)} 项**需业务方/上游确认的口径与依赖问题"
+            f"（Confirm 级），确认前不建议上线。详见"
+            f" [Phase5-{req_name}_审查报告.md](Phase5-{req_name}_审查报告.md)。"
+        )
+        lines.append("")
+        for i, c in enumerate(confirmations, 1):
+            lines.append(f"{i}. {c.get('message', '')}")
+        lines.append("")
+    else:
+        lines.append("无待确认事项。")
+    lines.extend(
+        [
+            "---",
+            "",
+            "## 六、交付物清单",
             "",
             "| 文件 | 用途 | 状态 |",
             "|------|------|------|",
@@ -496,7 +519,7 @@ def _generate_delivery_report(state: WorkflowState) -> str:
     lines.append("")
 
     if errors:
-        lines.extend(["---", "", "## 六、执行错误", ""])
+        lines.extend(["---", "", "## 七、执行错误", ""])
         for err in errors:
             lines.append(f"- {err}")
         lines.append("")
