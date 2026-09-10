@@ -128,3 +128,53 @@ class TestReportParallelCalls:
             node_report(state)
 
         assert any("doc_gen 超时" in e for e in state["errors"])
+
+
+class TestDeliveryReportConfirmations:
+    """PERF-11 收尾：review_confirmations 死键接入交付总报告。
+
+    审查 [Confirm] 项（需人工确认的口径/依赖问题）此前止步于 state 键，
+    人工只能在 Phase5 审查报告正文里翻——交付总报告是验收人真正读的
+    汇总文档，待确认清单应直达。
+    """
+
+    @staticmethod
+    def _report(state) -> str:
+        from src.aqueduct.engine.nodes.report import _generate_delivery_report
+
+        return _generate_delivery_report(state)
+
+    def test_confirmations_listed_with_review_link(self):
+        state = _make_state()
+        state["review_confirmations"] = [
+            {"severity": "Confirm", "message": "(L29) 目标表名与编排参数冲突，需裁决"},
+            {"severity": "Confirm", "message": "(L54) 源表粒度未确认：一单一行还是状态流水"},
+        ]
+        report = self._report(state)
+
+        assert "## 五、待确认事项（审查）" in report
+        assert "目标表名与编排参数冲突" in report
+        assert "源表粒度未确认" in report
+        assert "2 项" in report, "应标注数量"
+        assert "Phase5-parallel_test_审查报告.md" in report, "应链接审查报告"
+        # 后续节顺延编号
+        assert "## 六、交付物清单" in report
+        assert "## 七、执行错误" not in report or "## 七、" in report
+
+    def test_no_confirmations_shows_none(self):
+        """无 Confirm（审查未跑或零待确认）→ 节在但显示无，编号不变。"""
+        state = _make_state()
+        report = self._report(state)
+
+        assert "## 五、待确认事项（审查）" in report
+        assert "无待确认事项" in report
+        assert "## 六、交付物清单" in report
+
+    def test_errors_section_renumbered_to_seven(self):
+        """有错误时错误节顺延为七（原六）。"""
+        state = _make_state()
+        state["errors"] = ["Phase2 降级: 某错误"]
+        report = self._report(state)
+
+        assert "## 七、执行错误" in report
+        assert "Phase2 降级: 某错误" in report
