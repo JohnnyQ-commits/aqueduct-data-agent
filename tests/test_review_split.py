@@ -340,6 +340,31 @@ class TestNodeReviewWiring:
         ]
         assert state["review_confirmations"] == []
 
+    def test_warning_only_no_false_max_iterations_log(self, caplog):
+        """仅 Warning 时不得打"已达最大修复次数"假消息（perf11-check2 实录：
+        Critical 走 halt 分支到不了该消息，历史 warning_count 恒 0 掩盖，解析
+        契约修复后 warning>0 首次触发——消息对 fix_iterations=0 是谎言）。"""
+        state = _make_state()
+        queues = {
+            d["key"]: [_dim_response(d["name"], ["- [Warning] w1"])] for d in _REVIEW_DIMENSIONS
+        }
+        with (
+            patch(
+                "src.aqueduct.engine.nodes.review.call_llm",
+                side_effect=TestReviewByDimensions._call_router(queues),
+            ),
+            patch("src.aqueduct.engine.nodes.review.save_artifact", return_value="output/x.md"),
+            patch("src.aqueduct.engine.nodes.review.start_dqc_speculative"),
+            patch("src.aqueduct.engine.nodes.review.start_knowledge_speculative"),
+            caplog.at_level("INFO", logger="src.aqueduct.engine.nodes.review"),
+        ):
+            node_review(state)
+
+        assert state["_needs_fix_loop"] is False
+        logged = [r.getMessage() for r in caplog.records]
+        assert any("跳过修复循环" in m for m in logged), "应有 Warning-only 跳过消息"
+        assert not any("已达最大修复次数" in m for m in logged), "不得打假的最大轮数消息"
+
     def test_chunk_path_not_split(self):
         """>100 行多语句 → 分块路径（全量模板），不进维度拆分。"""
         state = _make_state()
