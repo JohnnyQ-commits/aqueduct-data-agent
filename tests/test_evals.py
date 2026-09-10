@@ -218,6 +218,45 @@ class TestScoreCase:
         trial = _check(score, "真实试跑")
         assert trial.status == "skip"
 
+    def test_review_metrics_from_state(self, tmp_path: Path) -> None:
+        """PERF-11 观测：审查发现 C/W/待确认计数进记分卡（来自管道终态）。"""
+        out = tmp_path / "runs" / "demo_case"
+        _write_good_artifacts(out)
+        state = _good_state() | {
+            "_review_issues": [
+                {"severity": "Critical", "message": "除法未判零"},
+                {"severity": "Warning", "message": "嵌套超层"},
+                {"severity": "Warning", "message": "COUNT DISTINCT 热点"},
+            ],
+            "review_confirmations": [
+                {"severity": "Confirm", "message": "去重键待业务确认"},
+                {"severity": "Confirm", "message": "状态码字典未知"},
+                {"severity": "Confirm", "message": "表名冲突待裁决"},
+            ],
+        }
+
+        score = score_case(_make_case(), out, state)
+
+        assert score.review_critical == 1
+        assert score.review_warning == 2
+        assert score.review_confirmations == 3
+        card = render_scorecard([score], "2026-09-10")
+        assert "C1 W2 · 确认3" in card, "汇总表应有审查发现列"
+
+    def test_review_metrics_absent_renders_dash(self, tmp_path: Path) -> None:
+        """审查未跑（无键）→ 计数 0，汇总表渲染 —。"""
+        out = tmp_path / "runs" / "demo_case"
+        _write_good_artifacts(out)
+
+        score = score_case(_make_case(), out, _good_state())
+
+        assert score.review_critical == 0
+        assert score.review_warning == 0
+        assert score.review_confirmations == 0
+        card = render_scorecard([score], "2026-09-10")
+        assert "C0 W0 · 确认0" not in card
+        assert "—" in card
+
     def test_missing_artifact_fails(self, tmp_path: Path) -> None:
         out = tmp_path / "runs" / "demo_case"
         _write_good_artifacts(out)
