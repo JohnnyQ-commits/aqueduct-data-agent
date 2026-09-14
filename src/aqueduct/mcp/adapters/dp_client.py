@@ -61,6 +61,17 @@ class DataPlatformAdapter:
     def _generate_window_id(self) -> str:
         return f"copilot_{''.join(secrets.choice(string.ascii_lowercase + string.digits) for _ in range(8))}"
 
+    @staticmethod
+    def _envelope_ok(res_data: dict[str, Any]) -> bool:
+        """平台信封双形态兼容：新 {ok: True, ...} / 旧 {code: 200, ...}。
+
+        2026-09-12 冒烟发现 execute 端点已返回 ok 信封，硬编码 code 判断
+        会把真实成功的提交判成"提交失败"（执行链路假死的第二层原因）。
+        """
+        if "ok" in res_data:
+            return res_data["ok"] is True
+        return res_data.get("code") == 200
+
     def execute_hive_query(self, sql: str) -> dict[str, Any]:
         """执行 Hive SQL 查询（提交 -> 轮询 -> 取结果）。"""
         sql_clean = sql.rstrip().rstrip(";").rstrip()
@@ -109,9 +120,13 @@ class DataPlatformAdapter:
         resp = self.client.post(endpoint, json=payload)
         resp.raise_for_status()
         res_data = resp.json()
-        if res_data.get("code") != 200:
+        if not self._envelope_ok(res_data):
             raise RuntimeError(f"提交失败: {res_data}")
-        return int(res_data["data"]["executionId"])
+        data = res_data.get("data")
+        # 新信封 data 为裸 executionId int；旧信封为 {executionId: ...} 字典
+        if isinstance(data, dict) and "executionId" in data:
+            return int(data["executionId"])
+        return int(data)
 
     def _hive_wait(self, execution_id: int) -> int:
         # 轮询检查状态
@@ -144,7 +159,7 @@ class DataPlatformAdapter:
         resp.raise_for_status()
         res_data = resp.json()
 
-        if res_data.get("code") != 200:
+        if not self._envelope_ok(res_data):
             raise RuntimeError(f"获取结果失败: {res_data}")
 
         return res_data["data"].get("records", [])
