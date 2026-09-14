@@ -1,0 +1,5 @@
+#!/bin/sh
+# Pre-commit 敏感文件门禁（版本化）：拦截 internal/ / output/ / .env 等敏感路径入库。
+# 激活：git config core.hooksPath .githooks
+# 规则清单：scripts/hooks/check_staged_paths.py（与 .gitignore 同源维护）
+git diff --cached --name-only -z | tr '\0' '\n' | python "$(git rev-parse --show-toplevel)/scripts/hooks/check_staged_paths.py" --stdin

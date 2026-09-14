@@ -5,3 +5,7 @@
 *.yaml text eol=lf
 *.json text eol=lf
 *.toml text eol=lf
+
+# Shell hooks must stay LF (CRLF breaks sh execution)
+.githooks/* text eol=lf
+*.sh text eol=lf

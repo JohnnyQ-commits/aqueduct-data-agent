@@ -1,0 +1,18 @@
+#!/bin/sh
+# Pre-push hook: run ruff check and format check before pushing
+
+echo "Running ruff check..."
+ruff check src/ tests/
+if [ $? -ne 0 ]; then
+    echo "ruff check failed. Push aborted."
+    exit 1
+fi
+
+echo "Running ruff format check..."
+ruff format --check src/ tests/
+if [ $? -ne 0 ]; then
+    echo "ruff format check failed. Run 'ruff format src/ tests/' to fix. Push aborted."
+    exit 1
+fi
+
+echo "All checks passed."
