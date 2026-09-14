@@ -84,7 +84,7 @@ class DataPlatformAdapter:
 
         # 2. Wait
         logger.info("【步骤2】轮询任务状态...")
-        result_id = self._hive_wait(exec_id)
+        result_id = self._hive_wait(exec_id, window_id)
         logger.info(f"【步骤2】任务完成，resultId: {result_id}")
 
         # 3. Fetch
@@ -128,38 +128,49 @@ class DataPlatformAdapter:
             return int(data["executionId"])
         return int(data)
 
-    def _hive_wait(self, execution_id: int) -> int:
-        # 轮询检查状态
+    def _hive_wait(self, execution_id: int, window_id: str) -> str:
+        """轮询 getLog 直到完成，返回 resultId（UUID 字符串）。
+
+        2026-09-14 全链路实测修正：文档写的 POST /hive/executionStatus 404，
+        真实轮询端点是 GET /hive/getLog（isFinish/isSuccess/resultId），
+        resultId 为 UUID 而非 int。
+        """
         for _attempt in range(60):  # Max 5 minutes
             time.sleep(5)
-            endpoint = "/bdp-fc-ide-external-controller/hive/executionStatus"
-            payload = {"executionId": execution_id, "userId": self.user_id}
-            resp = self.client.post(endpoint, json=payload)
+            endpoint = "/bdp-fc-ide-external-controller/hive/getLog"
+            resp = self.client.get(
+                endpoint,
+                params={
+                    "clusterId": 1,
+                    "windowId": window_id,
+                    "executionId": execution_id,
+                },
+            )
             resp.raise_for_status()
-            res_data = resp.json()
+            data = resp.json().get("data") or {}
 
-            status = res_data["data"]["status"]
-            if status == 3:  # Success
-                return int(res_data["data"]["resultId"])
-            elif status in [4, 5]:  # Failed
-                raise RuntimeError(f"任务执行失败: {res_data}")
+            if data.get("isFinish"):
+                if data.get("isSuccess"):
+                    return str(data["resultId"])
+                raise RuntimeError(f"任务执行失败: {data}")
 
         raise TimeoutError("任务超时 (5 min)")
 
-    def _hive_fetch(self, result_id: int, window_id: str) -> list[dict[str, Any]]:
-        endpoint = "/bdp-fc-ide-external-controller/hive/result"
-        # 默认取前 1000 行，防止数据量过大
-        payload = {
-            "resultId": result_id,
-            "userId": self.user_id,
-            "windowId": window_id,
-            "limit": 1000,
-        }
-        resp = self.client.post(endpoint, json=payload)
+    def _hive_fetch(self, result_id: str, window_id: str) -> list[dict[str, Any]]:
+        """按 resultId 取结果行。
+
+        真实端点 GET /hive/getResult，参数 resultId+windowId+clusterId——
+        **不能带 userId**（live 实测：带则 500）。
+        """
+        endpoint = "/bdp-fc-ide-external-controller/hive/getResult"
+        resp = self.client.get(
+            endpoint,
+            params={"resultId": result_id, "windowId": window_id, "clusterId": 1},
+        )
         resp.raise_for_status()
         res_data = resp.json()
 
         if not self._envelope_ok(res_data):
             raise RuntimeError(f"获取结果失败: {res_data}")
 
-        return res_data["data"].get("records", [])
+        return res_data.get("data") or []
