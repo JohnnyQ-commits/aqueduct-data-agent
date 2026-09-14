@@ -51,6 +51,28 @@ def _no_output_dir_creation():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _isolate_dynamic_knowledge(tmp_path, monkeypatch):
+    """知识回流写入重定向到 tmp：测试永不写真实 internal/knowledge。
+
+    缺陷实录见 tests/test_knowledge_isolation.py——node_report 后处理
+    （_update_domain_json / _regenerate_semantic_docs）曾硬编码写真实内部
+    知识库，任何带 DDL/SQL 的测试都在污染召回语料（kn_spec_test 域即测试
+    泄漏产物、order_refund_iterative 内容漂移、test_memory 环境性失败）。
+    写点已改走 settings.dynamic_knowledge_dir，此处把动态目录钉到 tmp_path
+    兜底未来新写点；monkeypatch 自动还原，不影响真实运行。
+    """
+    from src.aqueduct.config.settings import get_settings
+
+    monkeypatch.setattr(
+        get_settings(),
+        "dynamic_knowledge_dir",
+        tmp_path / "dynamic_knowledge",
+        raising=False,
+    )
+    yield
+
+
 def pytest_configure(config):
     """在测试开始前导入所有工具和 Skill 模块，触发注册装饰器。"""
     # 导入所有 Tool 模块（触发 @register_tool）

@@ -710,9 +710,10 @@ def _update_domain_json(state: WorkflowState) -> None:
             logger.debug("[task=%s] 未提取到任何数据，跳过 domain.json 更新", req_name)
             return
 
-        # 确定 domain.json 路径（只写入内部知识库）
+        # 确定 domain.json 路径（只写入动态知识库——settings 可重定向，
+        # 测试经 conftest 重定向到 tmp，不污染真实内部知识库）
         settings = get_settings()
-        domains_dir = settings.project_root / "internal" / "knowledge" / "domains"
+        domains_dir = settings.dynamic_knowledge_dir / "domains"
         domain_path = domains_dir / domain_id / "domain.json"
 
         # 加载现有或创建新域
@@ -735,8 +736,8 @@ def _update_domain_json(state: WorkflowState) -> None:
 def _regenerate_semantic_docs(state: WorkflowState) -> None:
     """自动更新知识库语义文档（per-domain semantic-model.md + INDEX.md）。
 
-    只更新内部知识库（internal/knowledge/domains），不更新公开版。
-    失败不阻塞管道，只记录 warning。
+    只更新动态知识库（settings.dynamic_knowledge_dir/domains，默认
+    internal/knowledge/domains），不更新公开版。失败不阻塞管道，只记录 warning。
     """
     from ...config.settings import get_settings
 
@@ -744,8 +745,8 @@ def _regenerate_semantic_docs(state: WorkflowState) -> None:
         settings = get_settings()
         semantic_tool = get_tool("semantic")
 
-        # 只更新内部知识库
-        internal_dir = settings.project_root / "internal" / "knowledge" / "domains"
+        # 动态知识库（settings 可重定向；测试经 conftest 重定向到 tmp）
+        internal_dir = settings.dynamic_knowledge_dir / "domains"
         if not internal_dir.exists():
             logger.info("首次运行，自动创建内部知识库: %s", internal_dir)
             internal_dir.mkdir(parents=True, exist_ok=True)

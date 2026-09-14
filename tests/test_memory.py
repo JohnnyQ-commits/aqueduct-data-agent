@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from src.aqueduct.memory.domain import DomainModel
@@ -112,7 +114,19 @@ class TestNodeRequirementKnowledgeRecall:
     - state["domain_context"] 被正确填充
     - 无匹配时 domain_context 为空字符串，不报错
     - 下游节点可正常读取 domain_context
+
+    静态语料钉到仓库自带的公开示例域（knowledge/domains，3 个域）：
+    本部署 .env 把 knowledge_dir 指向 internal/knowledge/domains（真实域持续
+    增长），对增长中的语料断言具体域名会随语料漂移环境性失败——单测只应对
+    确定性语料断言。动态目录已由 conftest autouse 重定向到 tmp。
     """
+
+    @pytest.fixture(autouse=True)
+    def _pin_static_corpus(self, monkeypatch):
+        from src.aqueduct.config.settings import get_settings
+
+        sample_corpus = Path(__file__).resolve().parent.parent / "knowledge" / "domains"
+        monkeypatch.setattr(get_settings(), "knowledge_dir", sample_corpus, raising=False)
 
     def _make_state(self, requirement: str) -> dict:
         """构造最小可用的 WorkflowState。"""
