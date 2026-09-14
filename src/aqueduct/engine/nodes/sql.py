@@ -340,16 +340,16 @@ def _run_trial_selects(sql_content: str) -> dict:
 def _auto_trial_run(state: WorkflowState, sql_path: str) -> None:
     """试跑验证：对生成的 SQL 执行 LIMIT 10 试跑，提前发现语法错误。
 
-    仅在 execution_enabled=True 时执行。失败不阻塞管道，仅记录警告
+    仅在平台声明 sql_execute 能力时执行（auto 语义=execution_enabled=True，
+    platform=none 强制离线时同样走此处跳过）。失败不阻塞管道，仅记录警告
     （P1-2 强制门禁在 review 侧注入 Critical issues 触发修复循环）。
     借鉴 ai-sql-generate 的 Stage 3 预验证思路：实际执行比静态检查更能发现问题。
     """
     try:
-        from ...config.settings import get_settings
+        from ...platform import Capability, get_platform_adapter
 
-        settings = get_settings()
-        if not settings.execution_enabled:
-            logger.debug("试跑跳过: execution_enabled=False")
+        if not get_platform_adapter().has_capability(Capability.SQL_EXECUTE):
+            logger.debug("试跑跳过: 平台未声明 sql_execute 能力")
             return
 
         abs_path = _resolve_sql_path(state, sql_path)

@@ -226,33 +226,45 @@ class TestRunTrialSelects:
 
 
 class TestTrialRunIssues:
-    """试跑门禁注入：防护跳过（零误报）与 Critical 注入。"""
+    """试跑门禁注入：防护跳过（零误报）与 Critical 注入。
+
+    门禁已切到平台能力声明（开源通用化）：patch adapter 控制 sql_execute 能力，
+    auto 语义 = execution_enabled is True（严格口径由 AutoAdapter 承接）。
+    """
+
+    @staticmethod
+    def _cap_adapter(execution_enabled):
+        from src.aqueduct.platform import AutoAdapter
+
+        return AutoAdapter(mcp_configured=False, execution_enabled=execution_enabled)
 
     def test_execution_disabled_skips(self):
         from src.aqueduct.engine.nodes import review as review_mod
 
         state = _make_state()
         with patch(
-            "src.aqueduct.config.settings.get_settings",
-            return_value=_ok_settings(execution_enabled=False),
+            "src.aqueduct.platform.get_platform_adapter",
+            return_value=self._cap_adapter(False),
         ):
             assert review_mod._trial_run_issues(state) == []
 
     def test_non_bool_settings_skips(self):
-        """settings 为 MagicMock（单测未显式开启）时跳过——防止既有测试真连数据平台。"""
+        """execution_enabled 非 bool（单测 MagicMock 属性形态）时视为未声明——
+        防护栏移入 AutoAdapter 严格口径，防止既有测试真连数据平台。"""
         from src.aqueduct.engine.nodes import review as review_mod
 
         state = _make_state()
-        with patch("src.aqueduct.config.settings.get_settings") as mock_settings:
-            mock_settings.return_value.execution_enabled = object()  # 模拟 MagicMock 属性：非 bool
+        with patch(
+            "src.aqueduct.platform.get_platform_adapter",
+            return_value=self._cap_adapter(object()),
+        ):
             assert review_mod._trial_run_issues(state) == []
 
     def test_short_sql_skips(self):
         from src.aqueduct.engine.nodes import review as review_mod
 
         state = _make_state(sql_content="SELECT 1")
-        with patch("src.aqueduct.config.settings.get_settings", return_value=_ok_settings()):
-            assert review_mod._trial_run_issues(state) == []
+        assert review_mod._trial_run_issues(state) == []
 
     def test_health_check_fail_skips(self):
         """数据平台不可用 → 跳过（连接故障不应误报为 SQL 问题）。"""
@@ -261,7 +273,10 @@ class TestTrialRunIssues:
         state = _make_state()
         tool = _executor_tool(health_ok=False)
         with (
-            patch("src.aqueduct.config.settings.get_settings", return_value=_ok_settings()),
+            patch(
+                "src.aqueduct.platform.get_platform_adapter",
+                return_value=self._cap_adapter(True),
+            ),
             patch("src.aqueduct.tools.registry.get_tool", return_value=tool),
         ):
             assert review_mod._trial_run_issues(state) == []
@@ -273,7 +288,10 @@ class TestTrialRunIssues:
         state = _make_state()
         tool = _executor_tool(exec_results=[False])
         with (
-            patch("src.aqueduct.config.settings.get_settings", return_value=_ok_settings()),
+            patch(
+                "src.aqueduct.platform.get_platform_adapter",
+                return_value=self._cap_adapter(True),
+            ),
             patch("src.aqueduct.tools.registry.get_tool", return_value=tool),
         ):
             issues = review_mod._trial_run_issues(state)
@@ -289,7 +307,10 @@ class TestTrialRunIssues:
         state = _make_state()
         tool = _executor_tool(exec_results=[True])
         with (
-            patch("src.aqueduct.config.settings.get_settings", return_value=_ok_settings()),
+            patch(
+                "src.aqueduct.platform.get_platform_adapter",
+                return_value=self._cap_adapter(True),
+            ),
             patch("src.aqueduct.tools.registry.get_tool", return_value=tool),
         ):
             assert review_mod._trial_run_issues(state) == []
@@ -320,6 +341,10 @@ class TestNodeReviewTrialGate:
             patch(
                 "src.aqueduct.config.settings.get_settings",
                 return_value=_ok_settings(),
+            ),
+            patch(
+                "src.aqueduct.platform.get_platform_adapter",
+                return_value=TestTrialRunIssues._cap_adapter(True),
             ),
             patch("src.aqueduct.tools.registry.get_tool", return_value=tool),
         ):

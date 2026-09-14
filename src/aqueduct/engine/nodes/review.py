@@ -235,11 +235,12 @@ def _trial_run_issues(state: WorkflowState) -> list[dict[str, str]]:
 
     试跑失败（语法错误/字段不对齐/表不存在）作为 Critical 注入修复循环；
     修复循环回跳 review 时自动复检（与 P0-1 linter 同构）。
-    跳过条件（零误报原则）：execution 未启用（`is True` 严格判断——
-    单测 mock settings 未显式设 bool 时自动跳过，防止真连数据平台）、
+    跳过条件（零误报原则）：平台未声明 sql_execute 能力（auto 语义保留
+    `execution_enabled is True` 严格口径——单测 mock settings 未显式设 bool 时
+    自动跳过，防止真连数据平台；platform=none 强制离线时同样走此处跳过）、
     SQL 无效/过短、数据平台 health_check 不可用（连接故障不误报为 SQL 问题）。
     """
-    from ...config.settings import get_settings
+    from ...platform import Capability, get_platform_adapter
     from ...tools.registry import get_tool
     from .sql import _run_trial_selects
 
@@ -247,8 +248,8 @@ def _trial_run_issues(state: WorkflowState) -> list[dict[str, str]]:
     if not sql_content or len(sql_content) < 50 or not is_valid_sql(sql_content):
         return []
 
-    # 严格 is True：非 bool（单测 MagicMock 属性）一律跳过
-    if get_settings().execution_enabled is not True:
+    # 平台能力门禁（开源通用化）：none 强制离线 / auto 缺执行能力一律跳过
+    if not get_platform_adapter().has_capability(Capability.SQL_EXECUTE):
         return []
 
     try:

@@ -176,22 +176,23 @@ class DQCTool(BaseTool):
         # 解析测试用例
         test_cases = _parse_test_cases(dqc_content)
 
-        # 检查是否启用实际执行
-        from ..config.settings import get_settings
+        # 检查平台是否声明执行能力（开源通用化：auto 语义=execution_enabled，
+        # platform=none 强制离线时同样走 SKIPPED 分支）
+        from ..platform import Capability, get_platform_adapter
 
-        execution_enabled = get_settings().execution_enabled
+        can_execute = get_platform_adapter().has_capability(Capability.SQL_EXECUTE)
 
         # 执行测试
         results = []
-        if execution_enabled:
+        if can_execute:
             # 暂用模拟执行（与 DQCExecuter.run_tests_mock() 共享逻辑）
             results = _mock_run_tests(test_cases)
         else:
-            # 执行能力关闭：标记为 SKIPPED
+            # 平台未声明执行能力：标记为 SKIPPED
             for case in test_cases:
                 case["status"] = "SKIPPED"
                 case["value"] = "-"
-                case["fix_suggestion"] = "执行能力已禁用"
+                case["fix_suggestion"] = "平台未声明执行能力，SQL 供手工执行"
                 results.append(case)
 
         # 生成仪表盘

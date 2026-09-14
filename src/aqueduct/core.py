@@ -244,6 +244,11 @@ def _run_pipeline(
 
     logger.info("[task=%s] 管道启动: phases=%d", req_name, total)
 
+    # 平台能力横幅（开源通用化）：启动时可见本次运行声明了哪些平台能力
+    from .platform import log_platform_banner
+
+    log_platform_banner()
+
     # 初始化错误恢复策略
     recovery = RecoveryStrategy()
 

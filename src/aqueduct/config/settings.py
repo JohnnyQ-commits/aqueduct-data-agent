@@ -273,6 +273,20 @@ class Settings(BaseSettings):
         description="SQL 执行最大返回行数。",
     )
 
+    # === 平台声明（开源通用化） ===
+
+    platform: str = Field(
+        default="auto",
+        description=(
+            "平台适配器声明（开源通用化）：none=强制离线（零平台能力，管道以本地校验降级"
+            "运行——Phase1 静态分析 / Phase4 本地校验 / Phase5 SQL 供手工执行）；"
+            "auto=自动探测（MCP 已配置→表结构元数据，execution_enabled=True→SQL 执行与 "
+            "DQC 执行——与既有各触点门控 1:1 对齐，零行为变化）；bdp=显式声明 BDP"
+            "（当前与 auto 同探测语义）。platform.yaml 的 capability→transport 映射随 "
+            "bdp 专用 adapter 批次落地。"
+        ),
+    )
+
     def __init__(self, **data):
         """注入第三方环境变量 fallback。
 
@@ -334,6 +348,11 @@ class Settings(BaseSettings):
             raise ConfigError(
                 f"execution_timeout_seconds 必须为正数，当前值: {self.execution_timeout_seconds}"
             )
+
+        # 校验平台声明（fail fast：配置错误不带病运行）
+        valid_platforms = {"none", "auto", "bdp"}
+        if (self.platform or "auto").strip().lower() not in valid_platforms:
+            raise ConfigError(f"无效的 platform 声明: {self.platform!r}，可选: none / auto / bdp")
 
         return self
 

@@ -208,12 +208,17 @@ def _query_table_schemas(state: WorkflowState) -> dict[str, str]:
     Returns:
         {表名: 格式化的表结构文本} 字典。
     """
-    from ...mcp.client import SyncMCPClient
-    from ...mcp.config import MCPConfig
+    from ...platform import Capability, get_platform_adapter
 
-    if not MCPConfig().is_configured():
-        logger.info("MCP 未配置，跳过表结构查询")
+    adapter = get_platform_adapter()
+    if not adapter.has_capability(Capability.TABLE_METADATA):
+        logger.info(
+            "平台 %s 未声明 table_metadata 能力，跳过表结构查询（静态分析模式）",
+            adapter.name,
+        )
         return {}
+
+    from ...mcp.client import SyncMCPClient
 
     requirement = state.get("requirement", "")
     table_names = _extract_table_names(requirement)
