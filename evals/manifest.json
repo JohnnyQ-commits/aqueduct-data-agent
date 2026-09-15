@@ -59,6 +59,36 @@
         ]
       },
       "min_dqc_cases": 10
+    },
+    {
+      "name": "supply_chain_inventory",
+      "requirement": "../examples/supply_chain_inventory.md",
+      "scenario": "greenfield",
+      "required_artifacts": [
+        "Phase1-需求理解摘要.md",
+        "Phase2-设计方案.md",
+        "Phase3-表结构.sql",
+        "Phase4-supply_chain_inventory.sql",
+        "Phase5-数据质量测试.sql",
+        "Phase6-Design.md",
+        "Phase6-交付总报告.md",
+        "Phase6-知识沉淀.md"
+      ],
+      "required_keywords": {
+        "Phase3-表结构.sql": [
+          "dws_inventory_turnover_di",
+          "turnover_days",
+          "stockout_flag",
+          "reorder_flag"
+        ],
+        "Phase4-supply_chain_inventory.sql": [
+          "dwd_inventory_snapshot_di",
+          "dwd_stock_movement_di",
+          "turnover_days",
+          "inc_day"
+        ]
+      },
+      "min_dqc_cases": 10
     }
   ]
 }

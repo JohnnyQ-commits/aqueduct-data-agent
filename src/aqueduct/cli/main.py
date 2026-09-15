@@ -463,6 +463,46 @@ def _status(args: argparse.Namespace) -> int:
     return 0
 
 
+def _eval_mode(args: argparse.Namespace) -> int:
+    """eval 命令入口 — 评估编排（真实 LLM 管道：模板变更守门 + 定期回归）。
+
+    单次评估 = 每用例一次完整 dev 管道（43-96 分钟），永不进 per-commit CI。
+    """
+    from datetime import date as date_cls
+
+    from ..config.settings import get_settings
+    from ..evals import load_manifest, render_scorecard, run_evals
+
+    root = get_settings().project_root
+    manifest = root / "evals" / "manifest.json"
+    try:
+        load_manifest(manifest)
+    except FileNotFoundError:
+        print(f"评估清单不存在: {manifest}（评估数据集说明见 evals/README.md）", file=sys.stderr)
+        return 1
+
+    runs_dir = root / args.out
+    print(f"[evals] manifest={manifest} filter={args.case or '-'}")
+    print("[evals] 开始逐用例跑 dev 管道（真实 LLM，单用例 43-96 分钟）...")
+    scores = run_evals(manifest, runs_dir, case_filter=args.case)
+
+    report = runs_dir / f"report-{date_cls.today():%Y%m%d}.md"
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text(
+        render_scorecard(scores, date=f"{date_cls.today():%Y-%m-%d}"), encoding="utf-8"
+    )
+
+    passed = sum(1 for s in scores if s.passed)
+    print(f"\n[evals] 通过 {passed}/{len(scores)}，评分卡: {report}")
+    for s in scores:
+        failed = ", ".join(c.name for c in s.checks if c.status == "fail") or "—"
+        print(
+            f"  {'PASS' if s.passed else 'FAIL'}  {s.case.name}（{s.case.scenario}）"
+            f"修复轮数={s.fix_iterations} 失败项={failed}"
+        )
+    return 0 if scores and passed == len(scores) else 1
+
+
 def create_parser() -> argparse.ArgumentParser:
     """创建 CLI 参数解析器。"""
     parser = argparse.ArgumentParser(
@@ -518,6 +558,16 @@ def create_parser() -> argparse.ArgumentParser:
     subparsers.add_parser(
         "status",
         help="Project status overview",
+    )
+
+    # eval 命令 — 评估编排（模板变更守门 + 定期回归，真实 LLM）
+    eval_parser = subparsers.add_parser(
+        "eval",
+        help="Run evaluation cases (real LLM pipeline + gate scorecard, minutes-scale)",
+    )
+    eval_parser.add_argument("--case", help="只跑名称含该子串的用例")
+    eval_parser.add_argument(
+        "--out", default="evals/runs", help="评估产物根目录（相对项目根，默认 evals/runs）"
     )
 
     # knowledge 命令 — 知识库文档管理
@@ -589,6 +639,7 @@ def main() -> int:
         "change": _change_mode,
         "validate": _validate_sql,
         "status": _status,
+        "eval": _eval_mode,
         "knowledge": _knowledge,
         "search-history": _search_history,
     }
