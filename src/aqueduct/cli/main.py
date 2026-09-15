@@ -42,7 +42,6 @@ from .. import (
 from ..config.settings import get_settings
 from ..core import Aqueduct, AqueductResult
 from ..engine.state import WorkflowState
-from ..engine.workflow import build_review_workflow
 from ..exceptions import AqueductError
 from ..utils.platform_status import platform_execution_lines
 
@@ -274,25 +273,15 @@ def _review_mode(args: argparse.Namespace) -> int:
     print(f"[INFO] Online version: {args.online_sql}")
     print(f"[INFO] Changed version: {args.changed_sql}")
 
-    # 构建工作流状态
-    state: WorkflowState = {
-        "requirement": args.desc or "",
-        "mode": "review",
-        "online_sql": online_path.read_text(encoding="utf-8"),
-        "changed_sql": changed_path.read_text(encoding="utf-8"),
-        "errors": [],
-        "artifacts": [],
-    }
-
     print("[INFO] Starting review mode workflow...")
 
     try:
-        workflow = build_review_workflow()
-        final_state = workflow.invoke(state)
+        agent = Aqueduct()
+        result = agent.review_mode(str(online_path), str(changed_path), desc=args.desc or "")
 
-        if final_state.get("errors"):
-            print(f"\n[WARN] Review completed with {len(final_state['errors'])} error(s):")
-            for err in final_state["errors"]:
+        if result.errors:
+            print(f"\n[WARN] Review completed with {len(result.errors)} error(s):")
+            for err in result.errors:
                 print(f"  - {err}")
             return 1
 

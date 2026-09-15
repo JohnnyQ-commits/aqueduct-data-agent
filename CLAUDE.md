@@ -11,7 +11,7 @@
 - **插件直接生成为优先**：日常数据开发优先使用 `/data-developer` 在单次对话中完成，快速高效
 - **CLI 管道模式**：需要自动化/CI/CD/批量处理时使用 `aqueduct dev`（7 阶段管道）
 - **7 层架构**：Config → LLM → Tools → Skills → Engine → Memory → MCP
-- **DAG 编排**：7 个 Phase 按顺序执行，Phase 4.5 有审查→修复循环
+- **线性管道编排**：7 个 Phase 顺序执行（`core.py _run_pipeline`，非 DAG 引擎），Phase 4.5 有审查→修复循环（手工回跳）
 
 ## 最重要的规则
 
@@ -79,7 +79,6 @@ src/aqueduct/
 ├── config/settings.py   # Pydantic-settings 配置
 ├── engine/
 │   ├── nodes/           # 8 个节点（7 个 Phase + change 变更管理）
-│   ├── workflow.py      # StateGraph 定义
 │   ├── recovery.py      # 错误恢复（指数退避）
 │   └── state.py         # WorkflowState TypedDict
 ├── skills/              # 9 个业务 Skill + prompt/ 模板

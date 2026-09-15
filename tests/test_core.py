@@ -453,3 +453,118 @@ class TestNodeDdlSkip:
 
         assert result["ddl_content"] == "CREATE TABLE test (id INT)"
         assert result["metadata"]["ddl_done"] == "true"
+
+
+# ============================================================
+# review_mode 统一到 _run_pipeline（workflow.py 退役）
+# ============================================================
+
+
+class TestReviewPipeline:
+    """审查模式接线契约：CLI 不再绕过 core 走 StateGraph。"""
+
+    def test_review_phases_defined(self):
+        """_REVIEW_PHASES 与旧 build_review_workflow 的节点序列一致。"""
+        from src.aqueduct.core import _REVIEW_PHASES
+
+        assert [name for name, _ in _REVIEW_PHASES] == [
+            "requirement",
+            "review",
+            "dqc",
+            "report",
+        ]
+
+    def test_review_mode_builds_state_and_runs_pipeline(self, tmp_path):
+        """review_mode 读两份 SQL 构建 state，走 _run_pipeline(_REVIEW_PHASES)。"""
+        from src.aqueduct.core import _REVIEW_PHASES, Aqueduct, AqueductResult
+
+        online = tmp_path / "online.sql"
+        changed = tmp_path / "changed.sql"
+        online.write_text("ONLINE SQL", encoding="utf-8")
+        changed.write_text("CHANGED SQL", encoding="utf-8")
+
+        sentinel = AqueductResult({"errors": [], "artifacts": []})
+        with patch("src.aqueduct.core._run_pipeline", return_value=sentinel) as mock_run:
+            result = Aqueduct().review_mode(str(online), str(changed), desc="口径变更")
+
+        assert result is sentinel
+        state, phases = mock_run.call_args[0][0], mock_run.call_args[0][1]
+        assert phases is _REVIEW_PHASES
+        assert state["mode"] == "review"
+        assert state["online_sql"] == "ONLINE SQL"
+        assert state["changed_sql"] == "CHANGED SQL"
+        assert state["requirement"] == "口径变更"
+        assert state["errors"] == []
+        assert state["artifacts"] == []
+        assert state["metadata"]["requirement_name"] == "online"
+
+    def test_review_mode_accepts_output_dir_and_progress(self, tmp_path):
+        """output_dir / on_progress 透传，与 change() 同构。"""
+        from src.aqueduct.core import Aqueduct, AqueductResult
+
+        online = tmp_path / "a.sql"
+        changed = tmp_path / "b.sql"
+        online.write_text("A", encoding="utf-8")
+        changed.write_text("B", encoding="utf-8")
+
+        sentinel = AqueductResult({"errors": [], "artifacts": []})
+        progress = MagicMock()
+        with (
+            patch("src.aqueduct.core._run_pipeline", return_value=sentinel) as mock_run,
+            patch("pathlib.Path.cwd", return_value=tmp_path),
+        ):
+            Aqueduct().review_mode(
+                str(online), str(changed), output_dir=str(tmp_path), on_progress=progress
+            )
+
+        assert mock_run.call_args[1]["on_progress"] is progress
+        assert mock_run.call_args[0][0]["metadata"]["output_dir"] == str(tmp_path)
+
+    def test_cli_review_routes_to_core(self, tmp_path):
+        """CLI 审查模式调用 Aqueduct.review_mode，不再 import workflow。"""
+        import argparse
+
+        from src.aqueduct.cli.main import _review_mode
+        from src.aqueduct.core import AqueductResult
+
+        online = tmp_path / "online.sql"
+        changed = tmp_path / "changed.sql"
+        online.write_text("A", encoding="utf-8")
+        changed.write_text("B", encoding="utf-8")
+        args = argparse.Namespace(online_sql=str(online), changed_sql=str(changed), desc="")
+
+        sentinel = AqueductResult({"errors": [], "artifacts": []})
+        with (
+            patch("src.aqueduct.cli.main.Aqueduct") as mock_cls,
+            patch("src.aqueduct.cli.main.build_review_workflow", create=True) as mock_legacy,
+        ):
+            mock_cls.return_value.review_mode.return_value = sentinel
+            rc = _review_mode(args)
+
+        mock_legacy.assert_not_called()
+        assert rc == 0
+        mock_cls.return_value.review_mode.assert_called_once()
+
+    def test_cli_review_reports_errors_with_rc1(self, tmp_path):
+        """review_mode 返回带 errors 的结果时 CLI 打 WARN 并返回 1。"""
+        import argparse
+
+        from src.aqueduct.cli.main import _review_mode
+        from src.aqueduct.core import AqueductResult
+
+        online = tmp_path / "online.sql"
+        changed = tmp_path / "changed.sql"
+        online.write_text("A", encoding="utf-8")
+        changed.write_text("B", encoding="utf-8")
+        args = argparse.Namespace(online_sql=str(online), changed_sql=str(changed), desc="")
+
+        sentinel = AqueductResult({"errors": ["boom"], "artifacts": []})
+        with (
+            patch("src.aqueduct.cli.main.Aqueduct") as mock_cls,
+            patch("src.aqueduct.cli.main.build_review_workflow", create=True) as mock_legacy,
+        ):
+            mock_cls.return_value.review_mode.return_value = sentinel
+            rc = _review_mode(args)
+
+        mock_legacy.assert_not_called()
+        assert rc == 1

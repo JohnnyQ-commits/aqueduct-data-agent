@@ -62,6 +62,14 @@ _CHANGE_PHASES: list[tuple[str, Any]] = [
     ("change_archive", node_change_archive),
 ]
 
+# 审查模式节点流水线（与 dev 共用 requirement/review/dqc/report 节点）
+_REVIEW_PHASES: list[tuple[str, Any]] = [
+    ("requirement", node_requirement),
+    ("review", node_review),
+    ("dqc", node_dqc),
+    ("report", node_report),
+]
+
 # 确认回调类型：接收 WorkflowState，返回 True 继续 / False 停止
 ConfirmCallback = Callable[[WorkflowState], bool]
 # 进度回调类型：接收 (阶段名, 阶段序号, 总阶段数, 状态)
@@ -668,3 +676,40 @@ class Aqueduct:
             state["metadata"]["output_dir"] = output_dir
 
         return _run_pipeline(state, _CHANGE_PHASES, on_progress=on_progress)
+
+    def review_mode(
+        self,
+        online: str,
+        changed: str,
+        desc: str = "",
+        output_dir: str | None = None,
+        on_progress: ProgressCallback | None = None,
+    ) -> AqueductResult:
+        """审查模式：对比线上 SQL 与变更 SQL，产出审查报告。
+
+        Args:
+            online: 线上版本 SQL 文件路径。
+            changed: 变更版本 SQL 文件路径。
+            desc: 审查背景描述。
+            output_dir: 输出目录路径。
+            on_progress: 进度回调，每个阶段开始时调用。
+
+        Returns:
+            AqueductResult 包含审查报告与差异分析。
+        """
+        online_path = Path(online)
+        changed_path = Path(changed)
+
+        state: WorkflowState = {
+            "requirement": desc,
+            "mode": "review",
+            "online_sql": online_path.read_text(encoding="utf-8"),
+            "changed_sql": changed_path.read_text(encoding="utf-8"),
+            "metadata": {"requirement_name": online_path.stem},
+            "errors": [],
+            "artifacts": [],
+        }
+        if output_dir:
+            state["metadata"]["output_dir"] = output_dir
+
+        return _run_pipeline(state, _REVIEW_PHASES, on_progress=on_progress)

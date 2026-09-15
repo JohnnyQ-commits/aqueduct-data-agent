@@ -308,34 +308,35 @@ class TestLLMIntegration:
 
 
 class TestEngineIntegration:
-    """Engine 层集成测试：StateGraph、DAG 节点、工作流、错误恢复。"""
+    """Engine 层集成测试：三模式管道接线、错误恢复。"""
 
-    def test_dev_workflow_builds(self):
-        """测试开发模式工作流可构建。"""
-        from src.aqueduct.engine.workflow import build_dev_workflow
+    def test_phase_pipelines_all_linear(self):
+        """三模式均为 _run_pipeline 线性 Phase 列表（StateGraph 引擎已退役）。"""
+        from src.aqueduct.core import _CHANGE_PHASES, _DEV_PHASES, _REVIEW_PHASES
 
-        wf = build_dev_workflow()
-        assert wf is not None
-
-    def test_review_workflow_builds(self):
-        """测试审查模式工作流可构建。"""
-        from src.aqueduct.engine.workflow import build_review_workflow
-
-        wf = build_review_workflow()
-        assert wf is not None
-
-    def test_state_graph_compilation(self):
-        """测试 StateGraph 可编译。"""
-        from src.aqueduct.engine.state import WorkflowState
-        from src.aqueduct.engine.workflow import END, StateGraph
-
-        graph = StateGraph(WorkflowState)
-        graph.add_node("test_node", lambda state: state)
-        graph.set_entry_point("test_node")
-        graph.add_edge("test_node", END)
-
-        compiled = graph.compile()
-        assert compiled is not None
+        assert [n for n, _ in _DEV_PHASES] == [
+            "requirement",
+            "design",
+            "ddl",
+            "sql",
+            "review",
+            "dqc",
+            "report",
+        ]
+        assert [n for n, _ in _REVIEW_PHASES] == [
+            "requirement",
+            "review",
+            "dqc",
+            "report",
+        ]
+        assert [n for n, _ in _CHANGE_PHASES] == [
+            "change_identify",
+            "change_document",
+            "change_sql",
+            "change_review",
+            "change_merge",
+            "change_archive",
+        ]
 
     def test_error_recovery_classification(self):
         """测试错误恢复策略正确分类错误。"""
