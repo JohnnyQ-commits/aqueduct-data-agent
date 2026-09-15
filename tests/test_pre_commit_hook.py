@@ -138,6 +138,161 @@ class TestCli:
         assert ".env" in proc.stderr
 
 
+# ============ 内容级扫描（2026-09-15 脱敏事件加固） ============
+# 事故：路径门禁拦不住已跟踪文件里的敏感内容（公司名/真实域名/员工ID 曾随
+# bdp_manifest.json 与测试 fixtures 推到公开远端，事后 filter-repo 重写 197 提交）。
+# 内容门禁设计：
+# - 敏感词清单放本地不入库文件（scripts/hooks/sensitive_content.local.txt，
+#   gitignore + 路径门禁双保险）——公开仓库本身不能包含敏感词，连门禁配置也不行
+# - 扫 git diff --cached 的新增行（+ 行），上下文行/删除行不拦（已入库内容
+#   由历史重写处理，钩子只拦"正在引入"）
+# 本测试文件自身 tracked，敏感词一律运行时拼接，禁止字面量出现。
+
+_COMPANY = "\u987a\u4e30"  # 公司名（unicode 转义拼接，防字面量入库）
+_DOMAIN = "sf-" + "express.com"  # 真实域名（拼接）
+_EMPID = "01444" + "576"  # 员工ID（拼接）
+
+
+class TestParsePatterns:
+    def test_parse_skips_comments_blanks_and_strips_whitespace(self):
+        mod = _load_checker()
+        text = "# 注释\n  \n term-a \nterm-b\n"
+        assert mod.parse_patterns(text) == ["term-a", "term-b"]
+
+    def test_missing_patterns_file_returns_empty(self, tmp_path):
+        """公开仓库默认无本地清单——内容门禁静默放行，不报错。"""
+        mod = _load_checker()
+        assert mod.load_content_patterns(tmp_path / "nonexistent.txt") == []
+
+    def test_patterns_file_loaded_utf8(self, tmp_path):
+        mod = _load_checker()
+        f = tmp_path / "terms.txt"
+        f.write_text(f"# 本地敏感词\n{_COMPANY}\n{_DOMAIN}\n", encoding="utf-8")
+        assert mod.load_content_patterns(f) == [_COMPANY, _DOMAIN]
+
+
+def _diff_of(*added_lines: str, path: str = "src/foo.json") -> str:
+    """构造最小合法 diff 文本（含头/上下文/删除/新增行）。"""
+    lines = [f"diff --git a/{path} b/{path}", f"--- a/{path}", f"+++ b/{path}"]
+    lines.append("@@ -1,3 +1,4 @@")
+    lines.append("context line")
+    lines.extend("-" + old for old in ("old line one", "old line two"))
+    lines.extend("+" + a for a in added_lines)
+    return "\n".join(lines) + "\n"
+
+
+class TestFindContentViolations:
+    def test_added_line_with_sensitive_term_flagged(self):
+        mod = _load_checker()
+        diff = _diff_of(f'"description": "BDP {_COMPANY} 平台"')
+        violations = mod.find_content_violations(diff, [_COMPANY])
+        assert [v[0] for v in violations] == ["src/foo.json"]
+        assert _COMPANY in violations[0][1]  # 原因里指认命中词
+
+    def test_each_sensitive_term_class_caught(self):
+        mod = _load_checker()
+        for term in (_COMPANY, _DOMAIN, _EMPID):
+            diff = _diff_of(f'config_value = "{term}"')
+            assert mod.find_content_violations(diff, [term]), f"漏拦: {term!r}"
+
+    def test_context_and_removed_lines_not_flagged(self):
+        """已入库内容出现在上下文/删除行——钩子不拦（历史问题走重写）。"""
+        mod = _load_checker()
+        diff = _diff_of("clean new line")
+        violations = mod.find_content_violations(diff, [_COMPANY])
+        assert violations == []
+
+    def test_added_line_clean_passes(self):
+        mod = _load_checker()
+        diff = _diff_of("BDP（大数据平台）能力声明")
+        assert mod.find_content_violations(diff, [_COMPANY]) == []
+
+    def test_diff_header_lines_never_flagged(self):
+        """diff 元数据行（+++ b/... 等）不算新增内容。"""
+        mod = _load_checker()
+        diff = _diff_of("ok", path=f"src/{_COMPANY}.py")
+        assert mod.find_content_violations(diff, [_COMPANY]) == []
+
+    def test_multiple_files_each_reported(self):
+        mod = _load_checker()
+        diff = _diff_of(f"x = {_EMPID}", path="tests/a.py") + _diff_of(
+            f"y = '{_DOMAIN}'", path="src/b.py"
+        )
+        violations = mod.find_content_violations(diff, [_EMPID, _DOMAIN])
+        assert sorted(v[0] for v in violations) == ["src/b.py", "tests/a.py"]
+
+    def test_case_insensitive_ascii_match(self):
+        mod = _load_checker()
+        diff = _diff_of("url = https://" + _DOMAIN.upper() + "/api")
+        violations = mod.find_content_violations(diff, [_DOMAIN])
+        assert len(violations) == 1
+
+
+class TestContentCli:
+    def _run(self, args, stdin=None, cwd=None):
+        return subprocess.run(
+            [sys.executable, str(_SCRIPT), *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            input=stdin,
+            timeout=60,
+            cwd=cwd,
+        )
+
+    def test_content_mode_missing_patterns_file_exit_0(self):
+        """--content 指向不存在的清单：公开仓库默认形态，放行。"""
+        proc = self._run(["--content", "--patterns", "Z:/no/such/file.txt"])
+        assert proc.returncode == 0
+
+    def test_content_mode_blocks_staged_sensitive_content(self, tmp_path):
+        """真实 git 仓库：staged 新增行含敏感词 → exit 1 且报告文件与命中词。"""
+        import os
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": str(tmp_path / "gitconfig")}
+        for cmd in (
+            ["git", "init", "-q"],
+            ["git", "config", "user.email", "t@t"],
+            ["git", "config", "user.name", "t"],
+        ):
+            subprocess.run(cmd, cwd=repo, check=True, capture_output=True, env=env)
+        terms = tmp_path / "terms.txt"
+        terms.write_text(_COMPANY, encoding="utf-8")
+        (repo / "manifest.json").write_text(
+            f'{{"description": "BDP {_COMPANY} 平台"}}', encoding="utf-8"
+        )
+        subprocess.run(
+            ["git", "add", "manifest.json"], cwd=repo, check=True, capture_output=True, env=env
+        )
+        proc = self._run(["--content", "--patterns", str(terms)], cwd=repo)
+        assert proc.returncode == 1
+        assert "manifest.json" in proc.stderr
+        assert _COMPANY in proc.stderr
+
+    def test_content_mode_clean_staged_exit_0(self, tmp_path):
+        import os
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": str(tmp_path / "gitconfig")}
+        for cmd in (
+            ["git", "init", "-q"],
+            ["git", "config", "user.email", "t@t"],
+            ["git", "config", "user.name", "t"],
+        ):
+            subprocess.run(cmd, cwd=repo, check=True, capture_output=True, env=env)
+        terms = tmp_path / "terms.txt"
+        terms.write_text(_COMPANY, encoding="utf-8")
+        (repo / "readme.md").write_text("# clean repo\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "add", "readme.md"], cwd=repo, check=True, capture_output=True, env=env
+        )
+        proc = self._run(["--content", "--patterns", str(terms)], cwd=repo)
+        assert proc.returncode == 0
+
+
 # ============ 钩子脚本存在性与接线 ============
 
 
@@ -147,3 +302,16 @@ class TestHookWiring:
         content = _HOOK.read_text(encoding="utf-8")
         assert "check_staged_paths.py" in content
         assert "git diff --cached --name-only" in content
+
+    def test_hook_wires_content_gate(self):
+        """钩子除路径门外还须接内容门禁（--content）。"""
+        content = _HOOK.read_text(encoding="utf-8")
+        assert "--content" in content
+
+    def test_patterns_file_gitignored_and_path_gated(self):
+        """清单文件双保险：gitignore 挡 add + 路径门禁挡 force-add。"""
+        repo_root = _SCRIPT.parent.parent.parent
+        gitignore = (repo_root / ".gitignore").read_text(encoding="utf-8")
+        assert "sensitive_content.local.txt" in gitignore
+        mod = _load_checker()
+        assert any("sensitive_content.local.txt" in f for f in mod.SENSITIVE_FILES)

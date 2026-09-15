@@ -33,6 +33,9 @@ env/
 .mcp.json
 .claude/settings.local.json
 
+# pre-commit 内容层敏感词清单（本身含敏感词，永不入库）
+scripts/hooks/sensitive_content.local.txt
+
 # IDE
 .vscode/*
 !.vscode/settings.json
