@@ -256,3 +256,66 @@ class TestSpiralAbort:
 
         assert response.content == "SELECT 1"
         assert stream.consumed == 2
+
+
+class TestThinkingEstimateCalibration:
+    """思考估算校准（ASCII 低估 1.46x）。
+
+    探针实测（2026-09 标定）：estimate_tokens 的 ASCII 系数 0.25 token/字符
+    对代码型思考流低估 ~1.46 倍（思考以代码/英文为主，真实 ~0.37 token/字符）。
+    低估方向 = 止损晚触发 ~46%——24000 阈值实际在真实 ~35000 才踩线。
+    校准只乘在 thinking_delta 调用点（输入侧 estimate_tokens 供预算/路由，
+    口径不同不动）。
+    """
+
+    def test_ascii_thinking_aborts_earlier_than_raw_estimate(self, fresh_settings, monkeypatch):
+        """ASCII 思考流按校准系数计账：原估算够不着阈值也照常止损。
+
+        阈值钉 12000；40,000 个 ASCII 思考字符：
+        原系数 0.25 → 10,000 < 12000（校准前不中止）
+        校准后 0.25*1.46 ≈ 0.365 → 14,600 ≥ 12000 → 中止
+        """
+        monkeypatch.setenv("AQUEDUCT_LLM_BACKEND", "sdk")
+        monkeypatch.setenv("AQUEDUCT_LLM_SPIRAL_ABORT_TOKENS", "12000")
+
+        events = [
+            _event(
+                "content_block_delta",
+                delta=SimpleNamespace(type="thinking_delta", thinking="x" * 20000),
+            ),
+            _event(
+                "content_block_delta",
+                delta=SimpleNamespace(type="thinking_delta", thinking="y" * 20000),
+            ),
+            # 不应到达
+            _event("content_block_delta", delta=_delta("text_delta", "SELECT 1")),
+        ]
+        stream = FakeEventStream(events)
+        _install_stream(monkeypatch, stream)
+
+        response = _make_llm().chat([LLMMessage(role="user", content="t")])
+
+        assert response.content == ""
+        assert stream.consumed == 2, "ASCII 思考估算校准后应达阈值中止"
+
+    def test_chinese_thinking_unchanged(self, fresh_settings, monkeypatch):
+        """中文思考不受校准影响（1.5/字系数本就按中文实测标定）。"""
+        monkeypatch.setenv("AQUEDUCT_LLM_BACKEND", "sdk")
+        monkeypatch.delenv("AQUEDUCT_LLM_SPIRAL_ABORT_TOKENS", raising=False)
+
+        events = [
+            # 4000 汉字 ≈ 6000 tokens（若被误乘 1.46 → 8760，仍 < 24000 默认，
+            # 但这里用自定义阈值 7000 钉住：校准后必须仍 < 阈值不中止）
+            _event(
+                "content_block_delta",
+                delta=SimpleNamespace(type="thinking_delta", thinking="思" * 4000),
+            ),
+            _event("content_block_delta", delta=_delta("text_delta", "SELECT 1")),
+        ]
+        stream = FakeEventStream(events)
+        _install_stream(monkeypatch, stream)
+        monkeypatch.setenv("AQUEDUCT_LLM_SPIRAL_ABORT_TOKENS", "8760")
+
+        response = _make_llm().chat([LLMMessage(role="user", content="t")])
+
+        assert response.content == "SELECT 1", "中文估算不得被 1.46 二次放大（6000 < 8760）"

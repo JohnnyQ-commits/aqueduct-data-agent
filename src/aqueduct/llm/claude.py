@@ -22,6 +22,10 @@ from .base import BaseLLM, LLMMessage, LLMResponse, LLMUsage
 
 logger = logging.getLogger(__name__)
 
+# 思考流 ASCII token 估算校准系数（2026-09 探针标定：0.25 token/字符对
+# 代码型思考低估 ~1.46 倍；中文 1.5 Token/字是独立标定不在此列）
+_THINKING_EST_CALIBRATION = 1.46
+
 
 class ClaudeLLM(BaseLLM):
     """Claude 模型适配器。
@@ -349,8 +353,10 @@ class ClaudeLLM(BaseLLM):
                         content += getattr(delta, "text", "") or ""
                     elif dtype == "thinking_delta":
                         # 本地估算累计思考 token（实测部分网关 message_delta
-                        # 只在流末尾携带 usage——思考增量文本是唯一中途信号）
-                        thinking_tokens_est += self.estimate_tokens(
+                        # 只在流末尾携带 usage——思考增量文本是唯一中途信号）。
+                        # 思考流以代码/英文为主，ASCII 系数需校准（见
+                        # _estimate_thinking_tokens）；中文系数独立标定不动
+                        thinking_tokens_est += self._estimate_thinking_tokens(
                             getattr(delta, "thinking", "") or ""
                         )
 
@@ -605,6 +611,20 @@ class ClaudeLLM(BaseLLM):
 
         # 所有重试均失败
         raise last_error  # type: ignore[misc]
+
+    def _estimate_thinking_tokens(self, text: str) -> int:
+        """思考流专用 token 估算：中文沿用 1.5 Token/字，ASCII 校准至实测值。
+
+        estimate_tokens 的 ASCII 系数 0.25 token/字符对代码/英文为主的思考流
+        低估 ~1.46 倍（2026-09 探针标定）——低估方向 = 螺旋止损晚触发 ~46%。
+        只用于 thinking_delta 计账；estimate_tokens 本身供输入预算/模型路由，
+        口径不同不动。
+        """
+        if not text:
+            return 0
+        chinese_chars = sum(1 for c in text if "一" <= c <= "鿿")
+        other_chars = len(text) - chinese_chars
+        return int(chinese_chars * 1.5 + other_chars * 0.25 * _THINKING_EST_CALIBRATION)
 
     def estimate_tokens(self, text: str) -> int:
         """估算文本的 Token 数量。
