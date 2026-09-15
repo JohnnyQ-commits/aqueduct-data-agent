@@ -44,6 +44,7 @@ from ..core import Aqueduct, AqueductResult
 from ..engine.state import WorkflowState
 from ..engine.workflow import build_review_workflow
 from ..exceptions import AqueductError
+from ..utils.platform_status import platform_execution_lines
 
 logger = logging.getLogger(__name__)
 
@@ -453,6 +454,11 @@ def _status(args: argparse.Namespace) -> int:
     print(f"  Test files:                    {tests_count}")
     print(f"  Documentation (.md):           {docs_count}")
     print(f"  Domain models:                 {domains_count}")
+
+    print()
+    print("=== 平台执行状态（试跑门禁 / DQC 真跑）===")
+    for line in platform_execution_lines(env_file=root / ".env"):
+        print(line)
 
     return 0
 
