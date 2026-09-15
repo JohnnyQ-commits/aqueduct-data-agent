@@ -7,7 +7,22 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
+from src.aqueduct.config.settings import get_settings
 from src.aqueduct.tools.registry import get_tool, is_tool_registered
+
+
+@pytest.fixture(autouse=True)
+def _isolate_dp_credentials(tmp_path, monkeypatch):
+    """钉死「无凭证」前提：os.environ 无 DP_*，project_root 指向无 .env 的 tmp。
+
+    load_dp_env() 会回退项目 .env（2026-09-15 bdp 批）——不隔离的话
+    本机真实 .env（含过期 cookie）会让 without_config 系列发起真实 HTTP。
+    """
+    for key in ("DP_BASE_URL", "DP_COOKIE", "DP_USER_ID"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(get_settings(), "project_root", tmp_path)
 
 
 class TestExecutorRegistration:

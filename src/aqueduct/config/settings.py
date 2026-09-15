@@ -281,9 +281,10 @@ class Settings(BaseSettings):
             "平台适配器声明（开源通用化）：none=强制离线（零平台能力，管道以本地校验降级"
             "运行——Phase1 静态分析 / Phase4 本地校验 / Phase5 SQL 供手工执行）；"
             "auto=自动探测（MCP 已配置→表结构元数据，execution_enabled=True→SQL 执行与 "
-            "DQC 执行——与既有各触点门控 1:1 对齐，零行为变化）；bdp=显式声明 BDP"
-            "（当前与 auto 同探测语义）。platform.yaml 的 capability→transport 映射随 "
-            "bdp 专用 adapter 批次落地。"
+            "DQC 执行——与既有各触点门控 1:1 对齐，零行为变化）；bdp=清单驱动（包内 "
+            "bdp_manifest.json 声明 capability→transport，transport 就绪探针判定实际能力"
+            "——dp-cookie-http 探 DP_* 凭证可解析（os.environ 优先、.env 回退），"
+            "凭证缺失时不声明能力，门禁跳过而非执行时报错）。"
         ),
     )
 

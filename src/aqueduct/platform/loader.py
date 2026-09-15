@@ -24,13 +24,18 @@ def load_adapter(settings: Settings) -> PlatformAdapter:
 
     - ``none``：强制离线（即使 MCP 已配置也不得声明任何能力）
     - ``auto``：探测 MCP 配置 + execution_enabled（与既有门控 1:1）
-    - ``bdp``：显式声明 BDP，当前与 auto 同探测语义；
-      capability→transport 映射（platform.yaml）随 bdp 专用 adapter 批次落地
+    - ``bdp``：清单驱动（bdp_manifest.json 声明 capability→transport），
+      transport 就绪探针判定实际能力——dp-cookie-http 探「凭证可解析」
+      （os.environ 优先、.env 回退），比 auto 的 settings 布尔更诚实
     """
     mode = (settings.platform or "auto").strip().lower()
     if mode == "none":
         return NoneAdapter()
-    if mode in ("auto", "bdp"):
+    if mode == "bdp":
+        from .bdp import BDPAdapter
+
+        return BDPAdapter()
+    if mode == "auto":
         try:
             from ..mcp.config import MCPConfig
 
@@ -38,7 +43,6 @@ def load_adapter(settings: Settings) -> PlatformAdapter:
         except Exception:
             mcp_configured = False
         return AutoAdapter(
-            declared_name="bdp" if mode == "bdp" else None,
             mcp_configured=mcp_configured,
             execution_enabled=settings.execution_enabled is True,
         )

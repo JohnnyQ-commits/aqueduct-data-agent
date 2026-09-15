@@ -13,6 +13,7 @@ agent 跟数据平台打交道说到底就六个动词。Aqueduct 在语义层�
 
 from .auto import AutoAdapter
 from .base import ALL_CAPABILITIES, Capability, PlatformAdapter
+from .bdp import BDPAdapter
 from .loader import (
     describe_adapter,
     get_platform_adapter,
@@ -25,6 +26,7 @@ from .none import NoneAdapter
 __all__ = [
     "ALL_CAPABILITIES",
     "AutoAdapter",
+    "BDPAdapter",
     "Capability",
     "NoneAdapter",
     "PlatformAdapter",

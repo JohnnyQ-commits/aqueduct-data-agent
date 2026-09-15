@@ -17,14 +17,52 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+_DP_ENV_KEYS = ("DP_BASE_URL", "DP_COOKIE", "DP_USER_ID")
+
+
+def load_dp_env() -> dict[str, str]:
+    """解析 DP_* 配置：os.environ 优先，缺失键回退项目 .env。
+
+    CLI 管道模式 .env 不注入 os.environ（只有插件模式由 Claude Code 自动
+    加载）——此前裸终端 ``aqueduct dev`` 门禁放行（Settings 读得到 .env 的
+    execution_enabled）但执行时凭证缺失，两层口径不一致。值不写回
+    os.environ（不污染子进程），仅作本次解析结果返回。
+    """
+    env = {k: os.environ.get(k, "") for k in _DP_ENV_KEYS}
+    missing = [k for k, v in env.items() if not v]
+    if not missing:
+        return env
+    try:
+        from ...config.settings import get_settings
+
+        env_path = get_settings().project_root / ".env"
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    except Exception:
+        return env
+    parsed: dict[str, str] = {}
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        # cookie 值本身含 '='，只按第一个 '=' 切分；同键以首个出现为准
+        if key in _DP_ENV_KEYS and key not in parsed:
+            parsed[key] = value.strip()
+    for k in missing:
+        if parsed.get(k):
+            env[k] = parsed[k]
+    return env
+
 
 class DataPlatformAdapter:
     """数据平台 SQL 执行适配器。"""
 
     def __init__(self) -> None:
-        self.base_url = os.environ.get("DP_BASE_URL", "")
-        self.cookie = os.environ.get("DP_COOKIE", "")
-        self.user_id = os.environ.get("DP_USER_ID", "")
+        resolved = load_dp_env()
+        self.base_url = resolved["DP_BASE_URL"]
+        self.cookie = resolved["DP_COOKIE"]
+        self.user_id = resolved["DP_USER_ID"]
 
         missing = []
         if not self.base_url:

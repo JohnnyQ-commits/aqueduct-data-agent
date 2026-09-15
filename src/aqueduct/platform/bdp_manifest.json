@@ -1,0 +1,9 @@
+{
+  "platform": "bdp",
+  "description": "BDP（大数据平台）能力声明——capability→transport 映射",
+  "capabilities": {
+    "table_metadata": {"transport": "bdp-asset-mcp"},
+    "sql_execute": {"transport": "dp-cookie-http"},
+    "dqc_execute": {"transport": "dp-cookie-http"}
+  }
+}
