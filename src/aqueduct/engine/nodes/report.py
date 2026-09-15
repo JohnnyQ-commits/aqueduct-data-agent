@@ -28,6 +28,51 @@ logger = logging.getLogger(__name__)
 _INSIGHT_FALLBACK_BG = "（需求背景生成失败，请人工补充）"
 _INSIGHT_FALLBACK_Q = "（待确认问题清单生成失败，请人工补充）"
 
+# ── 跨维 Confirm 分组去重（审查降噪）─────────────────────────────
+# PERF-11 拆 3 维度并行后，同一口径问题被不同维度各自提出（perf11-check2
+# 实录 20 条 Confirm 实际独立议题 ~10 条）。确定性锚点聚类：两条目共享
+# 「稀有」标识符（表名/字段名 snake_case token，全局出现 ≤3 条目）即同组；
+# best-match 贪心（共享数最多的组优先）防链式吞并。零信息丢失：组内子条目
+# 全文保留。零 token、无 LLM——P0-1 确定性优先哲学。
+_IDENT_RE = re.compile(r"\b([a-z][a-z0-9_]{3,})\b")
+_IDENT_STOPLIST = frozenset({"select", "from", "where", "group", "order", "left", "cast", "round"})
+
+
+def _group_confirmations(confirmations: list[dict]) -> list[dict]:
+    """把 Confirm 项按共享稀有标识符聚组，返回 [{representative, members}]。
+
+    聚类规则：标识符取小写 snake_case token（≥4 字符，去 SQL 关键字停用表），
+    全局出现在 ≤3 条目中的视为「稀有」锚点；每条目加入与它共享稀有锚点最多
+    的既有组（无共享则自立新组），防止单锚点链式吞并成大杂烩组。
+    """
+    items = [c.get("message", "") for c in confirmations]
+    if len(items) <= 1:
+        return [{"representative": c, "members": [c]} for c in confirmations]
+
+    idents_per_item = [
+        {t for t in _IDENT_RE.findall(msg.lower()) if t not in _IDENT_STOPLIST} for msg in items
+    ]
+    freq: dict[str, int] = {}
+    for idents in idents_per_item:
+        for t in idents:
+            freq[t] = freq.get(t, 0) + 1
+    rare = [{t for t in idents if freq[t] <= 3} for idents in idents_per_item]
+
+    groups: list[dict] = []  # [{"idents": set, "members": [item, ...]}]
+    for idx, item in enumerate(confirmations):
+        best, best_overlap = None, 0
+        for g in groups:
+            overlap = len(rare[idx] & g["idents"])
+            if overlap > best_overlap:
+                best, best_overlap = g, overlap
+        if best is None:
+            best = {"idents": set(), "members": []}
+            groups.append(best)
+        best["idents"] |= rare[idx]
+        best["members"].append(item)
+
+    return [{"representative": g["members"][0], "members": g["members"]} for g in groups]
+
 
 def _knowledge_input_hash(state: WorkflowState) -> int:
     """计算投机知识提取的输入指纹（prompt 的全部输入，见 _generate_knowledge_doc）。
@@ -483,14 +528,18 @@ def _generate_delivery_report(state: WorkflowState) -> str:
     # 此前止步于 state 键——交付总报告是验收人真正读的汇总，待确认清单应直达
     confirmations = state.get("review_confirmations") or []
     if confirmations:
+        groups = _group_confirmations(confirmations)
         lines.append(
             f"> 代码审查发现 **{len(confirmations)} 项**需业务方/上游确认的口径与依赖问题"
-            f"（Confirm 级），确认前不建议上线。详见"
+            f"（Confirm 级），归并为 **{len(groups)} 个议题**；确认前不建议上线。详见"
             f" [Phase5-{req_name}_审查报告.md](Phase5-{req_name}_审查报告.md)。"
         )
         lines.append("")
-        for i, c in enumerate(confirmations, 1):
-            lines.append(f"{i}. {c.get('message', '')}")
+        for i, g in enumerate(groups, 1):
+            lines.append(f"{i}. {g['representative'].get('message', '')}")
+            # 跨维重复项作子条目全文保留（零信息丢失，只降噪不失真）
+            for dup in g["members"][1:]:
+                lines.append(f"   - {dup.get('message', '')}")
         lines.append("")
     else:
         lines.append("无待确认事项。")
