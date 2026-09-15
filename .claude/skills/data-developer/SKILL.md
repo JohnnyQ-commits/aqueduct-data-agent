@@ -40,7 +40,7 @@ version: "0.4.0"
 
 - [工作流详细参考](references/workflow.md) — 各阶段详细说明、交付物清单、编码规范
 - [SQL 开发规范](references/sql_standards.md) — **必读** — SQL 编码标准、命名规范、JOIN 规范、GROUPING SETS、多期间打平处理、性能优化
-- [数据验证 Checklist](references/verification_checklist.md) — **必读** — 上线前临时表门禁（V1~V7 双场景验证模板）、非确定性对比规则、平台验证坑清单
+- [数据验证 Checklist](references/verification_checklist.md) — **必读** — 上线前临时表门禁（第〇节能力分级 L0~L2 + V1~V8 双场景验证模板）、诚实性硬规则、平台验证坑清单
 - [SQL 模板](assets/sql_template.sql) — ETL SQL 文件头模板
 
 ## 核心原则
