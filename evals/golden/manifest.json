@@ -1,0 +1,18 @@
+{
+  "description": "linter golden set — 好样本必过（零 ERROR 零 WARN）+ 坏样本必拦（按 expect 断言规则命中）。语料为脱敏合成风格（公开示例域表名）；与 test_validator.py 的规则级单测互补：单测守规则细节，本套件守语料整体。新增语料必须同时登记进本清单（有孤儿检测）。",
+  "good": [
+    "good/weekly_stat_full_pipeline.sql",
+    "good/case_guard_forms.sql",
+    "good/join_aggregate_style.sql"
+  ],
+  "bad": [
+    {"file": "bad/select_star.sql", "level": "ERROR", "expect": "显式列出字段"},
+    {"file": "bad/uppercase_keyword.sql", "level": "ERROR", "expect": "关键字应全小写"},
+    {"file": "bad/unguarded_division.sql", "level": "ERROR", "expect": "除法未做判空判零保护"},
+    {"file": "bad/guard_on_other_column.sql", "level": "ERROR", "expect": "除法未做判空判零保护"},
+    {"file": "bad/cte_clause.sql", "level": "ERROR", "expect": "禁止使用 CTE"},
+    {"file": "bad/forbidden_partition.sql", "level": "ERROR", "expect": "禁止分区字段"},
+    {"file": "bad/cross_join.sql", "level": "ERROR", "expect": "禁止 CROSS JOIN"},
+    {"file": "bad/tmp_table_prefix.sql", "level": "ERROR", "expect": "tmp_ 前缀"}
+  ]
+}
