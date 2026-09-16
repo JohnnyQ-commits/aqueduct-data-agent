@@ -224,9 +224,9 @@ def _lint_sql_issues(sql_content: str) -> list[dict[str, str]]:
         line = r.get("line") or "?"
         msg = f"[规范] {r.get('message', '')} (line {line})"
         if level == "ERROR":
-            issues.append({"severity": "Critical", "message": msg})
+            issues.append({"severity": "Critical", "message": msg, "dimension": "规范"})
         elif level == "WARN":
-            issues.append({"severity": "Warning", "message": msg})
+            issues.append({"severity": "Warning", "message": msg, "dimension": "规范"})
     return issues
 
 
@@ -266,7 +266,10 @@ def _trial_run_issues(state: WorkflowState) -> list[dict[str, str]]:
     state["trial_run_result"] = trial  # 更新为当前 SQL 的最新结果
     if not trial["errors"]:
         return []
-    return [{"severity": "Critical", "message": f"[试跑] {err}"} for err in trial["errors"]]
+    return [
+        {"severity": "Critical", "message": f"[试跑] {err}", "dimension": "试跑"}
+        for err in trial["errors"]
+    ]
 
 
 def _parse_review_issues(review_result: str) -> list[dict[str, str]]:
@@ -277,9 +280,14 @@ def _parse_review_issues(review_result: str) -> list[dict[str, str]]:
     - [Warning] ...
     - [Confirm] ...（PERF-11：需人工确认的口径/依赖问题，不进修复循环）
     - **Critical**: ...
+
+    每条发现附带 ``dimension``（所属「## 维度审查: <名>」章节名）供记分卡
+    按维度细分（P2）；章节头之外的发现（单块审查回退路径）dimension 为空串。
     """
     issues: list[dict[str, str]] = []
     seen: set[tuple[str, str]] = set()
+    # 匹配 _review_by_dimensions 的合并章节头（review.py:_review_by_dimensions）
+    header_pattern = re.compile(r"^##\s*维度审查[:：]\s*(.+?)\s*$")
 
     # 匹配 [Critical] / [Warning] / [INFO] / [Confirm] 格式
     bracket_pattern = re.compile(
@@ -292,16 +300,25 @@ def _parse_review_issues(review_result: str) -> list[dict[str, str]]:
         re.IGNORECASE,
     )
 
-    for m in bracket_pattern.finditer(review_result):
-        key = (m.group(1).lower(), m.group(2).strip())
-        if key not in seen:
-            seen.add(key)
-            issues.append({"severity": m.group(1), "message": m.group(2).strip()})
-    for m in bold_pattern.finditer(review_result):
-        key = (m.group(1).lower(), m.group(2).strip())
-        if key not in seen:
-            seen.add(key)
-            issues.append({"severity": m.group(1), "message": m.group(2).strip()})
+    # 逐行扫描：章节头更新当前维度，问题行归属最近的章节头
+    current_dimension = ""
+    for line in review_result.splitlines():
+        header = header_pattern.match(line)
+        if header:
+            current_dimension = header.group(1)
+            continue
+        for pattern in (bracket_pattern, bold_pattern):
+            for m in pattern.finditer(line):
+                key = (m.group(1).lower(), m.group(2).strip())
+                if key not in seen:
+                    seen.add(key)
+                    issues.append(
+                        {
+                            "severity": m.group(1),
+                            "message": m.group(2).strip(),
+                            "dimension": current_dimension,
+                        }
+                    )
 
     return issues
 

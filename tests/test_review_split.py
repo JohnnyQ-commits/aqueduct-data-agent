@@ -102,7 +102,11 @@ class TestParseContract:
     def test_confirm_line_parsed(self):
         issues = _parse_review_issues("- [Confirm] 源表无实付金额字段，gmv 口径需业务确认")
         assert issues == [
-            {"severity": "Confirm", "message": "源表无实付金额字段，gmv 口径需业务确认"}
+            {
+                "severity": "Confirm",
+                "message": "源表无实付金额字段，gmv 口径需业务确认",
+                "dimension": "",
+            }
         ]
 
     def test_mixed_severities_parsed(self):
@@ -120,6 +124,56 @@ class TestParseContract:
             "## 维度审查: A\n- [Critical] 缺分区过滤\n\n## 维度审查: B\n- [Critical] 缺分区过滤\n"
         )
         assert len(_parse_review_issues(text)) == 1
+
+    def test_issues_carry_dimension_from_section_header(self):
+        """记分卡按维度细分（P2）：每条发现归属最近的「## 维度审查:」章节。"""
+        text = (
+            "## 维度审查: 需求与设计对齐\n"
+            "- [Critical] 需求指标 rose 未在 SQL 中体现\n\n"
+            "## 维度审查: 逻辑正确性\n"
+            "- [Warning] JOIN 扇出放大 sum 指标\n"
+        )
+        issues = _parse_review_issues(text)
+        assert [(i["message"], i["dimension"]) for i in issues] == [
+            ("需求指标 rose 未在 SQL 中体现", "需求与设计对齐"),
+            ("JOIN 扇出放大 sum 指标", "逻辑正确性"),
+        ]
+
+    def test_issues_without_section_header_get_empty_dimension(self):
+        """单块审查（维度拆分降级回退）无章节头 → dimension 为空串（记分卡渲染「综合」）。"""
+        issues = _parse_review_issues("- [Warning] 子查询嵌套 3 层")
+        assert issues[0]["dimension"] == ""
+
+
+class TestDeterministicIssueDimensions:
+    """lint/试跑发现是确定性透镜，归属固定维度（不经 LLM 章节推断）。"""
+
+    def test_lint_issues_tagged_standards(self):
+        from src.aqueduct.engine.nodes.review import _lint_sql_issues
+
+        issues = _lint_sql_issues(
+            "select * from dwd.dwd_order_detail_di where inc_day = '20260101';"
+        )
+        assert issues, "select * 应触发 linter Critical"
+        assert all(i["dimension"] == "规范" for i in issues)
+
+    def test_trial_run_issues_tagged_trial(self):
+        from src.aqueduct.engine.nodes.review import _trial_run_issues
+
+        state = _make_state() | {"sql_content": _SQL + " group by city having count(1) > 0"}
+        with (
+            patch("src.aqueduct.platform.get_platform_adapter") as mock_adapter,
+            patch("src.aqueduct.tools.registry.get_tool") as mock_tool,
+            patch(
+                "src.aqueduct.engine.nodes.sql._run_trial_selects",
+                return_value={"errors": ["表不存在: dm_demo.foo"], "passed": 0, "tested": 1},
+            ),
+        ):
+            mock_adapter.return_value.has_capability.return_value = True
+            mock_tool.return_value.execute.return_value.success = True
+            issues = _trial_run_issues(state)
+        assert issues, "试跑失败应注入 Critical"
+        assert all(i["dimension"] == "试跑" for i in issues)
 
 
 # ── 维度 prompt（skill 层） ──────────────────────────────────────────────────
@@ -336,7 +390,11 @@ class TestNodeReviewWiring:
         assert state["_needs_fix_loop"] is True
         criticals = [i for i in state["_review_issues"] if i["severity"] == "Critical"]
         assert criticals == [
-            {"severity": "Critical", "message": "除法未判零 (line 42) — 加 nullif"}
+            {
+                "severity": "Critical",
+                "message": "除法未判零 (line 42) — 加 nullif",
+                "dimension": "逻辑正确性",
+            }
         ]
         assert state["review_confirmations"] == []
 

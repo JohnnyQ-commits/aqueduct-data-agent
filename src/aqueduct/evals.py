@@ -122,6 +122,10 @@ class CaseScore:
     review_critical: int = 0
     review_warning: int = 0
     review_confirmations: int = 0
+    # P2 按维度细分：维度名 → {"critical": n, "warning": n}
+    # （lint→规范 / 试跑→试跑 确定性归属；LLM 发现按审查章节头归属；
+    # 无维度信息的发现归「综合」；审查未跑为空 dict）
+    review_by_dimension: dict[str, dict[str, int]] = field(default_factory=dict)
 
     @property
     def review_summary(self) -> str:
@@ -167,6 +171,14 @@ def score_case(case: EvalCase, output_dir: Path | str, state: dict) -> CaseScore
     review_critical = sum(1 for i in review_issues if i.get("severity") == "Critical")
     review_warning = sum(1 for i in review_issues if i.get("severity") == "Warning")
     review_confirmations = len(list(state.get("review_confirmations") or []))
+    # P2 按维度细分：守门时能看单一维度退化（合并 C/W 只能看总量）
+    review_by_dimension: dict[str, dict[str, int]] = {}
+    for issue in review_issues:
+        if issue.get("severity") not in ("Critical", "Warning"):
+            continue
+        dim = issue.get("dimension") or "综合"
+        bucket = review_by_dimension.setdefault(dim, {"critical": 0, "warning": 0})
+        bucket["critical" if issue["severity"] == "Critical" else "warning"] += 1
     checks: list[CheckResult] = []
 
     # 1. 产物完整
@@ -309,6 +321,7 @@ def score_case(case: EvalCase, output_dir: Path | str, state: dict) -> CaseScore
         review_critical=review_critical,
         review_warning=review_warning,
         review_confirmations=review_confirmations,
+        review_by_dimension=review_by_dimension,
     )
 
 
@@ -354,6 +367,15 @@ def render_scorecard(scores: list[CaseScore], date: str) -> str:
         ]
         for c in s.checks:
             lines.append(f"| {c.name} | {c.status} | {c.detail} |")
+        # P2 按维度细分：守门时能看单一维度退化（无发现不渲染空壳）
+        if s.review_by_dimension:
+            lines += [
+                "",
+                "| 审查维度 | Critical | Warning |",
+                "|---|---|---|",
+            ]
+            for dim, counts in s.review_by_dimension.items():
+                lines.append(f"| {dim} | {counts['critical']} | {counts['warning']} |")
         lines.append("")
     return "\n".join(lines)
 

@@ -257,6 +257,42 @@ class TestScoreCase:
         assert "C0 W0 · 确认0" not in card
         assert "—" in card
 
+    def test_review_by_dimension_breakdown(self, tmp_path: Path) -> None:
+        """P2 按维度细分：review_by_dimension 计数 + 明细区按维度拆列表。"""
+        out = tmp_path / "runs" / "demo_case"
+        _write_good_artifacts(out)
+        state = _good_state() | {
+            "_review_issues": [
+                {"severity": "Critical", "message": "rose 未体现", "dimension": "需求与设计对齐"},
+                {"severity": "Warning", "message": "JOIN 扇出", "dimension": "逻辑正确性"},
+                {"severity": "Warning", "message": "嵌套超层", "dimension": "逻辑正确性"},
+                {"severity": "Critical", "message": "缺分区过滤"},  # 无维度键（旧数据）→ 综合
+            ],
+        }
+
+        score = score_case(_make_case(), out, state)
+
+        assert score.review_by_dimension == {
+            "需求与设计对齐": {"critical": 1, "warning": 0},
+            "逻辑正确性": {"critical": 0, "warning": 2},
+            "综合": {"critical": 1, "warning": 0},
+        }
+        card = render_scorecard([score], "2026-09-16")
+        assert "审查维度" in card, "明细区应有按维度拆列表"
+        assert "需求与设计对齐" in card
+        assert "综合" in card
+
+    def test_review_by_dimension_absent_renders_no_breakdown(self, tmp_path: Path) -> None:
+        """审查未跑 → 无按维度拆列表（不渲染空壳）。"""
+        out = tmp_path / "runs" / "demo_case"
+        _write_good_artifacts(out)
+
+        score = score_case(_make_case(), out, _good_state())
+
+        assert score.review_by_dimension == {}
+        card = render_scorecard([score], "2026-09-16")
+        assert "审查维度" not in card
+
     def test_missing_artifact_fails(self, tmp_path: Path) -> None:
         out = tmp_path / "runs" / "demo_case"
         _write_good_artifacts(out)
