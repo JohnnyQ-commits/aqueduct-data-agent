@@ -463,7 +463,9 @@ def _eval_mode(args: argparse.Namespace) -> int:
     from ..evals import load_manifest, render_scorecard, run_evals
 
     root = get_settings().project_root
-    manifest = root / "evals" / "manifest.json"
+    manifest = Path(args.manifest)
+    if not manifest.is_absolute():
+        manifest = root / manifest
     try:
         load_manifest(manifest)
     except FileNotFoundError:
@@ -557,6 +559,12 @@ def create_parser() -> argparse.ArgumentParser:
     eval_parser.add_argument("--case", help="只跑名称含该子串的用例")
     eval_parser.add_argument(
         "--out", default="evals/runs", help="评估产物根目录（相对项目根，默认 evals/runs）"
+    )
+    eval_parser.add_argument(
+        "--manifest",
+        default="evals/manifest.json",
+        help="评估清单路径（相对项目根或绝对路径，默认 evals/manifest.json；"
+        "内部真实用例评估传独立清单，如 internal-evals/manifest.json）",
     )
 
     # knowledge 命令 — 知识库文档管理

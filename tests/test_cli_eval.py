@@ -54,6 +54,18 @@ class TestEvalParser:
         assert args.case == "iterative"
         assert args.out == "evals/runs2"
 
+    def test_eval_manifest_default(self):
+        from src.aqueduct.cli.main import create_parser
+
+        args = create_parser().parse_args(["eval"])
+        assert args.manifest == "evals/manifest.json"
+
+    def test_eval_manifest_custom(self):
+        from src.aqueduct.cli.main import create_parser
+
+        args = create_parser().parse_args(["eval", "--manifest", "internal-evals/manifest.json"])
+        assert args.manifest == "internal-evals/manifest.json"
+
 
 # ============ eval 命令执行（假管道密封） ============
 
@@ -98,6 +110,7 @@ class TestEvalCommand:
         class NS:
             case = None
             out = "evals/runs"
+            manifest = "evals/manifest.json"
 
         rc = _eval_mode(NS())
         assert rc == 0
@@ -119,6 +132,7 @@ class TestEvalCommand:
         class NS:
             case = None
             out = "evals/runs"
+            manifest = "evals/manifest.json"
 
         assert _eval_mode(NS()) == 1
 
@@ -132,6 +146,7 @@ class TestEvalCommand:
         class NS:
             case = None
             out = "evals/runs"
+            manifest = "evals/manifest.json"
 
         assert _eval_mode(NS()) == 1
         assert "manifest.json" in capsys.readouterr().err
@@ -150,9 +165,61 @@ class TestEvalCommand:
         class NS:
             case = "iterative"
             out = "evals/runs"
+            manifest = "evals/manifest.json"
 
         assert _eval_mode(NS()) == 0
         assert calls["filter"] == "iterative"
+
+    def test_eval_custom_manifest_resolved_relative_to_root(self, eval_env):
+        """--manifest 相对路径按 project_root 解析（内部真实用例评估的入口）。"""
+        tmp_path, calls = eval_env
+        from src.aqueduct.cli.main import _eval_mode
+
+        custom_dir = tmp_path / "internal-evals"
+        custom_dir.mkdir()
+        (custom_dir / "manifest.json").write_text(
+            json.dumps(
+                {"cases": [{"name": "real1", "requirement": "r.md", "required_artifacts": []}]},
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+        class NS:
+            case = None
+            out = "evals/runs"
+            manifest = "internal-evals/manifest.json"
+
+        assert _eval_mode(NS()) == 0
+        assert calls["manifest"] == tmp_path / "internal-evals" / "manifest.json"
+        report = next((tmp_path / "evals" / "runs").glob("report-*.md"))
+        assert "c1" in report.read_text(encoding="utf-8")
+
+    def test_eval_absolute_manifest_used_as_is(self, eval_env):
+        tmp_path, calls = eval_env
+        from src.aqueduct.cli.main import _eval_mode
+
+        class NS:
+            case = None
+            out = "evals/runs"
+            manifest = str(tmp_path / "evals" / "manifest.json")
+
+        assert _eval_mode(NS()) == 0
+        assert calls["manifest"] == tmp_path / "evals" / "manifest.json"
+
+    def test_eval_missing_custom_manifest_returns_one(self, tmp_path, monkeypatch, capsys):
+        from src.aqueduct.config.settings import get_settings
+
+        monkeypatch.setattr(get_settings(), "project_root", tmp_path)
+        from src.aqueduct.cli.main import _eval_mode
+
+        class NS:
+            case = None
+            out = "evals/runs"
+            manifest = "internal-evals/manifest.json"
+
+        assert _eval_mode(NS()) == 1
+        assert "internal-evals" in capsys.readouterr().err
 
 
 # ============ 第三评估用例（manifest 锚定） ============
