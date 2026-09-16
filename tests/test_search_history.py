@@ -248,6 +248,50 @@ class TestSearchHistory:
         assert entry == {"sql_files": [], "docs": [], "domains": []}
 
 
+class TestCjkPhraseSearch:
+    """中文业务表述检索（沉淀层配套）：\\b 词边界对 CJK 失效。
+
+    实录（2026-09-16 内部库验证）：文件含「上岗率及效能统计」，
+    `history.py "上岗率"` 返回无历史命中——中文全为 \\w 字符，
+    「率」与「及」之间无词边界，嵌在更长中文短语里的表述永远搜不到。
+    修复契约：非 ASCII 检索词用子串匹配；ASCII 表名保持词边界
+    （防止 ads_order 误中 ads_order_detail）。
+    """
+
+    def test_cjk_phrase_matches_inside_longer_phrase(self, tmp_path):
+        _write(
+            tmp_path / "knowledge/domains/demo/domain.json",
+            '{"metrics": [{"name": "骑手上岗率及效能统计", "expression": "col_x"}]}',
+        )
+        _write(tmp_path / "output/需求X/Phase2-需求.md", "指标：骑手上岗率及效能统计_城市维度\n")
+        results = search_history(["上岗率"], tmp_path)
+        assert results["上岗率"]["docs"], "中文表述应子串命中 md 文档"
+        assert results["上岗率"]["domains"], "中文表述应命中语义模型 json"
+
+    def test_cjk_phrase_hits_sql_comment(self, tmp_path):
+        """中文表述命中 SQL 注释行；insert 提取按表名过滤，短语检索 inserts 为空。"""
+        _write(
+            tmp_path / "output/需求X/交付.sql",
+            "-- 骑手上岗率及效能统计日表\n"
+            "insert overwrite table ads_demo_metric_di\n"
+            "select col_x from dwd_demo_src_di;\n",
+        )
+        results = search_history(["上岗率"], tmp_path)
+        assert results["上岗率"]["sql_files"], "中文表述应命中 SQL 注释"
+        assert results["上岗率"]["sql_files"][0]["inserts"] == []
+        # 同一文件按表名检索仍能提取 insert（两种检索互不干扰）
+        results2 = search_history(["ads_demo_metric_di"], tmp_path)
+        assert results2["ads_demo_metric_di"]["sql_files"][0]["inserts"][0]["table"] == (
+            "ads_demo_metric_di"
+        )
+
+    def test_ascii_term_keeps_word_boundary(self, tmp_path):
+        """ASCII 检索词不得子串误中更长表名（词边界防误报不回退）。"""
+        _write(tmp_path / "output/需求X/a.sql", "insert into ads_order_detail_di select 1;\n")
+        results = search_history(["ads_order"], tmp_path)
+        assert results["ads_order"]["sql_files"] == []
+
+
 class TestFormatReport:
     """场景 9：format_report 报告输出。"""
 

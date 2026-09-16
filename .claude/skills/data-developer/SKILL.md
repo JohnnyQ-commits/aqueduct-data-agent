@@ -55,7 +55,7 @@ version: "0.4.0"
 ### Phase 1: 需求理解
 
 1. 读取用户指定的需求文档路径
-2. **历史交付物检索（强制）**：运行 `python src/aqueduct/memory/history.py --doc <需求文档路径>`（或直接传表名；venv 环境下等价命令为 `aqueduct search-history`），检索 output/ 历史交付物与 knowledge/ 知识库：
+2. **历史交付物检索（强制）**：运行 `python src/aqueduct/memory/history.py --doc <需求文档路径> <业务表述...>`（`--doc` 自动提取表名；需求中的**业务表述**（中文指标名/报表名）一并作为位置参数传入，中文按子串匹配；venv 环境下等价命令为 `aqueduct search-history`），检索 output/ 历史交付物与 knowledge/ 知识库：
    - 命中历史交付 SQL → 读取其 insert 语句（目标表/分区表达式）与头部注释（调度节奏）、该目录的知识沉淀.md，**直接对齐产出节奏与口径，禁止对已开发表做推断**
    - 命中历史知识沉淀/语义模型 → 引用其中业务规则
    - 提示"未沉淀语义模型" → 记入待办，Phase 6 补建 knowledge/domains/*.json

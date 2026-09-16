@@ -221,7 +221,16 @@ def search_history(tables: list[str], project_root: Path) -> dict:
         return results
 
     project_root = Path(project_root)
-    patterns = {t: re.compile(rf"\b{re.escape(t)}\b", re.IGNORECASE) for t in normalized}
+    # ASCII 检索词用 \b 词边界（防 ads_order 误中 ads_order_detail）；
+    # 非 ASCII（中文业务表述）必须用子串匹配——中文全为 \w 字符，词间
+    # 无边界，「上岗率」永远匹配不到「上岗率及效能统计」（2026-09-16 实录）
+    patterns = {
+        t: re.compile(
+            rf"\b{re.escape(t)}\b" if t.isascii() else re.escape(t),
+            re.IGNORECASE,
+        )
+        for t in normalized
+    }
 
     scanned = 0
     for file_path in _iter_scan_files(project_root):
