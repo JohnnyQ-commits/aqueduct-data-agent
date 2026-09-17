@@ -196,6 +196,18 @@ class Settings(BaseSettings):
         description="单次 LLM 调用超时时间（秒）。长输出任务（doc_gen/sql_gen）建议 ≥ 900。",
     )
 
+    llm_cli_effort: str = Field(
+        default="",
+        description=(
+            "CLI 后端 claude 调用追加的 --effort 思考档位（low / high / max），"
+            "空串=不下发该参数（官方 CLI 默认行为）。始终思考的推理模型网关侧"
+            "拒绝 thinking-off 请求（400 该模型始终思考），且思考预算在大 prompt"
+            " 下被网关忽略（实测 80k prompt + budget 8192 仍烧 ~24k tokens 思考）——"
+            "--effort 是唯一服务端限思考通道。注意 medium 档网关不认（400），"
+            "仅 low / high / max 有效。"
+        ),
+    )
+
     llm_thinking_budget_tokens: int = Field(
         default=0,
         description=(

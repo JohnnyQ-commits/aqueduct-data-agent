@@ -13,6 +13,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+from src.aqueduct.platform import NoneAdapter
 from src.aqueduct.tools.registry import get_tool
 from src.aqueduct.tools.validator import Validator
 
@@ -676,13 +677,22 @@ class TestContentMode:
 
 
 class TestReviewLintInjection:
-    """review 节点注入确定性校验结果：ERROR → Critical → 触发修复循环。"""
+    """review 节点注入确定性校验结果：ERROR → Critical → 触发修复循环。
 
+    平台适配器 patch 为 NoneAdapter：试跑门禁按能力门禁跳过——
+    本组测试聚焦 lint/LLM 注入逻辑，不应真连数据平台
+    （实录：DP_COOKIE 过期时 health_check 失败静默跳过=假绿，
+    重新登录后试跑真执行，合成表名不存在 → Critical 误报）。
+    """
+
+    @patch("src.aqueduct.platform.get_platform_adapter", return_value=NoneAdapter())
     @patch("src.aqueduct.engine.nodes.review.start_knowledge_speculative")
     @patch("src.aqueduct.engine.nodes.review.start_dqc_speculative")
     @patch("src.aqueduct.engine.nodes.review.save_artifact")
     @patch("src.aqueduct.engine.nodes.review.call_llm")
-    def test_review_injects_lint_critical(self, mock_llm, mock_save, mock_spec, mock_kn_spec):
+    def test_review_injects_lint_critical(
+        self, mock_llm, mock_save, mock_spec, mock_kn_spec, _mock_adapter
+    ):
         """LLM 审查通过但 SQL 含 CTE → 规范 Critical 注入 issues 并触发修复循环。"""
         from src.aqueduct.engine.nodes.review import node_review
 
@@ -707,11 +717,14 @@ class TestReviewLintInjection:
             i["severity"] == "Critical" and "CTE" in i["message"] for i in result["_review_issues"]
         )
 
+    @patch("src.aqueduct.platform.get_platform_adapter", return_value=NoneAdapter())
     @patch("src.aqueduct.engine.nodes.review.start_knowledge_speculative")
     @patch("src.aqueduct.engine.nodes.review.start_dqc_speculative")
     @patch("src.aqueduct.engine.nodes.review.save_artifact")
     @patch("src.aqueduct.engine.nodes.review.call_llm")
-    def test_review_clean_sql_no_loop(self, mock_llm, mock_save, mock_spec, mock_kn_spec):
+    def test_review_clean_sql_no_loop(
+        self, mock_llm, mock_save, mock_spec, mock_kn_spec, _mock_adapter
+    ):
         """干净 SQL + LLM 审查通过 → 不触发修复循环。"""
         from src.aqueduct.engine.nodes.review import node_review
 

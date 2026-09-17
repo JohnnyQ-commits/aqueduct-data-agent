@@ -14,7 +14,7 @@ from unittest.mock import patch
 import pytest
 
 from src.aqueduct.config.settings import get_settings
-from src.aqueduct.exceptions import LLMTimeoutError
+from src.aqueduct.exceptions import LLMError, LLMTimeoutError
 from src.aqueduct.llm.base import LLMMessage
 from src.aqueduct.llm.claude import ClaudeLLM
 
@@ -294,3 +294,86 @@ class TestCliTimeoutRetry:
         assert response.content == "生成结果内容"
         assert timeouts == [900, 900]
         assert sleeps == [1]
+
+
+# ============================================================
+# CLI 后端 --effort 档位 — 始终思考模型的网关侧思考档位控制
+# ============================================================
+
+
+class TestCliEffortFlag:
+    """AQUEDUCT_LLM_CLI_EFFORT 非空时给 claude CLI 追加 --effort 档位。
+
+    背景：始终思考的模型网关拒绝 thinking-off 请求（400 该模型始终思考），
+    且思考预算在大 prompt 下被网关忽略——--effort low/high/max 是唯一
+    服务端限思考通道。默认空值不追加参数（OSS 官方 CLI 行为不变）。
+    """
+
+    def test_effort_appended_when_configured(self, fresh_settings, monkeypatch):
+        monkeypatch.setenv("AQUEDUCT_LLM_CLI_EFFORT", "high")
+        llm = _make_cli_llm()
+        messages = [LLMMessage(role="user", content="test")]
+
+        cmds: list[list] = []
+
+        def fake_run(cmd, **kwargs):
+            cmds.append(list(cmd))
+            kwargs["stdout"].write("生成结果内容")
+
+        with patch("src.aqueduct.llm.claude.subprocess.run", side_effect=fake_run):
+            llm._chat_cli_with_retry(messages, {}, max_retries=0, timeout=900)
+
+        assert cmds[0][-2:] == ["--effort", "high"]
+
+    def test_no_effort_flag_by_default(self, fresh_settings, monkeypatch):
+        """默认（未配置）命令行不含 --effort，与现有行为完全一致。"""
+        monkeypatch.delenv("AQUEDUCT_LLM_CLI_EFFORT", raising=False)
+        llm = _make_cli_llm()
+        messages = [LLMMessage(role="user", content="test")]
+
+        cmds: list[list] = []
+
+        def fake_run(cmd, **kwargs):
+            cmds.append(list(cmd))
+            kwargs["stdout"].write("生成结果内容")
+
+        with patch("src.aqueduct.llm.claude.subprocess.run", side_effect=fake_run):
+            llm._chat_cli_with_retry(messages, {}, max_retries=0, timeout=900)
+
+        assert "--effort" not in cmds[0]
+
+
+# ============================================================
+# CLI 后端错误串守卫 — 网关 400 错误串不得当作成功正文返回
+# ============================================================
+
+
+class TestCliErrorContentGuard:
+    """CLI 把 stdout 直接当正文返回——网关报错时错误串（"API Error: 400 ..."）
+    会被当作成功的 LLM 输出静默污染交付物（实测：Phase 1 交付物含 400 错误全文）。
+    该签名的内容必须转为 LLMError 上抛，交由上层重试/恢复。"""
+
+    def test_api_error_content_raises(self, fresh_settings):
+        llm = _make_cli_llm()
+        messages = [LLMMessage(role="user", content="test")]
+
+        def fake_run(cmd, **kwargs):
+            kwargs["stdout"].write("API Error: 400 {'error': {'code': '1210'}}")
+
+        with (
+            patch("src.aqueduct.llm.claude.subprocess.run", side_effect=fake_run),
+            pytest.raises(LLMError),
+        ):
+            llm._chat_cli_with_retry(messages, {}, max_retries=0, timeout=900)
+
+    def test_normal_content_not_blocked(self, fresh_settings):
+        llm = _make_cli_llm()
+        messages = [LLMMessage(role="user", content="test")]
+
+        def fake_run(cmd, **kwargs):
+            kwargs["stdout"].write("正常生成结果，仅提到 API Error 一词也放行")
+
+        with patch("src.aqueduct.llm.claude.subprocess.run", side_effect=fake_run):
+            response = llm._chat_cli_with_retry(messages, {}, max_retries=0, timeout=900)
+
+        assert response.content.startswith("正常生成结果")

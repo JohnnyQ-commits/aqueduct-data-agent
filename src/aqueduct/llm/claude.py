@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from ..exceptions import LLMTimeoutError
+from ..exceptions import LLMError, LLMTimeoutError
 from .base import BaseLLM, LLMMessage, LLMResponse, LLMUsage
 
 logger = logging.getLogger(__name__)
@@ -514,6 +514,13 @@ class ClaudeLLM(BaseLLM):
                 # 使用列表形式的 subprocess 调用，避免 shell 注入风险
                 # stdin 从 prompt 文件读取，stdout/stderr 重定向到临时文件
                 claude_cmd = self._claude_cli_path or "claude"
+                # --effort 档位：始终思考的模型网关拒绝 thinking-off 且思考预算
+                # 在大 prompt 下被网关忽略，--effort 是唯一服务端限思考通道；
+                # 未配置时不下发参数（官方 CLI 行为不变）
+                cli_args = [claude_cmd, "-p", "--bare"]
+                cli_effort = (get_settings().llm_cli_effort or "").strip()
+                if cli_effort:
+                    cli_args += ["--effort", cli_effort]
 
                 with (
                     open(prompt_path, encoding="utf-8") as stdin_file,
@@ -521,7 +528,7 @@ class ClaudeLLM(BaseLLM):
                     open(stderr_path, "w", encoding="utf-8") as stderr_file,
                 ):
                     subprocess.run(
-                        [claude_cmd, "-p", "--bare"],
+                        cli_args,
                         stdin=stdin_file,
                         stdout=stdout_file,
                         stderr=stderr_file,
@@ -535,6 +542,12 @@ class ClaudeLLM(BaseLLM):
                     content = (
                         Path(stderr_path).read_text(encoding="utf-8", errors="replace").strip()
                     )
+
+                # 错误串守卫：CLI 把 stdout 直接当正文返回，网关报错串
+                # （"API Error: ..."）若不拦截会被当作成功输出静默污染交付物
+                # （实测 Phase 交付物含 400 错误全文），转为 LLMError 交上层恢复
+                if content.startswith("API Error"):
+                    raise LLMError(f"CLI 后端返回错误串而非正文: {content[:200]}")
 
                 # 调用成功，跳出重试循环
                 return LLMResponse(

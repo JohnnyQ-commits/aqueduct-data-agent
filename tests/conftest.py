@@ -73,6 +73,27 @@ def _isolate_dynamic_knowledge(tmp_path, monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _isolate_settings_from_env_file():
+    """Settings 与开发者本地 .env 隔离——断言默认值的测试不得沾染真实配置。
+
+    实录（2026-09-17）：.env 写入 AQUEDUCT_LLM_BACKEND=sdk +
+    AQUEDUCT_LLM_THINKING_BUDGET_BY_TASK 后，断言"默认 backend=auto /
+    默认空映射"的测试被 env_file 泄入的值击穿；同日内部库 .env 配
+    backend=cli + cli_effort=high 再击穿一轮。pydantic-settings 在
+    Settings() 实例化时读取 env_file，此处把 env_file 钉为 None：
+    测试中的配置一律来自 monkeypatch.setenv（显式、可追溯），真实 .env
+    只影响真实运行。自带独立 env 文件与隔离根的用例（test_platform_bdp
+    的 load_dp_env 组、test_status_platform）不走 Settings，不受影响。
+    """
+    from unittest.mock import patch
+
+    from src.aqueduct.config.settings import Settings
+
+    with patch.object(Settings, "model_config", {**Settings.model_config, "env_file": None}):
+        yield
+
+
 def pytest_configure(config):
     """在测试开始前导入所有工具和 Skill 模块，触发注册装饰器。"""
     # 导入所有 Tool 模块（触发 @register_tool）
