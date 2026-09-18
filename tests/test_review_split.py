@@ -440,8 +440,115 @@ class TestNodeReviewWiring:
             patch("src.aqueduct.engine.nodes.review.save_artifact", return_value="output/x.md"),
             patch("src.aqueduct.engine.nodes.review.start_dqc_speculative"),
             patch("src.aqueduct.engine.nodes.review.start_knowledge_speculative"),
+            # 本机有真实登录态时长 SQL 会触发真实平台试跑——钉死离线
+            patch("src.aqueduct.platform.get_platform_adapter") as mock_adapter,
         ):
+            mock_adapter.return_value.has_capability.return_value = False
             node_review(state)
 
         assert len(prompts) == 2, "2 块 = 2 次调用（非 3 维度拆分）"
-        assert "[审查第 1/2 个 SQL 语句块]" in prompts[0]
+        assert "[审查第 1/2 个 SQL 语句块，对应完整脚本第 1 行起" in prompts[0]
+
+
+# ── 刀① 分块伪影治理（2026-09-18 run 5 复盘） ────────────────────────────────
+
+
+class TestChunkBoundaryArtifacts:
+    """分块审查的切分伪影：块边界截断误判 + 行号错位（run 5 残留 Critical
+    约 1/4 为假阳性）。
+
+    审查报告原话（逐字）：「块末尾 drop table if exists tmp_detail 语句不完整，
+    缺少分号或后续子句……若完整文件中语句连续则可降级为切分伪影」；
+    「校验器疑似对整个脚本而非本块执行了校验，行号完全无法对应」。
+
+    契约：
+    - 拆分消费掉的结尾分号在 prompt 中补回（块以完整语句呈现，模型不再
+      把「无分号」判成「语句不完整」）
+    - 校验结果按块重算（块内行号），整脚本校验结果不再进分块 prompt
+    - prompt 头标注本块对应完整脚本的起始行（LLM 发现可与整脚本坐标互查）
+    """
+
+    def test_chunk_prompt_appends_missing_semicolon(self):
+        """拆分消费掉结尾分号的块，prompt 中以完整语句呈现。"""
+        from src.aqueduct.engine.nodes.review import _build_chunk_prompt
+
+        state = _make_state()
+        prompt = _build_chunk_prompt(state, "select a from t1", 1, 2)
+        assert "select a from t1\n;" in prompt, "补回的分号应独占一行（防落在行尾注释内）"
+
+    def test_chunk_prompt_no_double_semicolon(self):
+        """块本身以分号结尾（如文件末块）→ 不得出现双分号。"""
+        from src.aqueduct.engine.nodes.review import _build_chunk_prompt
+
+        state = _make_state()
+        prompt = _build_chunk_prompt(state, "select 1;", 2, 2)
+        assert "select 1;;" not in prompt
+
+    def test_chunk_prompt_validation_scoped_to_block(self):
+        """校验结果按块重算：块内违规以块内行号呈现，整脚本发现不再进块 prompt。"""
+        from src.aqueduct.engine.nodes.review import _build_chunk_prompt
+
+        state = _make_state()
+        state["validation_result"] = {
+            "filename": "etl.sql",
+            "error_count": 1,
+            "warn_count": 0,
+            "issues": [
+                {
+                    "level": "ERROR",
+                    "message": "整脚本第 300 行的违规 zz_whole_script_marker",
+                    "line": 300,
+                }
+            ],
+        }
+        block = "-- 块内首行触发 select * 违规\nselect * from dwd.dwd_order_detail_di where inc_day='20260101'"
+        prompt = _build_chunk_prompt(state, block, 1, 2)
+        assert "SELECT *" in prompt.upper() or "select *" in prompt, "块内违规应在本块 prompt"
+        assert "zz_whole_script_marker" not in prompt, "整脚本校验发现不得进分块 prompt"
+
+    def test_chunk_header_announces_global_start_line(self):
+        """prompt 头标注本块对应完整脚本的起始行，校验结果行号口径同步声明。"""
+        from src.aqueduct.engine.nodes.review import _build_chunk_prompt
+
+        state = _make_state()
+        prompt = _build_chunk_prompt(state, "select a from t1", 2, 3, start_line=120)
+        assert "第 120 行" in prompt
+        assert "块内行号" in prompt, "行号口径必须显式声明，否则模型仍按整脚本坐标猜"
+
+    def test_split_blocks_with_offsets(self):
+        """分块附带起始行号（1 基），供 prompt 头标注全局坐标。"""
+        from src.aqueduct.engine.nodes.review import _split_sql_blocks_with_offsets
+
+        sql = "-- header\nselect a from t1;\nselect b\nfrom t2;"
+        blocks = _split_sql_blocks_with_offsets(sql)
+        assert [b for b, _ in blocks] == ["-- header\nselect a from t1", "select b\nfrom t2"]
+        assert [line for _, line in blocks] == [1, 3]
+
+    def test_parallel_review_prompts_are_block_scoped(self):
+        """接线：并行审查的每块 prompt 带分号补全 + 全局起始行标注。"""
+        state = _make_state()
+        # 块 1（59 行，末行 select a from t1;）接块 2（60 行起）
+        stmt1 = "\n".join(f"-- 注释行 {i}" for i in range(58)) + "\nselect a from t1"
+        stmt2 = "\n".join(f"-- 尾块注释 {i}" for i in range(58)) + "\nselect b from t2;"
+        state["sql_content"] = stmt1 + ";\n" + stmt2
+        prompts: list[str] = []
+
+        def fake_call_llm(st, task_type, prompt):
+            prompts.append(prompt)
+            return "审查结果"
+
+        with (
+            patch("src.aqueduct.engine.nodes.review.call_llm", side_effect=fake_call_llm),
+            patch("src.aqueduct.engine.nodes.review.save_artifact", return_value="output/x.md"),
+            patch("src.aqueduct.engine.nodes.review.start_dqc_speculative"),
+            patch("src.aqueduct.engine.nodes.review.start_knowledge_speculative"),
+            # 本机有真实登录态时长 SQL 会触发真实平台试跑——钉死离线
+            patch("src.aqueduct.platform.get_platform_adapter") as mock_adapter,
+        ):
+            mock_adapter.return_value.has_capability.return_value = False
+            node_review(state)
+
+        assert len(prompts) == 2
+        assert "select a from t1\n;" in prompts[0], "块 1 末尾补分号"
+        assert "对应完整脚本第 1 行" in prompts[0], "块 1 起始行=1"
+        assert "对应完整脚本第 60 行" in prompts[1], "块 2 起始行=语句行(含分号)+1"

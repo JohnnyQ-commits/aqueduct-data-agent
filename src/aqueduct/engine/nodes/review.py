@@ -172,24 +172,84 @@ def _split_sql_into_blocks(sql: str) -> list[str]:
     return blocks if blocks else [sql]
 
 
+def _split_sql_blocks_with_offsets(sql: str) -> list[tuple[str, int]]:
+    """同 _split_sql_into_blocks，但附带每块在完整脚本中的起始行号（1 基）。
+
+    刀①（run 5 复盘）：分块审查的 prompt 头需要标注本块对应完整脚本的
+    行区间——LLM 审查发现（块内视角）才能与 linter/试跑（整脚本坐标）
+    的行号互查，修复循环按行号定位不再错位。
+    """
+    result: list[tuple[str, int]] = []
+    pos = 0
+    for block in _split_sql_into_blocks(sql):
+        start = sql.find(block, pos)
+        if start < 0:  # 理论不可达（块是原文子串），兜底沿用上次位置
+            start = pos
+        result.append((block, sql.count("\n", 0, start) + 1))
+        pos = start + len(block)
+    return result
+
+
+def _block_validation_result(sql_block: str) -> dict:
+    """对单个语句块现场重算规范校验（块内行号）。
+
+    刀①（run 5 复盘）：分块审查曾把整脚本的 validation_result 塞进每块
+    prompt——审查原话「校验器疑似对整个脚本而非本块执行了校验，行号完全
+    无法对应」。块级重算让校验行号与块内 SQL 一一对应。
+    """
+    from ...tools.validator import Validator
+
+    try:
+        report = Validator("", content=sql_block).run()
+    except Exception:
+        logger.warning("块级规范校验异常，回退空校验结果", exc_info=True)
+        return {"filename": "<block>", "error_count": 0, "warn_count": 0, "issues": []}
+    return {
+        "filename": "<block>",
+        "error_count": report.get("error_count", 0),
+        "warn_count": report.get("warn_count", 0),
+        "issues": report.get("issues", []),
+    }
+
+
 def _build_chunk_prompt(
-    state: WorkflowState, sql_block: str, chunk_index: int, total_chunks: int
+    state: WorkflowState,
+    sql_block: str,
+    chunk_index: int,
+    total_chunks: int,
+    start_line: int | None = None,
 ) -> str:
-    """为单个 SQL 块构建审查 prompt（复用 code_review 模板）。"""
+    """为单个 SQL 块构建审查 prompt（复用 code_review 模板）。
+
+    刀①切分伪影治理（total_chunks > 1 时生效）：
+    - 拆分消费掉的结尾分号补回（独占一行，防落在行尾注释内）——块无分号
+      曾被判「语句不完整」（run 5 审查原话，假阳性 Critical）
+    - validation_result 按块重算，整脚本校验发现不再进块 prompt
+    - 头部标注本块对应完整脚本的起始行 + 行号口径声明
+    """
     skill = get_skill("code_review")
+    validation_result = state.get("validation_result", {})
+    if total_chunks > 1:
+        sql_block = sql_block if sql_block.rstrip().endswith(";") else sql_block.rstrip() + "\n;"
+        validation_result = _block_validation_result(sql_block)
     context = SkillContext(
         input={
             "requirement_desc": state.get("requirement_summary", ""),
             "sql_content": sql_block,
             "domain_context": state.get("domain_context", ""),
-            "validation_result": state.get("validation_result", {}),
+            "validation_result": validation_result,
             "design_scheme": state.get("design_scheme", ""),
             "ddl_content": state.get("ddl_content", ""),
         },
         state=state,
     )
     result = skill.execute(context)
-    header = f"[审查第 {chunk_index}/{total_chunks} 个 SQL 语句块]\n\n" if total_chunks > 1 else ""
+    header = ""
+    if total_chunks > 1:
+        header = f"[审查第 {chunk_index}/{total_chunks} 个 SQL 语句块"
+        if start_line is not None:
+            header += f"，对应完整脚本第 {start_line} 行起；校验结果行号为块内行号"
+        header += "]\n\n"
     return header + result.data.get("prompt", "")
 
 
@@ -472,8 +532,8 @@ def node_review(state: WorkflowState) -> WorkflowState:
 
 def _parallel_review(state: WorkflowState, sql_content: str, req_name: str) -> str:
     """将 SQL 分块后并行审查，合并结果。"""
-    blocks = _split_sql_into_blocks(sql_content)
-    total = len(blocks)
+    blocks_with_offsets = _split_sql_blocks_with_offsets(sql_content)
+    total = len(blocks_with_offsets)
     logger.info(
         "[task=%s] SQL 分块并行审查: %d 个语句块, 总行数=%d",
         req_name,
@@ -481,10 +541,10 @@ def _parallel_review(state: WorkflowState, sql_content: str, req_name: str) -> s
         sql_content.count("\n") + 1,
     )
 
-    # 为每个块构建 prompt
+    # 为每个块构建 prompt（块附带完整脚本起始行——刀① 行号对齐）
     prompts: list[tuple[int, str]] = []
-    for idx, block in enumerate(blocks, 1):
-        prompt = _build_chunk_prompt(state, block, idx, total)
+    for idx, (block, start_line) in enumerate(blocks_with_offsets, 1):
+        prompt = _build_chunk_prompt(state, block, idx, total, start_line=start_line)
         prompts.append((idx, prompt))
 
     # 并行执行 LLM 审查
