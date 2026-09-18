@@ -91,15 +91,47 @@ class RunHealth:
         return "·".join(parts) if parts else "净"
 
 
-def extract_run_health(output_dir: Path | str) -> RunHealth:
+def snapshot_log_offsets(output_dir: Path | str) -> dict[str, int]:
+    """快照产物目录既有 task 日志的字节数（刀③：health 只计本次 run 的增量）。
+
+    run 5 实录：health 扫目录所有 task.*.log，历史 run 的旧账计入本次
+    记分卡（"重试75"为前几次 run 累积）。评估编排先快照、跑完按偏移
+    只读追加部分——跨 run 累积根除。快照后新出现的文件（跨天新日志）
+    不在快照里，按 0 偏移全额读取。
+    """
+    return {log.name: log.stat().st_size for log in sorted(Path(output_dir).glob("task.*.log"))}
+
+
+def _read_log_lines(log: Path, start: int) -> list[str]:
+    """按起始字节读取日志行，编码自适应（utf-8 优先，GBK 回退）。
+
+    Windows task log 实际 GBK 编码——utf-8 errors=replace 解码会把中文
+    打成乱码，"LLM CLI 调用超时" 等中文指纹静默匹配不上（run 5 计数
+    偏低实测）。切片按字节偏移对齐 utf-8/GBK 均为多字节整字符边界
+    （快照点是行尾，不会切在多字节中间）。
+    """
+    raw = log.read_bytes()[start:]
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("gbk", errors="replace")
+    return text.splitlines()
+
+
+def extract_run_health(
+    output_dir: Path | str, log_offsets: dict[str, int] | None = None
+) -> RunHealth:
     """从产物目录的 task.*.log 提取健康度计数。
 
     模式取自首跑真实日志（llm/claude.py、contract.py、dqc.py 的落日志点）；
     MCP「表不存在」不计——demo 虚构表属数据集特性，非运行异常。
+    传 log_offsets（snapshot_log_offsets 的快照）时只计快照之后追加的
+    内容——评估与历史 run 共用产物目录时旧账不再累积。
     """
     health = RunHealth()
     for log in sorted(Path(output_dir).glob("task.*.log")):
-        for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
+        start = (log_offsets or {}).get(log.name, 0)
+        for line in _read_log_lines(log, start):
             if "LLM CLI 调用超时" in line:
                 health.llm_timeouts += 1
             elif "重试" in line and "aqueduct.llm" in line:
@@ -160,7 +192,9 @@ def load_manifest(path: Path | str) -> list[EvalCase]:
     return [EvalCase(**case) for case in data["cases"]]
 
 
-def score_case(case: EvalCase, output_dir: Path | str, state: dict) -> CaseScore:
+def score_case(
+    case: EvalCase, output_dir: Path | str, state: dict, log_offsets: dict[str, int] | None = None
+) -> CaseScore:
     """对单个用例的产物目录 + 管道终态打分（密封：无 LLM、无平台副作用）。"""
     output_dir = Path(output_dir)
     errors = list(state.get("errors") or [])
@@ -317,7 +351,7 @@ def score_case(case: EvalCase, output_dir: Path | str, state: dict) -> CaseScore
         checks=checks,
         errors=errors,
         fix_iterations=fix_iterations,
-        health=extract_run_health(output_dir),
+        health=extract_run_health(output_dir, log_offsets=log_offsets),
         review_critical=review_critical,
         review_warning=review_warning,
         review_confirmations=review_confirmations,
@@ -418,10 +452,12 @@ def run_evals(
     for case in cases:
         output_dir = runs_dir / case.name
         output_dir.mkdir(parents=True, exist_ok=True)
+        # 刀③：跑管道前快照既有 task 日志——health 只计本次 run 增量
+        log_offsets = snapshot_log_offsets(output_dir)
         state = (
             _default_pipeline(case, manifest_dir, output_dir)
             if pipeline is None
             else pipeline(case, output_dir)
         )
-        scores.append(score_case(case, output_dir, state))
+        scores.append(score_case(case, output_dir, state, log_offsets=log_offsets))
     return scores

@@ -605,6 +605,118 @@ class TestExtractRunHealth:
         assert "净" in md
 
 
+class TestHealthRunScoping:
+    """刀③ 记分卡修尺子（run 5 复盘，2026-09-18）。
+
+    run 5 实录：health 计数扫产物目录**所有** task.*.log，runs 3/4 的
+    历史旧账计入本次（"重试75"）；task log 实际 GBK 编码，utf-8
+    errors=replace 解码后中文模式匹配不上（静默漏计）。
+    契约：
+    - run_evals 在跑管道前快照既有日志字节数，health 只计快照之后
+      追加的内容（跨 run 累积根除）
+    - 快照后新出现的日志文件全额计入
+    - 编码自适应：utf-8 优先，GBK 回退
+    """
+
+    def test_health_only_counts_content_after_snapshot(self, tmp_path: Path) -> None:
+        from src.aqueduct.evals import extract_run_health, snapshot_log_offsets
+
+        out = tmp_path / "runs" / "demo_case"
+        _write_log(out, POLLUTED_LOG_LINES)  # 旧 run 的历史污染
+        offsets = snapshot_log_offsets(out)
+        # 本次 run 追加的干净内容
+        log = out / "task.2026-09-07.log"
+        with log.open("a", encoding="utf-8") as f:
+            f.write("\n".join(CLEAN_LOG_LINES) + "\n")
+
+        health = extract_run_health(out, log_offsets=offsets)
+
+        assert health.llm_timeouts == 0, "历史旧账不得计入本次 run"
+        assert health.llm_retries == 0
+        assert health.platform_errors == 0
+        assert health.degradations == 0
+
+    def test_health_counts_appended_pollution(self, tmp_path: Path) -> None:
+        """快照后追加污染内容 → 计入（而非一刀切全忽略）。"""
+        from src.aqueduct.evals import extract_run_health, snapshot_log_offsets
+
+        out = tmp_path / "runs" / "demo_case"
+        _write_log(out, CLEAN_LOG_LINES)
+        offsets = snapshot_log_offsets(out)
+        log = out / "task.2026-09-07.log"
+        with log.open("a", encoding="utf-8") as f:
+            f.write("\n".join(POLLUTED_LOG_LINES) + "\n")
+
+        health = extract_run_health(out, log_offsets=offsets)
+
+        assert health.llm_timeouts == 1
+        assert health.llm_retries == 1
+
+    def test_health_new_log_file_after_snapshot_fully_counted(self, tmp_path: Path) -> None:
+        """快照后新出现的日志文件（跨天新 task log）→ 从头计入。"""
+        from src.aqueduct.evals import extract_run_health, snapshot_log_offsets
+
+        out = tmp_path / "runs" / "demo_case"
+        _write_log(out, POLLUTED_LOG_LINES)
+        offsets = snapshot_log_offsets(out)
+        assert offsets["task.2026-09-07.log"] > 0
+        _write(out / "task.2026-09-18.log", "\n".join(CLEAN_LOG_LINES) + "\n")
+
+        health = extract_run_health(out, log_offsets=offsets)
+
+        assert health.llm_timeouts == 0, "旧文件按偏移跳过"
+        # 新文件无快照记录 → offset 默认 0 全读（本行内容干净，计数 0 不炸即可）
+
+    def test_health_reads_gbk_log(self, tmp_path: Path) -> None:
+        """GBK 编码日志（Windows task log 实际编码）→ 中文指纹能匹配。"""
+        from src.aqueduct.evals import extract_run_health
+
+        out = tmp_path / "runs" / "demo_case"
+        out.mkdir(parents=True)
+        (out / "task.2026-09-18.log").write_bytes(
+            ("\n".join(POLLUTED_LOG_LINES) + "\n").encode("gbk")
+        )
+
+        health = extract_run_health(out)
+
+        assert health.llm_timeouts == 1, "GBK 解码回退后「LLM CLI 调用超时」应命中"
+        assert health.degradations == 2
+
+    def test_run_evals_scopes_health_to_current_run(self, tmp_path: Path) -> None:
+        """编排接线：run_evals 快照 → 假管道追加历史污染之外的日志 → 只计本次。"""
+        manifest_path = self._write_manifest_single(tmp_path)
+        out = tmp_path / "runs" / "case_pass"
+        out.mkdir(parents=True)
+        _write_log(out, POLLUTED_LOG_LINES)  # 上一次 run 的旧账
+
+        def pipeline_with_pollution(case: EvalCase, output_dir: Path) -> dict:
+            _write_good_artifacts(output_dir)
+            log = output_dir / "task.2026-09-07.log"
+            with log.open("a", encoding="utf-8") as f:
+                f.write("\n".join(CLEAN_LOG_LINES) + "\n")
+            return {"errors": [], "fix_iterations": 0, "sql_content": GOOD_SQL}
+
+        scores = run_evals(manifest_path, tmp_path / "runs", pipeline=pipeline_with_pollution)
+
+        assert scores[0].health.llm_timeouts == 0, "旧 run 污染不得计入本次记分卡"
+
+    def _write_manifest_single(self, root: Path) -> Path:
+        manifest = {
+            "cases": [
+                {
+                    "name": "case_pass",
+                    "requirement": "cases/pass.md",
+                    "required_artifacts": REQUIRED_ARTIFACTS,
+                    "required_keywords": {"Phase3-表结构.sql": ["order_count", "inc_day"]},
+                    "min_dqc_cases": 10,
+                }
+            ]
+        }
+        path = root / "manifest.json"
+        path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+        return path
+
+
 # ----------------------------------------------------------------- run_evals --
 
 
