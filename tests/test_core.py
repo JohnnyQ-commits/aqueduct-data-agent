@@ -297,6 +297,129 @@ class TestRunFixLoop:
         assert result["_needs_fix_loop"] is False
         assert any("修复循环" in err for err in result["errors"])
 
+
+class TestFixFeedbackHardening:
+    """刀② 修复反馈保真度（run 5 复盘，2026-09-18）。
+
+    run 5 实录：修复环 2 轮从 7 → 10 个 Critical（越修越多振荡），
+    `hour_slot  0`（缺比较运算符）字面语法错误存活 2 轮修复。
+    契约：
+    - 修复 prompt 问题条目携带维度归属（确定性条目带 [规范]/[试跑] 原文）
+    - 修复输出本地 re-lint：ERROR 数回退（越修越多）→ 拒绝本次修复保留原 SQL
+      （与无效输出同路径：清回环标志，防 fix_iterations 不增的死循环）
+    - 有净改善（含部分修复）→ 接受，交回审查复检
+    """
+
+    _SQL_1_ERROR = "select * from dwd.dwd_order_detail_di where inc_day = '20260101';"
+    _SQL_2_ERRORS = (
+        "select * from dwd.dwd_order_detail_di where inc_day = '20260101';\n"
+        "select total / cnt as ratio from dwd.dwd_order_detail_di where inc_day = '20260101';"
+    )
+
+    @staticmethod
+    def _make_state(sql: str, issues: list[dict]) -> dict:
+        return {
+            "requirement": "test",
+            "mode": "dev",
+            "metadata": {"requirement_name": "test_req"},
+            "errors": [],
+            "artifacts": [],
+            "sql_content": sql,
+            "_review_issues": issues,
+            "_needs_fix_loop": True,
+            "fix_iterations": 0,
+        }
+
+    @patch(
+        "src.aqueduct.engine.nodes.helpers.save_artifact", side_effect=lambda s, n, c: f"output/{n}"
+    )
+    @patch("src.aqueduct.engine.nodes.helpers.is_valid_sql", return_value=True)
+    @patch("src.aqueduct.engine.nodes.helpers.extract_sql_block", side_effect=lambda x: x)
+    @patch("src.aqueduct.engine.nodes.helpers.call_llm")
+    def test_issue_lines_carry_dimension(self, mock_llm, _mock_extract, _mock_valid, _mock_save):
+        """修复 prompt 的问题条目带维度归属（定位上下文，反馈保真）。"""
+        captured: list[str] = []
+        mock_llm.side_effect = lambda st, t, p: captured.append(p) or "select 1"
+
+        state = self._make_state(
+            self._SQL_1_ERROR,
+            [
+                {
+                    "severity": "Critical",
+                    "message": "除法未判零 (line 42)",
+                    "dimension": "逻辑正确性",
+                }
+            ],
+        )
+        with patch("src.aqueduct.config.settings.get_settings") as mock_settings:
+            mock_settings.return_value.max_fix_iterations = 2
+            _run_fix_loop(state)
+
+        assert captured, "修复 prompt 已发送"
+        assert "[Critical][逻辑正确性] 除法未判零 (line 42)" in captured[0]
+
+    @patch(
+        "src.aqueduct.engine.nodes.helpers.save_artifact", side_effect=lambda s, n, c: f"output/{n}"
+    )
+    @patch("src.aqueduct.engine.nodes.helpers.is_valid_sql", return_value=True)
+    @patch("src.aqueduct.engine.nodes.helpers.extract_sql_block", side_effect=lambda x: x)
+    @patch("src.aqueduct.engine.nodes.helpers.call_llm")
+    def test_reject_fix_when_lint_regresses(self, mock_llm, _mock_extract, _mock_valid, _mock_save):
+        """re-lint ERROR 数回退（1→2）→ 拒绝修复保留原 SQL，不清算迭代（防振荡）。"""
+        mock_llm.side_effect = lambda st, t, p: self._SQL_2_ERRORS  # 比 before 多 1 ERROR
+
+        state = self._make_state(
+            self._SQL_1_ERROR,
+            [{"severity": "Critical", "message": "SELECT * 违规 (line 1)", "dimension": "规范"}],
+        )
+        with patch("src.aqueduct.config.settings.get_settings") as mock_settings:
+            mock_settings.return_value.max_fix_iterations = 2
+            result = _run_fix_loop(state)
+
+        assert result["sql_content"] == self._SQL_1_ERROR, "回退修复被拒绝，保留原 SQL"
+        assert result["_needs_fix_loop"] is False, "拒绝即终止回环（迭代不增，清标志防死循环）"
+        assert result["fix_iterations"] == 0
+
+    @patch(
+        "src.aqueduct.engine.nodes.helpers.save_artifact", side_effect=lambda s, n, c: f"output/{n}"
+    )
+    @patch("src.aqueduct.engine.nodes.helpers.is_valid_sql", return_value=True)
+    @patch("src.aqueduct.engine.nodes.helpers.extract_sql_block", side_effect=lambda x: x)
+    @patch("src.aqueduct.engine.nodes.helpers.call_llm")
+    def test_accept_fix_with_partial_progress(
+        self, mock_llm, _mock_extract, _mock_valid, _mock_save
+    ):
+        """ERROR 数净改善（2→1，部分修复）→ 接受，交回审查复检。"""
+        fixed = (
+            "select order_id, total / nullif(cnt, 0) as ratio from dwd.dwd_order_detail_di "
+            "where inc_day = '20260101';\n"
+            "select * from dwd.dwd_order_detail_di where inc_day = '20260101';"
+        )
+        mock_llm.side_effect = lambda st, t, p: fixed
+
+        state = self._make_state(
+            self._SQL_2_ERRORS,
+            [
+                {"severity": "Critical", "message": "SELECT * 违规 (line 1)", "dimension": "规范"},
+                {"severity": "Critical", "message": "除法未判零 (line 2)", "dimension": "规范"},
+            ],
+        )
+        with patch("src.aqueduct.config.settings.get_settings") as mock_settings:
+            mock_settings.return_value.max_fix_iterations = 2
+            result = _run_fix_loop(state)
+
+        assert result["sql_content"] == fixed, "部分修复被接受"
+        assert result["fix_iterations"] == 1
+
+    def test_tpl_has_deterministic_feedback_contract(self):
+        """sql_fix 模板含确定性校验反馈契约（按行号定位 + 语法完整性自检）。"""
+        from src.aqueduct.config.settings import get_settings
+
+        tpl = (get_settings().prompt_dir / "sql_fix.tpl.md").read_text(encoding="utf-8")
+        assert "确定性校验反馈" in tpl
+        assert "按行号" in tpl, "确定性条目必须按行号定位修复"
+        assert "语法" in tpl, "必须自检修复行的语法完整性（run 5: 缺比较运算符存活 2 轮）"
+
     @patch("src.aqueduct.core._run_fix_loop")
     def test_pipeline_no_infinite_fix_loop(self, mock_fix):
         """回归测试: 审查反复发现 Critical 时，达到 max_fix_iterations 后应继续后续阶段。"""
@@ -333,8 +456,15 @@ class TestRunFixLoop:
             ("dqc", MagicMock(side_effect=lambda s: s)),
         ]
 
-        with patch("src.aqueduct.config.settings.get_settings") as mock_settings:
+        # 平台能力隔离：本测试 mock 了 get_settings，adapter 单例若未缓存
+        # （单文件跑/全量跑顺序差）loader 会读到 mocked platform → ConfigError。
+        # 历史绿跑靠全量套件里先前用例缓存单例侥幸通过（顺序依赖）。
+        with (
+            patch("src.aqueduct.config.settings.get_settings") as mock_settings,
+            patch("src.aqueduct.platform.get_platform_adapter") as mock_adapter,
+        ):
             mock_settings.return_value.max_fix_iterations = 2
+            mock_adapter.return_value.has_capability.return_value = False
             _run_pipeline(state, phases)
 
         # SQL 节点不应被无限调用（最多 3 次：初始 + 2 次修复回环）

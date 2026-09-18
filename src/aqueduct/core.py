@@ -129,12 +129,17 @@ def _run_fix_loop(state: WorkflowState) -> WorkflowState:
         state["_needs_fix_loop"] = False
         return state
 
-    # 格式化审查问题
+    # 格式化审查问题（刀②：条目携带维度归属——确定性条目自带 [规范]/[试跑]
+    # 原文前缀不再重复贴维度；LLM 发现补维度给修复模型定位上下文）
     issues_lines = []
     for i, issue in enumerate(issues, 1):
         severity = issue.get("severity", "Unknown")
         message = issue.get("message", "")
-        issues_lines.append(f"{i}. [{severity}] {message}")
+        dimension = issue.get("dimension", "")
+        if dimension and not message.startswith("["):
+            issues_lines.append(f"{i}. [{severity}][{dimension}] {message}")
+        else:
+            issues_lines.append(f"{i}. [{severity}] {message}")
     issues_formatted = "\n".join(issues_lines)
 
     # 组装修复 prompt（与 Phase 4 生成自检共用同一提示词契约）
@@ -169,6 +174,31 @@ def _run_fix_loop(state: WorkflowState) -> WorkflowState:
         )
         state["_needs_fix_loop"] = False
         return state
+
+    # 刀②（run 5 复盘）：本地 re-lint 门禁——修复环曾越修越多
+    # （7→10 个 Critical 振荡实录）。ERROR 数回退 = 本次修复在引入新问题，
+    # 拒绝并保留原 SQL（与无效输出同路径清回环标志：fix_iterations 不增，
+    # 不清会死循环）；有净改善（含部分修复）则接受，交回审查复检。
+    from .engine.nodes.review import _lint_sql_issues
+
+    before_errors = sum(1 for i in _lint_sql_issues(sql_content) if i["severity"] == "Critical")
+    after_errors = sum(1 for i in _lint_sql_issues(fixed_sql) if i["severity"] == "Critical")
+    if after_errors > before_errors:
+        logger.warning(
+            "[task=%s] 修复循环: 本地 re-lint 回退（ERROR %d→%d），拒绝本次修复，保留原 SQL",
+            req_name,
+            before_errors,
+            after_errors,
+        )
+        state["_needs_fix_loop"] = False
+        return state
+    if after_errors:
+        logger.info(
+            "[task=%s] 修复循环: re-lint 仍有 %d 项 ERROR（原 %d 项，净改善），交回审查复检",
+            req_name,
+            after_errors,
+            before_errors,
+        )
 
     # 保存修复后的 SQL
     fix_iterations = state.get("fix_iterations", 0)
