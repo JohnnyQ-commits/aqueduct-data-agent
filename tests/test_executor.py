@@ -15,14 +15,21 @@ from src.aqueduct.tools.registry import get_tool, is_tool_registered
 
 @pytest.fixture(autouse=True)
 def _isolate_dp_credentials(tmp_path, monkeypatch):
-    """钉死「无凭证」前提：os.environ 无 DP_*，project_root 指向无 .env 的 tmp。
+    """钉死「无凭证」前提：os.environ 无 DP_*，project_root 指向无 .env 的 tmp，
+    HOME 指向无 session.json 的 tmp。
 
     load_dp_env() 会回退项目 .env（2026-09-15 bdp 批）——不隔离的话
-    本机真实 .env（含过期 cookie）会让 without_config 系列发起真实 HTTP。
+    本机真实 .env（含过期 cookie）会让 without_config 系列发起真实 HTTP；
+    2026-09-18 又加第三层 ~/.bdp/session.json——本机有真实登录态时同样
+    击穿「无凭证」前提（三层都得钉死）。
     """
     for key in ("DP_BASE_URL", "DP_COOKIE", "DP_USER_ID"):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.setattr(get_settings(), "project_root", tmp_path)
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HOME", str(home))
 
 
 class TestExecutorRegistration:

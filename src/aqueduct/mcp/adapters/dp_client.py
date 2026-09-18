@@ -6,11 +6,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import secrets
 import string
 import time
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -20,25 +23,78 @@ logger = logging.getLogger(__name__)
 _DP_ENV_KEYS = ("DP_BASE_URL", "DP_COOKIE", "DP_USER_ID")
 
 
-def load_dp_env() -> dict[str, str]:
-    """解析 DP_* 配置：os.environ 优先，缺失键回退项目 .env。
+def _read_bdp_session() -> dict[str, str]:
+    """读取 bdp-cli 登录态文件（~/.bdp/session.json）里的平台凭证。
 
-    CLI 管道模式 .env 不注入 os.environ（只有插件模式由 Claude Code 自动
-    加载）——此前裸终端 ``aqueduct dev`` 门禁放行（Settings 读得到 .env 的
-    execution_enabled）但执行时凭证缺失，两层口径不一致。值不写回
-    os.environ（不污染子进程），仅作本次解析结果返回。
+    第三层凭证源（os.environ / 项目 .env 之后）：bdp-cli login 弹窗登录后
+    落盘的最新凭证，管道零配置可跑（不再依赖 sync_bdp_session.py 的手动
+    同步步骤）。按 currentEnv 选会话（缺省 prod）；文件缺失/损坏/无会话
+    一律静默返回空 dict，由调用方按缺失处理。只读，不写回 os.environ。
+    """
+    session_path = Path.home() / ".bdp" / "session.json"
+    try:
+        data = json.loads(session_path.read_text(encoding="utf-8"))
+        env_name = data.get("currentEnv") or "prod"
+        section = (data.get("sessions") or {}).get(env_name) or {}
+        result: dict[str, str] = {}
+        if (section.get("cookie") or "").strip():
+            result["DP_COOKIE"] = section["cookie"].strip()
+        if str(section.get("userId") or "").strip():
+            result["DP_USER_ID"] = str(section["userId"]).strip()
+        if (section.get("baseUrl") or "").strip():
+            result["DP_BASE_URL"] = section["baseUrl"].strip()
+        result["_saved_at"] = str(section.get("savedAt") or "").strip()
+        result["_file_mtime"] = str(session_path.stat().st_mtime)
+        return result
+    except Exception:
+        return {}
+
+
+def _session_fresher_than_env_file(saved_at: str, file_mtime: str, env_path: Path) -> bool:
+    """session.json 凭证是否比项目 .env 更新（决定 DP_COOKIE/DP_USER_ID 归属）。
+
+    双向防御：session 更新 → 忘同步也用新 cookie；.env 更新（手动从浏览器
+    拷贝新 cookie 的老流程）→ 保留 .env。savedAt 解析失败回退 session 文件
+    mtime；.env 不存在或时间不可知时视为 session 更新。
+    """
+    try:
+        env_mtime = env_path.stat().st_mtime
+    except OSError:
+        return True
+    session_time: float | None
+    try:
+        session_time = datetime.fromisoformat(saved_at.replace("Z", "+00:00")).timestamp()
+    except Exception:
+        try:
+            session_time = float(file_mtime)
+        except (TypeError, ValueError):
+            return True
+    return session_time >= env_mtime
+
+
+def load_dp_env() -> dict[str, str]:
+    """解析 DP_* 配置，三层凭证源按新鲜度归位：os.environ → .env → session.json。
+
+    DP_BASE_URL / DP_COOKIE / DP_USER_ID 依次取 os.environ；缺失回退项目
+    .env（CLI 管道模式 .env 不注入 os.environ，此前裸终端 ``aqueduct dev``
+    门禁放行但执行时凭证缺失，两层口径不一致）；仍缺失或 session.json 更新
+    时回退 bdp-cli 登录态。cookie/userId 的归属规则：os.environ 恒胜；
+    .env 与 session.json 之间按时间新者胜（session = bdp-cli 最后一次登录
+    写入，忘跑 sync 也用新 cookie；手动更新 .env 则保留手动值）；
+    DP_BASE_URL 以显式配置（.env）为准，session 只在完全缺失时补位。
+    值不写回 os.environ（不污染子进程），仅作本次解析结果返回。
     """
     env = {k: os.environ.get(k, "") for k in _DP_ENV_KEYS}
-    missing = [k for k, v in env.items() if not v]
-    if not missing:
-        return env
+    source = {k: ("os" if env[k] else "") for k in _DP_ENV_KEYS}
+
     try:
         from ...config.settings import get_settings
 
         env_path = get_settings().project_root / ".env"
         lines = env_path.read_text(encoding="utf-8").splitlines()
     except Exception:
-        return env
+        env_path = None
+        lines = []
     parsed: dict[str, str] = {}
     for line in lines:
         line = line.strip()
@@ -49,9 +105,25 @@ def load_dp_env() -> dict[str, str]:
         # cookie 值本身含 '='，只按第一个 '=' 切分；同键以首个出现为准
         if key in _DP_ENV_KEYS and key not in parsed:
             parsed[key] = value.strip()
-    for k in missing:
-        if parsed.get(k):
+    for k in _DP_ENV_KEYS:
+        if not env[k] and parsed.get(k):
             env[k] = parsed[k]
+            source[k] = "env_file"
+
+    session = _read_bdp_session()
+    if session:
+        for k in ("DP_COOKIE", "DP_USER_ID"):
+            if not session.get(k):
+                continue
+            if source[k] == "" or (
+                source[k] == "env_file"
+                and _session_fresher_than_env_file(
+                    session["_saved_at"], session["_file_mtime"], env_path
+                )
+            ):
+                env[k] = session[k]
+        if not env["DP_BASE_URL"] and session.get("DP_BASE_URL"):
+            env["DP_BASE_URL"] = session["DP_BASE_URL"]
     return env
 
 
@@ -74,7 +146,8 @@ class DataPlatformAdapter:
         if missing:
             raise RuntimeError(
                 f"数据平台适配器缺少必要环境变量: {', '.join(missing)}。"
-                f"请在 .env 文件或系统环境变量中配置。"
+                f"请在系统环境变量、项目 .env 中配置，或执行 bdp-cli login 完成登录"
+                f"（凭证自动取自 ~/.bdp/session.json）。"
             )
 
         # 安全检查：Cookie 不应通过明文 HTTP 传输
