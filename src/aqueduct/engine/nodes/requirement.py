@@ -425,6 +425,20 @@ def node_requirement(state: WorkflowState) -> WorkflowState:
 
     if analyzer.should_skip_phase1(requirement):
         analyzer.restore_phase1_outputs(state)
+        # 第四刀 4b：增量跳过也要查源表结构——table_schemas 不在 manifest
+        # 缓存字段里，跳过后 Phase 4 渲染"未获取"，按设计方案字段映射写 SQL
+        # 会把转述笔误带上试跑（run 6 sign_time 无效列引用实录）。查询有
+        # 缓存兜底，平台无 table_metadata 能力时快速返回空，不阻塞。
+        state["table_schemas"] = _query_table_schemas(state) or {}
+        # 第四刀 4a-1：restore 只回填 ddl_content 不落 ddl_file——Phase 3 的
+        # OPT-4 判断（ddl_content AND ddl_file）永远失败，白白重跑独立 DDL
+        # 生成（run 6 实录：白烧一次 LLM 调用 48s）。落盘 artifact 补齐断链。
+        if state.get("ddl_content") and not state.get("ddl_file"):
+            state["ddl_file"] = save_artifact(state, "Phase3-表结构.sql", state["ddl_content"])
+            logger.info(
+                "[task=%s, phase=1] 增量跳过: manifest 中的 DDL 落盘 artifact，Phase 3 可直接复用",
+                req_name,
+            )
         logger.info(
             "[task=%s, phase=1] 增量跳过: 需求未变更，从 manifest 恢复输出（耗时 %.1fs）",
             req_name,

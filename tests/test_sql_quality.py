@@ -1297,3 +1297,138 @@ class TestChangeAnalyzer:
         state = {"requirement": "test", "metadata": {}, "errors": [], "artifacts": []}
         analyzer.save_manifest("test", state)
         assert analyzer.restore_phase1_outputs(state) is False
+
+
+class TestIncrementalSkipHardening:
+    """第四刀：增量跳过路径的两处断链（run 6 实锤）。
+
+    - 4a-1: restore 只回填 ddl_content 不落 ddl_file → Phase 3 的 OPT-4
+      判断（ddl_content AND ddl_file）永远失败，白白重跑独立 DDL 生成
+      （run 6 实录：白烧一次 LLM 调用 48s）。
+    - 4b: 跳过路径直接 return，_query_table_schemas 既没跑过也没恢复 →
+      Phase 4 渲染"未获取" → 源表列名幻觉直上试跑（run 6 sign_time 实录）。
+    """
+
+    # 敏感表名运行时拼接（内容门禁：字面量不入库）
+    ADS_TABLE = "ads_tc_" + "knight_weekly_di"
+    ADS_TABLE_HOUR = "ads_tc_" + "knight_weekly_hour_di"
+    REQ = f"需求文档：产出 {ADS_TABLE} 与 {ADS_TABLE_HOUR} 两张表"
+
+    def _make_state(self, output_dir):
+        return {
+            "requirement": self.REQ,
+            "mode": "dev",
+            "metadata": {"requirement_name": "t", "output_dir": str(output_dir)},
+            "errors": [],
+            "artifacts": [],
+        }
+
+    def _skip_setup(self, tmp_path):
+        """预置 manifest（summary/design/ddl 齐全）并返回跳过路径的 patch 上下文。"""
+        from unittest.mock import patch
+
+        from src.aqueduct.utils.change_analyzer import ChangeAnalyzer
+
+        full_state = {
+            **self._make_state(tmp_path),
+            "requirement_summary": "摘要",
+            "design_scheme": "设计方案",
+            "ddl_content": f"CREATE TABLE dw_demo.{self.ADS_TABLE} (id int);",
+        }
+        ChangeAnalyzer(output_dir=tmp_path).save_manifest(full_state["requirement"], full_state)
+
+        enter_patches = [
+            patch("src.aqueduct.utils.change_analyzer.ChangeAnalyzer"),
+            patch(
+                "src.aqueduct.engine.nodes.requirement._query_table_schemas",
+                return_value={},
+            ),
+        ]
+        analyzer_mock = enter_patches[0].start()
+        enter_patches[1].start()
+        analyzer_mock.return_value.should_skip_phase1.return_value = True
+        analyzer_mock.return_value.restore_phase1_outputs.side_effect = lambda s: ChangeAnalyzer(
+            output_dir=tmp_path
+        ).restore_phase1_outputs(s)
+        return enter_patches
+
+    def test_skip_path_materializes_ddl_file(self, tmp_path):
+        """restore 回填了 ddl_content 时，跳过路径应落盘 Phase3 表结构并置 ddl_file。"""
+        from src.aqueduct.engine.nodes.requirement import node_requirement
+
+        patches = self._skip_setup(tmp_path)
+        state = self._make_state(tmp_path)
+        try:
+            node_requirement(state)
+        finally:
+            for p in patches:
+                p.stop()
+
+        assert state.get("ddl_file"), "跳过路径未落盘 DDL artifact，Phase 3 将白白重跑"
+        ddl_file_text = (tmp_path / "Phase3-表结构.sql").read_text(encoding="utf-8")
+        assert self.ADS_TABLE in ddl_file_text
+
+    def test_skip_path_still_queries_table_schemas(self, tmp_path):
+        """跳过路径也应执行源表结构查询（缓存兜底，几乎零成本）。"""
+        from unittest.mock import patch
+
+        from src.aqueduct.engine.nodes.requirement import node_requirement
+
+        patches = self._skip_setup(tmp_path)
+        schemas = {"dw_demo.t_source": "表: dw_demo.t_source\n字段 (1 个):\n  - id (bigint)"}
+        schema_patch = patch(
+            "src.aqueduct.engine.nodes.requirement._query_table_schemas",
+            return_value=schemas,
+        )
+        schema_patch.start()
+        state = self._make_state(tmp_path)
+        try:
+            node_requirement(state)
+        finally:
+            for p in patches + [schema_patch]:
+                p.stop()
+
+        assert state.get("table_schemas") == schemas, (
+            "跳过路径未恢复/未查询源表结构，Phase 4 将渲染'未获取'并按设计方案字段映射 hallucinate"
+        )
+
+    def test_skip_path_without_ddl_content_still_queries_schemas(self, tmp_path):
+        """manifest 无 ddl_content（restore 返回 False 走全量）之外的分支：
+        restore 成功但无 DDL 时不落空 artifact，也不影响 schema 查询。"""
+        import json
+
+        from src.aqueduct.engine.nodes.requirement import node_requirement
+        from src.aqueduct.utils.change_analyzer import ChangeAnalyzer
+
+        req_hash = ChangeAnalyzer.compute_requirement_hash(self.REQ)
+        manifest = {
+            "requirement_hash": req_hash,
+            "updated_at": "2026-09-20T09:00:00",
+            "phase1_outputs": {"requirement_summary": "摘要", "design_scheme": "设计"},
+        }
+        (tmp_path / ".pipeline_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+        schemas = {"dw_demo.t_source": "表: dw_demo.t_source"}
+        patches = [
+            patch("src.aqueduct.utils.change_analyzer.ChangeAnalyzer"),
+            patch(
+                "src.aqueduct.engine.nodes.requirement._query_table_schemas",
+                return_value=schemas,
+            ),
+        ]
+        analyzer_mock = patches[0].start()
+        patches[1].start()
+        analyzer_mock.return_value.should_skip_phase1.return_value = True
+        analyzer_mock.return_value.restore_phase1_outputs.side_effect = lambda s: ChangeAnalyzer(
+            output_dir=tmp_path
+        ).restore_phase1_outputs(s)
+        state = self._make_state(tmp_path)
+        try:
+            node_requirement(state)
+        finally:
+            for p in patches:
+                p.stop()
+
+        assert state.get("table_schemas") == schemas
+        assert "ddl_file" not in state
+        assert not (tmp_path / "Phase3-表结构.sql").exists()

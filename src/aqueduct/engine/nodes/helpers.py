@@ -45,7 +45,11 @@ def save_artifact(state: WorkflowState, filename: str, content: str) -> str:
     out_dir.mkdir(parents=True, exist_ok=True)
     filepath = out_dir / filename
     filepath.write_text(content, encoding="utf-8")
-    rel = str(filepath.relative_to(_PROJECT_ROOT))
+    try:
+        rel = str(filepath.relative_to(_PROJECT_ROOT))
+    except ValueError:
+        # 产出目录在项目根之外（如 evals/runs 绝对路径）——退化为绝对路径
+        rel = str(filepath)
     state.setdefault("artifacts", []).append(rel)
     return rel
 

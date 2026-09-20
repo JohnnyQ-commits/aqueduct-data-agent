@@ -420,6 +420,24 @@ class TestFixFeedbackHardening:
         assert "按行号" in tpl, "确定性条目必须按行号定位修复"
         assert "语法" in tpl, "必须自检修复行的语法完整性（run 5: 缺比较运算符存活 2 轮）"
 
+    def test_design_ddl_tpl_has_scope_constraint(self):
+        """design_ddl 模板（Phase 1 B 直出/Phase 2 合并）含产出范围硬约束。"""
+        from src.aqueduct.config.settings import get_settings
+
+        tpl = (get_settings().prompt_dir / "design_ddl.tpl.md").read_text(encoding="utf-8")
+        assert "产出表" in tpl, "必须要求 DDL 覆盖需求/设计方案的产出表清单"
+        assert "逐表" in tpl, "必须逐表建齐，不允许汇总式带过"
+        assert "禁止只建" in tpl, "必须显式禁止只建 TMP 中间层（run 6: 两张 ADS 表全缺）"
+
+    def test_ddl_generate_tpl_has_scope_constraint(self):
+        """ddl_generate 模板（Phase 3 回退）含产出范围硬约束。"""
+        from src.aqueduct.config.settings import get_settings
+
+        tpl = (get_settings().prompt_dir / "ddl_generate.tpl.md").read_text(encoding="utf-8")
+        assert "产出表" in tpl, "必须要求 DDL 覆盖需求/设计方案的产出表清单"
+        assert "逐表" in tpl, "必须逐表建齐，不允许汇总式带过"
+        assert "禁止只建" in tpl, "必须显式禁止只建 TMP 中间层（run 6: 两张 ADS 表全缺）"
+
     @patch("src.aqueduct.core._run_fix_loop")
     def test_pipeline_no_infinite_fix_loop(self, mock_fix):
         """回归测试: 审查反复发现 Critical 时，达到 max_fix_iterations 后应继续后续阶段。"""
