@@ -378,9 +378,10 @@ class MCPClient:
         name_path = mapping.get("column_name_path", "name")
         type_path = mapping.get("column_type_path", "type")
         comment_path = mapping.get("column_comment_path", "comment")
+        comment_fallback_path = mapping.get("column_comment_fallback_path", "")
         partition_path = mapping.get("column_is_partition_path", "is_partition")
 
-        # 提取 MCP 工具返回内容（兼容 content 包装和直接返回）
+        # 提取 MCP 工具返回内容（兼容 content 包装和直接返回；错误文本抛异常）
         raw_data = self._unwrap_mcp_content(result)
 
         # 提取字段列表
@@ -390,17 +391,22 @@ class MCPClient:
 
         columns = []
         for col in raw_columns:
+            comment = str(self._extract_by_path(col, comment_path, ""))
+            if not comment and comment_fallback_path:
+                # 中文注释回退：comment 为空时取备用列（如 columnNameCN）
+                comment = str(self._extract_by_path(col, comment_fallback_path, ""))
             columns.append(
                 ColumnInfo(
                     name=str(self._extract_by_path(col, name_path, "")),
                     type=str(self._extract_by_path(col, type_path, "string")),
-                    comment=str(self._extract_by_path(col, comment_path, "")),
+                    comment=comment,
                     is_partition=bool(self._extract_by_path(col, partition_path, False)),
                 )
             )
 
-        # 提取表级信息
-        comment = str(self._extract_by_path(raw_data, "comment", ""))
+        # 提取表级信息（comment 路径可配置，适配 data.comment 等嵌套结构）
+        table_comment_path = mapping.get("table_comment_path", "comment")
+        comment = str(self._extract_by_path(raw_data, table_comment_path, ""))
         partition_columns_raw = self._extract_by_path(raw_data, "partition_columns", [])
         partition_columns = partition_columns_raw if isinstance(partition_columns_raw, list) else []
 
@@ -420,12 +426,18 @@ class MCPClient:
         1. {"content": [{"type": "text", "text": "{json}"}]}  — 标准 MCP 格式
         2. 直接返回数据字典
 
+        错误硬化：isError 标记或 "MCP error ..." 错误文本一律抛 RuntimeError
+        ——静默返回原 dict 会让上层解析出"成功 0 字段"的空结构冒充权威
+        源表结构（run 7 实录：13 张表全部 0 字段还报成功）。
+
         Args:
             result: MCP 工具原始返回。
 
         Returns:
             解包后的数据字典。
         """
+        if result.get("isError"):
+            raise RuntimeError(f"MCP 工具返回错误: {str(result.get('content'))[:200]}")
         content = result.get("content")
         if isinstance(content, list) and len(content) > 0:
             first = content[0]
@@ -434,6 +446,9 @@ class MCPClient:
                 try:
                     return json.loads(text)
                 except json.JSONDecodeError:
+                    if text.startswith("MCP error"):
+                        # JSON-RPC 错误被 Server 包成工具结果文本——抛出而非静默
+                        raise RuntimeError(f"MCP 工具调用失败: {text[:200]}") from None
                     logger.warning("MCP content text 不是有效 JSON: %s", text[:200])
                     return result
         return result
