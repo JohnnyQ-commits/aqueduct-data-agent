@@ -432,6 +432,66 @@ class TestScoreCase:
         assert check.status == "skip"
         assert score.passed  # skip 不拖垮整体
 
+    def test_trial_confirm_timeout_is_pass_with_annotation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """第六刀 6b 收尾：试跑超时 Confirm 标注不是 fail——run 9 实录。
+
+        evals 此前 `if issues: fail` 把 6b 的 Confirm 慢查询标注也判 fail
+        （run 9 记分卡"真实试跑"项因此误报）。只有 Critical 才 fail；
+        Confirm-only = 试跑无硬失败、超时已标注 → pass 带标注明细。
+        """
+        out = tmp_path / "runs" / "demo_case"
+        _write_good_artifacts(out)
+        monkeypatch.setattr("src.aqueduct.evals._trial_enabled", lambda: True)
+
+        def _confirm_only(state: dict) -> list:
+            state["trial_run_result"] = {
+                "total": 2,
+                "tested": 2,
+                "passed": 2,
+                "errors": [],
+                "timeouts": ["SELECT #1: 任务超时 (5 min)"],
+            }
+            return [
+                {
+                    "severity": "Confirm",
+                    "message": "[试跑] SELECT #1: 任务超时 (5 min)（超时改判）",
+                    "dimension": "试跑",
+                }
+            ]
+
+        monkeypatch.setattr("src.aqueduct.evals._trial_run_issues", _confirm_only)
+
+        score = score_case(_make_case(), out, _good_state())
+
+        check = _check(score, "真实试跑")
+        assert check.status == "pass", "超时 Confirm 标注不是 SQL 缺陷，不得 fail"
+        assert "超时" in check.detail, "明细应带慢查询标注"
+
+    def test_trial_critical_still_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """硬失败（Critical）仍判 fail——6b 只降级超时，不放过真缺陷。"""
+        out = tmp_path / "runs" / "demo_case"
+        _write_good_artifacts(out)
+        monkeypatch.setattr("src.aqueduct.evals._trial_enabled", lambda: True)
+        monkeypatch.setattr(
+            "src.aqueduct.evals._trial_run_issues",
+            lambda state: [
+                {
+                    "severity": "Critical",
+                    "message": "[试跑] SELECT #1: 列 `dept_code` 不存在",
+                    "dimension": "试跑",
+                }
+            ],
+        )
+
+        score = score_case(_make_case(), out, _good_state())
+
+        check = _check(score, "真实试跑")
+        assert check.status == "fail"
+
     def test_trial_pass_only_when_actually_ran(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

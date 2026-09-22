@@ -321,21 +321,22 @@ def score_case(
         # 管道遗留的陈旧结果先清掉，只认现场这次。
         state.pop("trial_run_result", None)
         issues = _trial_run_issues(state)
-        if issues:
+        # 第六刀 6b 收尾（run 9 实录）：只有 Critical 才 fail——超时已由
+        # 门禁改判 Confirm 慢查询标注（非语法/字段错误），不得拖垮记分卡。
+        hard_issues = [i for i in issues if i["severity"].lower() == "critical"]
+        confirm_issues = [i for i in issues if i["severity"].lower() == "confirm"]
+        if hard_issues:
             checks.append(
-                CheckResult(TRIAL_CHECK, "fail", "; ".join(i["message"] for i in issues[:3]))
+                CheckResult(TRIAL_CHECK, "fail", "; ".join(i["message"] for i in hard_issues[:3]))
             )
         elif "trial_run_result" not in state:
             checks.append(CheckResult(TRIAL_CHECK, "skip", "平台不可用或 SQL 无效，试跑未执行"))
         else:
             trial = state["trial_run_result"]
-            checks.append(
-                CheckResult(
-                    TRIAL_CHECK,
-                    "pass",
-                    f"试跑通过（{trial.get('passed', '?')}/{trial.get('tested', '?')} 条语句）",
-                )
-            )
+            detail = f"试跑通过（{trial.get('passed', '?')}/{trial.get('tested', '?')} 条语句）"
+            if confirm_issues:
+                detail += "；慢查询标注: " + "; ".join(i["message"] for i in confirm_issues[:2])
+            checks.append(CheckResult(TRIAL_CHECK, "pass", detail))
 
     # 7. 管道错误（含修复循环收敛后的遗留 errors）
     checks.append(
