@@ -294,7 +294,9 @@ def _trial_run_issues(state: WorkflowState) -> list[dict[str, str]]:
     """P1-2: 真实试跑门禁——每次审查对当前 SQL 现场试跑（LIMIT 10）。
 
     试跑失败（语法错误/字段不对齐/表不存在）作为 Critical 注入修复循环；
-    修复循环回跳 review 时自动复检（与 P0-1 linter 同构）。
+    超时降级 Confirm 慢查询标注（第六刀 6b，run 8 实录：平台已受理执行
+    只是慢，修复环改不动平台耗时，Critical 会卡死管道）；修复循环回跳
+    review 时自动复检（与 P0-1 linter 同构）。
     跳过条件（零误报原则）：平台未声明 sql_execute 能力（auto 语义保留
     `execution_enabled is True` 严格口径——单测 mock settings 未显式设 bool 时
     自动跳过，防止真连数据平台；platform=none 强制离线时同样走此处跳过）、
@@ -324,12 +326,23 @@ def _trial_run_issues(state: WorkflowState) -> list[dict[str, str]]:
 
     trial = _run_trial_selects(sql_content)
     state["trial_run_result"] = trial  # 更新为当前 SQL 的最新结果
-    if not trial["errors"]:
-        return []
-    return [
+    issues: list[dict[str, str]] = [
         {"severity": "Critical", "message": f"[试跑] {err}", "dimension": "试跑"}
         for err in trial["errors"]
     ]
+    # 第六刀 6b（run 8 实录）：超时是慢查询标注不是 SQL 缺陷——两轮修复环
+    # 被同 2 条超时 Critical 卡死终止，而终版 SQL 复跑 3/3 通过。降级
+    # Confirm 不触发修复环（口径/耗时人工确认），语法/字段错仍 Critical。
+    for slow in trial.get("timeouts", []):
+        issues.append(
+            {
+                "severity": "Confirm",
+                "message": f"[试跑] {slow}（超时改判：非语法/字段错误，"
+                f"属大表真实耗时或平台负载，人工确认执行计划与数据量）",
+                "dimension": "试跑",
+            }
+        )
+    return issues
 
 
 def _parse_review_issues(review_result: str) -> list[dict[str, str]]:
@@ -435,11 +448,20 @@ def node_review(state: WorkflowState) -> WorkflowState:
         # 失败直接作为 Critical 触发修复循环（修复回跳时现场复检）
         trial_issues = _trial_run_issues(state)
         if trial_issues:
-            logger.warning(
-                "[task=%s] 试跑门禁: %d 条 SELECT 试跑失败，注入 Critical 触发修复循环",
-                req_name,
-                len(trial_issues),
-            )
+            trial_critical = sum(1 for i in trial_issues if i["severity"] == "Critical")
+            trial_confirm = sum(1 for i in trial_issues if i["severity"] == "Confirm")
+            if trial_critical:
+                logger.warning(
+                    "[task=%s] 试跑门禁: %d 条 SELECT 试跑失败，注入 Critical 触发修复循环",
+                    req_name,
+                    trial_critical,
+                )
+            if trial_confirm:
+                logger.info(
+                    "[task=%s] 试跑门禁: %d 条试跑超时改判 Confirm 慢查询标注（不触发修复环）",
+                    req_name,
+                    trial_confirm,
+                )
         # P0-1: 再注入确定性规范校验（零 token、结果确定），
         # 再合并 LLM 审查问题——ERROR 级违规直接作为 Critical 触发修复循环
         lint_issues = _lint_sql_issues(sql_content)

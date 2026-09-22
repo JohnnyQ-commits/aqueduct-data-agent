@@ -19,7 +19,7 @@ _parse_review_issues 只认方括号列表行，LLM 审查发现从未进入修�
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from src.aqueduct.engine.nodes.review import (
     _REVIEW_DIMENSIONS,
@@ -174,6 +174,94 @@ class TestDeterministicIssueDimensions:
             issues = _trial_run_issues(state)
         assert issues, "试跑失败应注入 Critical"
         assert all(i["dimension"] == "试跑" for i in issues)
+
+    def test_trial_gate_timeout_is_confirm_not_critical(self):
+        """第六刀 6b：试跑超时是慢查询标注（Confirm），不是 SQL 缺陷（Critical）。
+
+        run 8 实录：两轮修复环被同 2 条超时 Critical 卡死终止，而终版 SQL
+        门禁复跑 3/3 通过——大表 count 全分区扫描真实耗时在 5min 阈值边缘
+        抖动，超时改判 Confirm 不触发修复环（语法错/字段错仍 Critical）。
+        """
+        from src.aqueduct.engine.nodes.review import _trial_run_issues
+
+        state = _make_state() | {"sql_content": _SQL + " group by city having count(1) > 0"}
+        with (
+            patch("src.aqueduct.platform.get_platform_adapter") as mock_adapter,
+            patch("src.aqueduct.tools.registry.get_tool") as mock_tool,
+            patch(
+                "src.aqueduct.engine.nodes.sql._run_trial_selects",
+                return_value={
+                    "errors": [],
+                    "timeouts": ["SELECT #1: 任务超时 (5 min)"],
+                    "passed": 1,
+                    "tested": 1,
+                },
+            ),
+        ):
+            mock_adapter.return_value.has_capability.return_value = True
+            mock_tool.return_value.execute.return_value.success = True
+            issues = _trial_run_issues(state)
+        assert issues, "超时须落盘待确认标注，不得静默"
+        assert all(i["severity"] == "Confirm" for i in issues), "超时不得触发修复环"
+        assert all(i["dimension"] == "试跑" for i in issues)
+        assert all("超时" in i["message"] for i in issues)
+
+
+class TestTrialSelectsTimeoutClassification:
+    """第六刀 6b：_run_trial_selects 超时错误单列（errors 不含超时）。
+
+    超时 = 平台已受理并执行（语法/字段无错），只是慢——与"表不存在/
+    字段不对齐"类硬失败分桶，门禁据此降级 Confirm。
+    """
+
+    def test_timeout_error_goes_to_timeouts_bucket(self):
+        from src.aqueduct.engine.nodes.sql import _run_trial_selects
+
+        with (
+            patch("src.aqueduct.platform.get_platform_adapter") as mock_adapter,
+            patch("src.aqueduct.tools.registry.get_tool") as mock_get_tool,
+        ):
+            mock_adapter.return_value.has_capability.return_value = True
+            exec_result = MagicMock()
+            exec_result.success = False
+            exec_result.error = "任务超时 (5 min)"
+            mock_get_tool.return_value.execute.return_value = exec_result
+            trial = _run_trial_selects("select city, count(1) from t group by city;")
+        assert trial["errors"] == [], "超时不是 SQL 硬失败"
+        assert trial["timeouts"] and "SELECT #1" in trial["timeouts"][0]
+        assert trial["timeouts"][0].endswith("任务超时 (5 min)")
+
+    def test_hard_error_stays_in_errors_bucket(self):
+        from src.aqueduct.engine.nodes.sql import _run_trial_selects
+
+        with (
+            patch("src.aqueduct.platform.get_platform_adapter") as mock_adapter,
+            patch("src.aqueduct.tools.registry.get_tool") as mock_get_tool,
+        ):
+            mock_adapter.return_value.has_capability.return_value = True
+            exec_result = MagicMock()
+            exec_result.success = False
+            exec_result.error = "编译失败: 列 `sign_time` 不存在"
+            mock_get_tool.return_value.execute.return_value = exec_result
+            trial = _run_trial_selects("select sign_time from t;")
+        assert len(trial["errors"]) == 1, "字段错等硬失败仍进 errors（Critical）"
+        assert trial["timeouts"] == []
+
+    def test_timeout_counts_as_passed_for_scoring(self):
+        """超时计入通过数（SQL 语义有效，仅慢）——记分卡真实试跑不因平台负载误判。"""
+        from src.aqueduct.engine.nodes.sql import _run_trial_selects
+
+        with (
+            patch("src.aqueduct.platform.get_platform_adapter") as mock_adapter,
+            patch("src.aqueduct.tools.registry.get_tool") as mock_get_tool,
+        ):
+            mock_adapter.return_value.has_capability.return_value = True
+            exec_result = MagicMock()
+            exec_result.success = False
+            exec_result.error = "任务超时 (5 min)"
+            mock_get_tool.return_value.execute.return_value = exec_result
+            trial = _run_trial_selects("select 1;")
+        assert trial["passed"] == trial["tested"], "超时语句计入通过（慢查询标注另行列出）"
 
 
 # ── 维度 prompt（skill 层） ──────────────────────────────────────────────────
