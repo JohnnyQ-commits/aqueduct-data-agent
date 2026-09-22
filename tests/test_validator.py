@@ -779,3 +779,28 @@ class TestReviewLintInjection:
         }
         result = node_review(state)
         assert result.get("_needs_fix_loop") is False
+
+
+class TestCheckCteMultiline:
+    """第七刀 7b：换行 CTE 形态漏检修复。
+
+    run 9 实录：最终 SQL 用 `insert overwrite ...\nwith\ndlr as (...)` 的
+    分行 CTE（§6.3 禁止），check_cte 逐行 match 只认「with 名 as」同行形态，
+    CTE 全文逃检、规范 linter 0C0W 假绿。
+    """
+
+    def test_with_alone_on_line_detected(self):
+        sql = (
+            "insert overwrite table tmp_demo.t partition (inc_day = '1')\n"
+            "with\nfoo as (\n    select a from t\n)\n"
+            "select a from foo;"
+        )
+        report = Validator("", content=sql).run()
+        msgs = [i["message"] for i in report["issues"] if i["level"] == "ERROR"]
+        assert any("CTE" in m for m in msgs), "with 单独成行的 CTE 应被检出"
+
+    def test_with_name_same_line_still_detected(self):
+        sql = "with foo as (select a from t)\nselect a from foo;"
+        report = Validator("", content=sql).run()
+        msgs = [i["message"] for i in report["issues"] if i["level"] == "ERROR"]
+        assert any("CTE" in m for m in msgs), "原有同行形态回归保护"

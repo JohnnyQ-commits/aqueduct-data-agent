@@ -46,7 +46,9 @@ def _make_state() -> dict:
         "domain_context": "",
         "validation_result": {"issues": []},
         "design_scheme": _DESIGN,
-        "ddl_content": _DDL,
+        # 7b 起 DDL 门禁会对「无 insert 的产出表」报 Critical——默认置空，
+        # 需要 DDL 的测试（对齐/prompt 标记）各自显式设置
+        "ddl_content": "",
         "metadata": {"requirement_name": "test"},
         "errors": [],
         "artifacts": [],
@@ -734,13 +736,18 @@ class TestDdlColumnAlignment:
         assert self._issues(self._insert("ads_dw_demo.ads_knight_weekly_di", cols), self._DDL) == []
 
     def test_insert_target_not_in_ddl_skipped(self):
-        """目标表不在 DDL（tmp CTAS 等）→ 跳过（零误报原则）。"""
+        """目标表不在 DDL（tmp CTAS 等）→ 不做列数比对（零误报原则）。
+
+        7b 后未知目标不再整单静默：未插入的 DDL 产出表由 coverage 检查
+        兜底报 Critical，但列数比对只对 DDL 在册目标生效。
+        """
         cols = ["a", "b"]
-        assert self._issues(self._insert("tmp_dw_demo.tmp_other", cols), self._DDL) == []
+        issues = self._issues(self._insert("tmp_dw_demo.tmp_other", cols), self._DDL)
+        assert all("列数" not in i["message"] for i in issues), "未知目标表不做列数比对"
 
     def test_no_ddl_content_skipped(self):
         cols = ["a", "b"]
-        assert self._issues(self._insert("ads_dw_demo.ads_knight_weekly_di", cols)) == []
+        # _make_state 默认带 zz_ddl_marker 夹具 DDL，须显式清空才走「DDL 缺失跳过」分支
         assert self._issues(self._insert("ads_dw_demo.ads_knight_weekly_di", cols), "") == []
 
     def test_inline_comment_between_columns_ignored(self):
@@ -775,3 +782,68 @@ class TestDdlColumnAlignment:
             node_review(state)
         dims = {i["dimension"] for i in state["_review_issues"]}
         assert "对齐" in dims, "对齐发现应进 _review_issues 触发修复循环"
+
+
+class TestDdlDeliveryCoverage:
+    """第七刀 7b（修正定性）：DDL 产出表缺 insert overwrite = 交付缺表。
+
+    run 9 实录：manifest keyword fail（day 表名 / hl_scene_type 缺失）
+    最初定性为「keyword 检查脆弱」，核对产物后推翻——最终 SQL 只有
+    小时表一条 INSERT，day 表（SQL-1）整个缺失，keyword 检查抓的是真
+    缺陷。确定性门禁延伸：DDL 非临时表没有对应 insert overwrite 目标 →
+    Critical（tmp_ 前缀表由 CTAS 落地，不在其列）。
+    """
+
+    _DDL = """
+    create table if not exists ads_dw_demo.ads_knight_weekly_di (
+        emp_code string comment '员工编码',
+        dept_code string comment '部门编码'
+    ) partitioned by (inc_day string);
+    create table if not exists ads_dw_demo.ads_knight_weekly_hour_di (
+        emp_code string comment '员工编码',
+        hour_bucket string comment '小时桶'
+    ) partitioned by (inc_day string);
+    """
+
+    def _issues(self, sql: str, ddl: str = _DDL) -> list[dict[str, str]]:
+        from src.aqueduct.engine.nodes.review import _ddl_column_alignment_issues
+
+        return _ddl_column_alignment_issues(
+            _make_state() | {"sql_content": sql, "ddl_content": ddl}
+        )
+
+    def test_ddl_table_without_insert_is_critical(self):
+        sql = (
+            "insert overwrite table ads_dw_demo.ads_knight_weekly_di partition (inc_day = '1')\n"
+            "select\n    emp_code,\n    dept_code\n"
+            "from tmp_dw_demo.tmp_base\nwhere inc_day = '1';"
+        )
+        issues = self._issues(sql)
+        assert len(issues) == 1, "hour 表缺 insert 应报 1 条 Critical"
+        assert issues[0]["severity"] == "Critical"
+        assert "ads_knight_weekly_hour_di" in issues[0]["message"], "点名缺交付的表"
+        assert "无对应 insert overwrite" in issues[0]["message"]
+
+    def test_all_ddl_tables_inserted_passes(self):
+        sql = (
+            "insert overwrite table ads_dw_demo.ads_knight_weekly_di partition (inc_day = '1')\n"
+            "select\n    emp_code,\n    dept_code\nfrom tmp_dw_demo.tmp_base\nwhere inc_day = '1';\n"
+            "insert overwrite table ads_dw_demo.ads_knight_weekly_hour_di partition (inc_day = '1')\n"
+            "select\n    emp_code,\n    hour_bucket\nfrom tmp_dw_demo.tmp_base\nwhere inc_day = '1';"
+        )
+        assert self._issues(sql) == []
+
+    def test_tmp_prefix_table_without_insert_skipped(self):
+        ddl = """
+        create table if not exists tmp_dw_demo.tmp_knight_base (
+            emp_code string comment '员工编码'
+        );
+        create table if not exists ads_dw_demo.ads_knight_weekly_di (
+            emp_code string comment '员工编码'
+        ) partitioned by (inc_day string);
+        """
+        sql = (
+            "insert overwrite table ads_dw_demo.ads_knight_weekly_di partition (inc_day = '1')\n"
+            "select\n    emp_code\nfrom dwd.src\nwhere inc_day = '1';"
+        )
+        assert self._issues(sql, ddl) == [], "tmp_ 前缀表由 CTAS 落地，不要求 insert"

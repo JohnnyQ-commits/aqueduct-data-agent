@@ -351,7 +351,9 @@ _RE_CREATE_TABLE = re.compile(
     r"create\s+(?:external\s+)?table\s+(?:if\s+not\s+exists\s+)?([\w.]+)\s*\(",
     re.IGNORECASE,
 )
-_RE_INSERT_OVERWRITE = re.compile(r"insert\s+overwrite\s+(?:table\s+)?([\w.]+)", re.IGNORECASE)
+_RE_INSERT_TARGET = re.compile(
+    r"insert\s+(?:overwrite|into)\s+(?:table\s+)?([\w.]+)", re.IGNORECASE
+)
 _RE_COLUMN_NAME = re.compile(r"`?(\w+)`?")
 # 括号体条目首词命中即跳过（约束定义不是字段）
 _CONSTRAINT_KEYWORDS = {"primary", "unique", "constraint", "foreign", "key"}
@@ -523,6 +525,8 @@ def _ddl_column_alignment_issues(state: WorkflowState) -> list[dict[str, str]]:
     DDL 字段清单，修复环有构造性锚点（逐列同名同序对齐）。
     零误报原则：DDL 缺失/不可解析、目标表不在 DDL（tmp CTAS 等）、
     select 列表解析不出 → 一律跳过。
+    另含 7b 交付完整性延伸：DDL 非临时表无对应 insert 目标 → Critical
+    （run 9 实录：day 表 SQL-1 整个缺失，keyword 检查抓的是真缺陷）。
     """
     ddl_content = state.get("ddl_content", "")
     sql_content = state.get("sql_content", "")
@@ -534,8 +538,10 @@ def _ddl_column_alignment_issues(state: WorkflowState) -> list[dict[str, str]]:
         return []
     sql_masked = _mask_comments(sql_content)
     issues: list[dict[str, str]] = []
-    for m in _RE_INSERT_OVERWRITE.finditer(sql_masked):
+    insert_targets: set[str] = set()
+    for m in _RE_INSERT_TARGET.finditer(sql_masked):
         target = m.group(1).lower()
+        insert_targets.add(target)
         if target not in tables:
             continue
         sel_idx = _find_top_level_keyword(sql_masked, m.end(), "select")
@@ -559,6 +565,27 @@ def _ddl_column_alignment_issues(state: WorkflowState) -> list[dict[str, str]]:
                     f"与 DDL 非分区列数 {len(ddl_cols)} 不一致——insert overwrite "
                     "按位置映射会报列数不匹配或错位写入；DDL 字段清单（最终 select "
                     "必须逐列同名同序对齐，不得另行命名/增删列）：" + ", ".join(ddl_cols)
+                ),
+            }
+        )
+    # 第七刀 7b（run 9 实录）：manifest keyword fail 最初定性为「检查脆弱」，
+    # 核对产物后推翻——最终 SQL 只交付了 hour 表，day 表（SQL-1）整个缺失，
+    # keyword 抓的是真缺陷。DDL 产出表缺 insert 目标 = 交付缺表，与 6a 的
+    # 「DDL 逐表建齐」同款约束搬到 SQL 侧；tmp_ 前缀表由 CTAS 落地，不在其列。
+    missing = [
+        name
+        for name in tables
+        if not name.split(".", 1)[0].startswith("tmp_") and name not in insert_targets
+    ]
+    for name in sorted(missing):
+        issues.append(
+            {
+                "severity": "Critical",
+                "dimension": "对齐",
+                "message": (
+                    f"[对齐] 目标表 {name} 在 DDL 已定义但 SQL 无对应 insert overwrite"
+                    "——需求点名的产出表必须逐表交付，缺失即未完成交付（禁止只建表"
+                    "不落数）；补齐该表的完整 insert overwrite 语句"
                 ),
             }
         )

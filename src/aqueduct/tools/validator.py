@@ -38,6 +38,10 @@ _RE_SUM_RAW = re.compile(r"\bSUM\s*\(\s*[a-zA-Z_]", re.IGNORECASE)
 # P0-1 SQL 规范确定性校验（金样本校准，见知识库"金样本特征提取与linter规则校准"）
 _RE_STRING_LITERAL = re.compile(r"'[^']*'")
 _RE_CTE_LINE = re.compile(r"^\s*with\s+\w+\s+as\b", re.IGNORECASE)
+# 换行 CTE 形态（run 9 实录）：`insert overwrite ...\nwith\ndlr as (...)` 的
+# with 单独成行，逐行 match 认不出「with 名 as」同行形态，CTE 全文逃检。
+# Hive 里 with 单独成行只能是 CTE 起点，零误报。
+_RE_CTE_WITH_ALONE = re.compile(r"^\s*with\s*$", re.IGNORECASE)
 _RE_FORBIDDEN_PARTITION = re.compile(r"\b(cur_date|data_date|riqi)\b", re.IGNORECASE)
 _RE_CROSS_JOIN = re.compile(r"\bcross\s+join\b", re.IGNORECASE)
 _RE_CREATE_TABLE_DB = re.compile(
@@ -278,7 +282,7 @@ class Validator:
         替代方案：子查询派生表内联，或 TMP 临时表（drop + create）。
         """
         for i, line in enumerate(self.lines, 1):
-            if _RE_CTE_LINE.match(line):
+            if _RE_CTE_LINE.match(line) or _RE_CTE_WITH_ALONE.match(line):
                 self._log(
                     "ERROR",
                     "禁止使用 CTE（WITH 子句），改用子查询派生表或 TMP 临时表（§6.3）",

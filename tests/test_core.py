@@ -765,3 +765,19 @@ class TestReviewPipeline:
 
         mock_legacy.assert_not_called()
         assert rc == 1
+
+
+class TestSqlDevelopDeliveryCompleteness:
+    """第七刀 7b：sql_develop 模板补逐表交付硬约束。
+
+    run 9 实录：需求点名两张产出表（day + hour），Phase 4 只交付小时表
+    ——6a 给 B 路径 DDL 模板加了「逐表建齐」，SQL 生成模板漏加同款约束。
+    """
+
+    def test_sql_develop_tpl_requires_every_target_table(self):
+        from src.aqueduct.config.settings import get_settings
+
+        tpl = (get_settings().prompt_dir / "sql_develop.tpl.md").read_text(encoding="utf-8")
+        assert "insert overwrite" in tpl
+        assert "逐表" in tpl, "必须要求产出表逐表清点交付"
+        assert "禁止遗漏" in tpl and "insert" in tpl, "必须显式禁止只交付部分目标表"
