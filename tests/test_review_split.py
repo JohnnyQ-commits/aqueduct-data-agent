@@ -640,3 +640,138 @@ class TestChunkBoundaryArtifacts:
         assert "select a from t1\n;" in prompts[0], "块 1 末尾补分号"
         assert "对应完整脚本第 1 行" in prompts[0], "块 1 起始行=1"
         assert "对应完整脚本第 60 行" in prompts[1], "块 2 起始行=语句行(含分号)+1"
+
+
+class TestDdlColumnAlignment:
+    """第七刀 7c：最终 INSERT select 与目标表 DDL 的确定性列对齐门禁。
+
+    run 9 实录：唯一存活 Critical 是 LLM 审查发现（最终 select 8 列 vs
+    DDL 11 列，缺 3 列 + 顺序错位），修复环 2 轮没修掉——列数/列序
+    比对是纯机械活，LLM 审查不如确定性检查可靠。门禁在 review 层注入
+    Critical（带 DDL 字段清单，修复环有构造性锚点），与 linter/试跑同构。
+    """
+
+    _DDL = """
+    create table if not exists tmp_dw_demo.tmp_knight_base (
+        emp_code string comment '员工编码',
+        emp_name string comment '姓名',
+        dept_code string comment '部门编码'
+    );
+    create table if not exists ads_dw_demo.ads_knight_weekly_di (
+        emp_code string comment '员工编码',
+        emp_name string comment '姓名',
+        dept_code string comment '部门编码',
+        position_name string comment '岗位',
+        hire_date string comment '入职日期',
+        is_new_emp tinyint comment '是否新员工'
+    ) partitioned by (week_partition string);
+    """
+
+    @staticmethod
+    def _insert(tbl: str, cols: list[str]) -> str:
+        joiner = ",\n    "
+        return (
+            f"insert overwrite table {tbl} partition (week_partition = '2026-W24')\n"
+            f"select\n    {joiner.join(cols)}\n"
+            "from tmp_dw_demo.tmp_knight_base\nwhere dept_code is not null;"
+        )
+
+    def _issues(self, sql: str, ddl: str | None = None) -> list[dict[str, str]]:
+        from src.aqueduct.engine.nodes.review import _ddl_column_alignment_issues
+
+        state = _make_state() | {"sql_content": sql}
+        if ddl is not None:
+            state["ddl_content"] = ddl
+        return _ddl_column_alignment_issues(state)
+
+    def test_column_count_mismatch_is_critical_with_ddl_column_list(self):
+        cols = ["emp_code", "concat(emp_name, 'x') as emp_name"]
+        issues = self._issues(self._insert("ads_dw_demo.ads_knight_weekly_di", cols), self._DDL)
+        assert len(issues) == 1, "8列 vs 6列类缺陷应报 1 条 Critical"
+        assert issues[0]["severity"] == "Critical"
+        assert issues[0]["dimension"] == "对齐"
+        msg = issues[0]["message"]
+        assert "2" in msg and "6" in msg, "消息含 select 列数与 DDL 列数"
+        assert "position_name" in msg, "消息内嵌 DDL 字段清单（修复环构造性锚点）"
+        assert "insert overwrite 按位置映射" in msg, "点名后果（错位写入）"
+
+    def test_aligned_insert_passes(self):
+        cols = [
+            "emp_code",
+            "emp_name",
+            "dept_code",
+            "position_name",
+            "hire_date",
+            "is_new_emp",
+        ]
+        assert self._issues(self._insert("ads_dw_demo.ads_knight_weekly_di", cols), self._DDL) == []
+
+    def test_partition_column_not_counted_in_select(self):
+        """分区字段在 partition (...) 子句，不进 select 列数比对。"""
+        cols = [
+            "emp_code",
+            "emp_name",
+            "dept_code",
+            "position_name",
+            "hire_date",
+            "is_new_emp",
+        ]
+        sql = self._insert("ads_dw_demo.ads_knight_weekly_di", cols).replace(
+            "partition (week_partition = '2026-W24')\n", ""
+        )
+        assert self._issues(sql, self._DDL) == []
+
+    def test_expression_parens_do_not_inflate_count(self):
+        """case when / 函数括号内的逗号不是列分隔符。"""
+        cols = [
+            "emp_code",
+            "emp_name",
+            "case when dept_code = 'D01' then 1 else 0 end as is_core_dept",
+            "coalesce(position_name, '未知') as position_name",
+            "hire_date",
+            "is_new_emp",
+        ]
+        assert self._issues(self._insert("ads_dw_demo.ads_knight_weekly_di", cols), self._DDL) == []
+
+    def test_insert_target_not_in_ddl_skipped(self):
+        """目标表不在 DDL（tmp CTAS 等）→ 跳过（零误报原则）。"""
+        cols = ["a", "b"]
+        assert self._issues(self._insert("tmp_dw_demo.tmp_other", cols), self._DDL) == []
+
+    def test_no_ddl_content_skipped(self):
+        cols = ["a", "b"]
+        assert self._issues(self._insert("ads_dw_demo.ads_knight_weekly_di", cols)) == []
+        assert self._issues(self._insert("ads_dw_demo.ads_knight_weekly_di", cols), "") == []
+
+    def test_inline_comment_between_columns_ignored(self):
+        cols = [
+            "emp_code, -- 员工编码",
+            "emp_name",
+            "dept_code",
+            "position_name",
+            "hire_date",
+            "is_new_emp",
+        ]
+        assert self._issues(self._insert("ads_dw_demo.ads_knight_weekly_di", cols), self._DDL) == []
+
+    def test_node_review_injects_alignment_critical(self):
+        """接线：对齐 Critical 进审查 issues 触发修复循环（与 linter 同路）。"""
+        from src.aqueduct.engine.nodes.review import node_review
+
+        state = _make_state() | {
+            "sql_content": self._insert(
+                "ads_dw_demo.ads_knight_weekly_di", ["emp_code", "emp_name"]
+            ),
+            "ddl_content": self._DDL,
+        }
+        with (
+            patch("src.aqueduct.engine.nodes.review.call_llm", return_value="审查结论: 无问题"),
+            patch("src.aqueduct.engine.nodes.review.save_artifact", return_value="output/x.md"),
+            patch("src.aqueduct.engine.nodes.review.start_dqc_speculative"),
+            patch("src.aqueduct.engine.nodes.review.start_knowledge_speculative"),
+            patch("src.aqueduct.platform.get_platform_adapter") as mock_adapter,
+        ):
+            mock_adapter.return_value.has_capability.return_value = False
+            node_review(state)
+        dims = {i["dimension"] for i in state["_review_issues"]}
+        assert "对齐" in dims, "对齐发现应进 _review_issues 触发修复循环"

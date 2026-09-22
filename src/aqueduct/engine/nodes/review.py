@@ -345,6 +345,226 @@ def _trial_run_issues(state: WorkflowState) -> list[dict[str, str]]:
     return issues
 
 
+# ── 第七刀 7c: DDL 列对齐确定性门禁 ───────────────────────────────────────────
+
+_RE_CREATE_TABLE = re.compile(
+    r"create\s+(?:external\s+)?table\s+(?:if\s+not\s+exists\s+)?([\w.]+)\s*\(",
+    re.IGNORECASE,
+)
+_RE_INSERT_OVERWRITE = re.compile(r"insert\s+overwrite\s+(?:table\s+)?([\w.]+)", re.IGNORECASE)
+_RE_COLUMN_NAME = re.compile(r"`?(\w+)`?")
+# 括号体条目首词命中即跳过（约束定义不是字段）
+_CONSTRAINT_KEYWORDS = {"primary", "unique", "constraint", "foreign", "key"}
+
+
+def _mask_comments(text: str) -> str:
+    """把 -- 行注释与 /* */ 块注释替换为等长空白（保留换行与位置）。
+
+    后续所有定位/切分都在掩码文本上做——注释里的 insert/select/from、
+    逗号不再干扰解析，且提取片段的字符偏移与原文一致。
+    """
+    out = list(text)
+    i, n = 0, len(text)
+    while i < n:
+        if text.startswith("--", i):
+            j = text.find("\n", i)
+            end = n if j < 0 else j
+            for k in range(i, end):
+                out[k] = " "
+            i = end
+            continue
+        if text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            end = n if j < 0 else j + 2
+            for k in range(i, end):
+                if out[k] != "\n":
+                    out[k] = " "
+            i = end
+            continue
+        if text[i] in ("'", '"'):
+            quote = text[i]
+            i += 1
+            while i < n:
+                if text[i] == "\\" and i + 1 < n:
+                    i += 2
+                    continue
+                if text[i] == quote:
+                    i += 1
+                    break
+                i += 1
+            continue
+        i += 1
+    return "".join(out)
+
+
+def _split_top_level(text: str) -> list[str]:
+    """按顶层逗号切分（括号/引号内的逗号不切）。"""
+    parts: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    i, n = 0, len(text)
+    while i < n:
+        ch = text[i]
+        if ch in ("'", '"'):
+            buf.append(ch)
+            i += 1
+            while i < n:
+                buf.append(text[i])
+                if text[i] == "\\" and i + 1 < n:
+                    buf.append(text[i + 1])
+                    i += 2
+                    continue
+                if text[i] == ch:
+                    i += 1
+                    break
+                i += 1
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        elif ch == "," and depth == 0:
+            parts.append("".join(buf))
+            buf = []
+            i += 1
+            continue
+        buf.append(ch)
+        i += 1
+    parts.append("".join(buf))
+    return parts
+
+
+def _find_matching_paren(text: str, open_idx: int) -> int:
+    """返回与 open_idx 处 '(' 配对的 ')' 下标（引号内跳过），找不到 -1。"""
+    depth = 0
+    i, n = open_idx, len(text)
+    while i < n:
+        ch = text[i]
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            while i < n:
+                if text[i] == "\\" and i + 1 < n:
+                    i += 2
+                    continue
+                if text[i] == quote:
+                    break
+                i += 1
+        elif ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    return -1
+
+
+def _find_top_level_keyword(text: str, pos: int, keyword: str) -> int | None:
+    """从 pos 起找括号深度 0 处的整词 keyword（跳过引号），返回下标或 None。"""
+    depth = 0
+    i, n = pos, len(text)
+    kw = keyword.lower()
+    klen = len(kw)
+    while i < n:
+        ch = text[i]
+        if ch in ("'", '"'):
+            quote = ch
+            i += 1
+            while i < n:
+                if text[i] == "\\" and i + 1 < n:
+                    i += 2
+                    continue
+                if text[i] == quote:
+                    i += 1
+                    break
+                i += 1
+            continue
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        elif depth == 0 and text[i : i + klen].lower() == kw:
+            before = text[i - 1] if i > 0 else " "
+            after = text[i + klen] if i + klen < n else " "
+            if not (before.isalnum() or before == "_") and not (after.isalnum() or after == "_"):
+                return i
+        i += 1
+    return None
+
+
+def _parse_ddl_tables(ddl_masked: str) -> dict[str, list[str]]:
+    """解析 DDL：表名（小写）→ 非分区字段名列表（create table 首个括号体）。
+
+    分区字段在 partitioned by 的独立括号组，天然不进首个括号体。
+    """
+    tables: dict[str, list[str]] = {}
+    for m in _RE_CREATE_TABLE.finditer(ddl_masked):
+        close = _find_matching_paren(ddl_masked, m.end() - 1)
+        if close < 0:
+            continue
+        cols: list[str] = []
+        for item in _split_top_level(ddl_masked[m.end() : close]):
+            name_m = _RE_COLUMN_NAME.match(item.strip())
+            if name_m and name_m.group(1).lower() not in _CONSTRAINT_KEYWORDS:
+                cols.append(name_m.group(1).lower())
+        if cols:
+            tables[m.group(1).lower()] = cols
+    return tables
+
+
+def _ddl_column_alignment_issues(state: WorkflowState) -> list[dict[str, str]]:
+    """7c: 最终 INSERT select 列数 vs 目标表 DDL 非分区列数（确定性，零 token）。
+
+    run 9 实录：唯一存活 Critical 是最终 select 8 列 vs DDL 11 列（缺
+    position_name/hire_date/is_new_emp + 列序错位），insert overwrite 按位置
+    映射错位写入，LLM 审查 2 轮没修掉——列数比对是纯机械活，交给确定性
+    门禁，与 linter/试跑同构（修复循环回跳 review 时自动复检）。发现携带
+    DDL 字段清单，修复环有构造性锚点（逐列同名同序对齐）。
+    零误报原则：DDL 缺失/不可解析、目标表不在 DDL（tmp CTAS 等）、
+    select 列表解析不出 → 一律跳过。
+    """
+    ddl_content = state.get("ddl_content", "")
+    sql_content = state.get("sql_content", "")
+    if not ddl_content or not sql_content:
+        return []
+    ddl_masked = _mask_comments(ddl_content)
+    tables = _parse_ddl_tables(ddl_masked)
+    if not tables:
+        return []
+    sql_masked = _mask_comments(sql_content)
+    issues: list[dict[str, str]] = []
+    for m in _RE_INSERT_OVERWRITE.finditer(sql_masked):
+        target = m.group(1).lower()
+        if target not in tables:
+            continue
+        sel_idx = _find_top_level_keyword(sql_masked, m.end(), "select")
+        if sel_idx is None:
+            continue
+        from_idx = _find_top_level_keyword(sql_masked, sel_idx + len("select"), "from")
+        if from_idx is None:
+            continue
+        select_cols = [
+            p for p in _split_top_level(sql_masked[sel_idx + len("select") : from_idx]) if p.strip()
+        ]
+        ddl_cols = tables[target]
+        if len(select_cols) == len(ddl_cols):
+            continue
+        issues.append(
+            {
+                "severity": "Critical",
+                "dimension": "对齐",
+                "message": (
+                    f"[对齐] INSERT 目标表 {target} 最终 select 列数 {len(select_cols)} "
+                    f"与 DDL 非分区列数 {len(ddl_cols)} 不一致——insert overwrite "
+                    "按位置映射会报列数不匹配或错位写入；DDL 字段清单（最终 select "
+                    "必须逐列同名同序对齐，不得另行命名/增删列）：" + ", ".join(ddl_cols)
+                ),
+            }
+        )
+    return issues
+
+
 def _parse_review_issues(review_result: str) -> list[dict[str, str]]:
     """从审查报告中提取 Critical/Warning/Confirm 级别问题。
 
@@ -473,6 +693,15 @@ def node_review(state: WorkflowState) -> WorkflowState:
                 sum(1 for i in lint_issues if i["severity"] == "Critical"),
                 sum(1 for i in lint_issues if i["severity"] == "Warning"),
             )
+        # 第七刀 7c: DDL 列对齐确定性门禁（零 token，与 linter 同构）——
+        # run 9 实录：select 8 列 vs DDL 11 列的错位写入，LLM 审查 2 轮没修掉
+        ddl_issues = _ddl_column_alignment_issues(state)
+        if ddl_issues:
+            logger.warning(
+                "[task=%s] DDL 列对齐门禁: %d 条 INSERT select 与 DDL 列数不一致，注入 Critical",
+                req_name,
+                len(ddl_issues),
+            )
         # PERF-11: Confirm 级（需人工确认的口径/依赖问题）单独路由——
         # 改代码无法消除，不进修复循环（greenfield 待确认是常态，
         # 归 Critical 会触发修复空转/halt）；结构化落 state 供人工跟进
@@ -486,7 +715,7 @@ def node_review(state: WorkflowState) -> WorkflowState:
                 req_name,
                 len(confirmations),
             )
-        issues = trial_issues + lint_issues + llm_issues
+        issues = trial_issues + lint_issues + ddl_issues + llm_issues
         critical_count = sum(1 for i in issues if i["severity"].lower() == "critical")
         warning_count = sum(1 for i in issues if i["severity"].lower() == "warning")
         fix_iterations = state.get("fix_iterations", 0)
