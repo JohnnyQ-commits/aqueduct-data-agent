@@ -290,13 +290,18 @@ class TestDpEnvSessionFallback:
         self, isolated_project_root, isolated_home, monkeypatch
     ):
         """忘同步场景：.env 里是旧 cookie、session.json 更新 → session 胜。"""
+        from datetime import datetime, timezone
+
         (isolated_project_root / ".env").write_text(
             "DP_BASE_URL=https://dp.example.com\nDP_COOKIE=stale-cookie\nDP_USER_ID=01234567\n",
             encoding="utf-8",
         )
         stale = time.time() - 86400 * 3  # .env 三天前（旧 cookie 写入时刻）
         os.utime(isolated_project_root / ".env", (stale, stale))
-        _write_session(isolated_home, saved_at="2026-09-18T03:54:28.254Z", cookie="fresh-cookie")
+        # session 比旧 .env 更新（动态 now：硬编码日期会在日期越过后被
+        # now-3d 的 .env mtime 反超——2026-09-22 实录时间炸弹）
+        fresh_saved_at = datetime.now(timezone.utc).isoformat()
+        _write_session(isolated_home, saved_at=fresh_saved_at, cookie="fresh-cookie")
         for k in ("DP_BASE_URL", "DP_COOKIE", "DP_USER_ID"):
             monkeypatch.delenv(k, raising=False)
         from src.aqueduct.mcp.adapters.dp_client import load_dp_env
