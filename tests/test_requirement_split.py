@@ -186,6 +186,72 @@ class TestExtractMappingFields:
         )
         assert _extract_mapping_fields(design) == {"inc_day", "order_count"}
 
+    def test_subsection_tables_collected(self):
+        """映射表在章节下的 H3 子标题中（run 8 实录：两张 ADS 表各有映射小节）。
+
+        子标题不是边界——提取应持续到下一个同级/更高级标题为止（docstring
+        语义）；实现此前用任意级标题截断，子标题布局下提取恒为空集，
+        一致性校验静默跳过。
+        """
+        from src.aqueduct.engine.nodes.requirement import _extract_mapping_fields
+
+        design = (
+            "## 设计方案\n\n"
+            "## 字段映射\n\n"
+            "### ads_weekly_di（核心映射）\n\n"
+            "| 目标字段 | 源字段 | 转换逻辑 |\n"
+            "|----------|--------|----------|\n"
+            "| emp_code | emp_code | 主键 |\n"
+            "| aoi_overlap | 计算 | 重叠占比 |\n\n"
+            "### ads_weekly_hour_di（小时映射）\n\n"
+            "| 目标字段 | 源字段 | 转换逻辑 |\n"
+            "|----------|--------|----------|\n"
+            "| hour_bucket | hour | 分段 |\n"
+            "| week_partition | 周区间 | 0601-0607 |\n\n"
+            "## 上下游依赖\n\n- 上游: dwd.order_detail\n"
+        )
+        assert _extract_mapping_fields(design) == {
+            "emp_code",
+            "aoi_overlap",
+            "hour_bucket",
+            "week_partition",
+        }
+
+
+class TestDdlConsistencyFixPrompt:
+    """一致性修复 prompt 必须内嵌设计方案映射全文（run 8 实录）。
+
+    此前修复 prompt 只列缺失字段名、不含映射上下文——B 路径重生成的
+    命名锚点是需求文档（不含这些派生名），"修复仍缺"构造性注命，
+    2 轮全败回退 Phase 3。
+    """
+
+    def test_fix_prompt_embeds_mapping_section(self):
+        from src.aqueduct.engine.nodes.requirement import _build_ddl_consistency_fix_prompt
+
+        design = (
+            "## 设计方案\n\n"
+            "### 字段映射\n\n"
+            "| 目标字段 | 源字段 | 转换逻辑 |\n"
+            "|----------|--------|----------|\n"
+            "| week_partition | 周区间 | 0601-0607 形态 |\n"
+            "| hour_bucket | 签收时间 | 0000-0100 分段 |\n"
+        )
+        state = {"requirement": "需求文档原文", "table_schemas": {}}
+        prompt = _build_ddl_consistency_fix_prompt(state, design, ["week_partition", "hour_bucket"])
+        assert "week_partition" in prompt and "hour_bucket" in prompt, "缺失字段名必须列出"
+        assert "0601-0607" in prompt, "必须内嵌映射行原文（口径/转换逻辑），只报名不够"
+        assert "需求文档原文" in prompt, "修复 prompt 保留原有 DDL 生成上下文"
+
+    def test_fix_prompt_without_template_still_has_mapping(self):
+        """ddl_generate_req 模板缺失时修复 prompt 仍带映射全文（不静默变空）。"""
+        from src.aqueduct.engine.nodes import requirement as req_mod
+
+        design = "### 字段映射\n\n| 目标字段 | 源字段 | 转换逻辑 |\n|---|---|---|\n| emp_code | emp | 主键 |\n"
+        with patch.object(req_mod, "_build_ddl_prompt", return_value=""):
+            prompt = req_mod._build_ddl_consistency_fix_prompt({}, design, ["emp_code"])
+        assert "emp_code" in prompt and "主键" in prompt
+
 
 class TestExtractDdlFields:
     """CREATE TABLE 语句的列字段提取（含分区字段）。"""

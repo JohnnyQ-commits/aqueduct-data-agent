@@ -288,6 +288,25 @@ def _query_table_schemas(state: WorkflowState) -> dict[str, str]:
     return schemas
 
 
+def _extract_mapping_section(design_scheme: str) -> str:
+    """定位「字段映射」章节原文（标题行到下一个同级/更高级标题之间）。
+
+    run 8 实录：真实输出的映射表常按产出表拆成 H3 子小节（两张 ADS 表
+    各一张映射表）——子标题不是边界，提取必须持续到同级/更高级标题。
+    无法定位章节时返回空串。
+    """
+    m = re.search(r"^(#{2,4})\s*字段映射\s*$", design_scheme, re.MULTILINE)
+    if not m:
+        return ""
+
+    anchor_level = len(m.group(1))
+    seg = design_scheme[m.end() :]
+    nxt = re.search(rf"^#{{1,{anchor_level}}}\s", seg, re.MULTILINE)
+    if nxt:
+        seg = seg[: nxt.start()]
+    return seg
+
+
 def _extract_mapping_fields(design_scheme: str) -> set[str]:
     """从设计方案「字段映射」章节提取目标字段集合。
 
@@ -295,14 +314,9 @@ def _extract_mapping_fields(design_scheme: str) -> set[str]:
     取每行首列且形如 snake_case 的字段名；表头行（含"字段"/"目标"）与
     分隔行自动跳过。无法定位章节或无有效字段时返回空集合。
     """
-    m = re.search(r"^#{2,4}\s*字段映射\s*$", design_scheme, re.MULTILINE)
-    if not m:
+    seg = _extract_mapping_section(design_scheme)
+    if not seg:
         return set()
-
-    seg = design_scheme[m.end() :]
-    nxt = re.search(r"^#{1,4}\s", seg, re.MULTILINE)
-    if nxt:
-        seg = seg[: nxt.start()]
 
     fields: set[str] = set()
     for line in seg.splitlines():
@@ -357,6 +371,26 @@ def _check_ddl_consistency(design_scheme: str, ddl_content: str) -> list[str]:
     if not mapping or not ddl_fields:
         return []
     return sorted(mapping - ddl_fields)
+
+
+def _build_ddl_consistency_fix_prompt(
+    state: WorkflowState, design_scheme: str, miss_fields: list[str]
+) -> str:
+    """P1-1 一致性修复 prompt：B 路径上下文 + 映射全文内嵌 + 缺失警示。
+
+    run 8 实录：只列缺失字段名、不带映射上下文——B 重生成的命名锚点
+    仍是需求文档（不含派生字段名），"修复仍缺"构造性注命，2 轮全败
+    回退 Phase 3。内嵌映射全文让字段命名与设计方案逐字对齐。
+    """
+    ddl_prompt = _build_ddl_prompt(state)
+    return (
+        f"{ddl_prompt}"
+        f"\n\n---\n\n"
+        f"⚠️ **一致性警示**：设计方案的字段映射包含以下字段，但 DDL 缺失："
+        f"{'、'.join(miss_fields)}。字段命名必须与下方设计方案映射逐字对齐"
+        f"（同名同义，不得另行命名），重新生成完整 DDL（产出表逐表建齐）。\n\n"
+        f"**设计方案字段映射全文**：\n\n{_extract_mapping_section(design_scheme)}\n"
+    )
 
 
 def _build_ddl_prompt(state: WorkflowState) -> str:
@@ -543,12 +577,8 @@ def node_requirement(state: WorkflowState) -> WorkflowState:
                     req_name,
                     "、".join(miss_fields),
                 )
-                ddl_prompt = _build_ddl_prompt(state)
-                if ddl_prompt:
-                    fix_prompt = (
-                        f"{ddl_prompt}\n\n---\n\n⚠️ **一致性警示**：设计方案的字段映射包含以下字段，"
-                        f"但 DDL 缺失：{'、'.join(miss_fields)}。请对齐字段映射重新生成完整 DDL。\n"
-                    )
+                fix_prompt = _build_ddl_consistency_fix_prompt(state, design_scheme, miss_fields)
+                if fix_prompt.strip():
                     try:
                         fix_resp = call_llm(state, "ddl_gen", fix_prompt)
                         if re.search(r"```sql\s*\n", fix_resp):

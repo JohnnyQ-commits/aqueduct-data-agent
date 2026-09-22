@@ -438,6 +438,20 @@ class TestFixFeedbackHardening:
         assert "逐表" in tpl, "必须逐表建齐，不允许汇总式带过"
         assert "禁止只建" in tpl, "必须显式禁止只建 TMP 中间层（run 6: 两张 ADS 表全缺）"
 
+    def test_ddl_generate_req_tpl_has_scope_constraint(self):
+        """ddl_generate_req 模板（Phase 1 B 路径直出）含产出范围硬约束。
+
+        run 8 实录（2026-09-22）：4a-2 只加给了 design_ddl/ddl_generate 两个
+        模板，B 路径直出模板漏加——B 的 DDL 缺 10 个映射字段，定向修复
+        仍缺，回退 Phase 3 兜底。
+        """
+        from src.aqueduct.config.settings import get_settings
+
+        tpl = (get_settings().prompt_dir / "ddl_generate_req.tpl.md").read_text(encoding="utf-8")
+        assert "产出表" in tpl, "必须要求 DDL 覆盖需求/设计方案的产出表清单"
+        assert "逐表" in tpl, "必须逐表建齐，不允许汇总式带过"
+        assert "禁止只建" in tpl, "必须显式禁止只建部分产出表"
+
     @patch("src.aqueduct.core._run_fix_loop")
     def test_pipeline_no_infinite_fix_loop(self, mock_fix):
         """回归测试: 审查反复发现 Critical 时，达到 max_fix_iterations 后应继续后续阶段。"""
