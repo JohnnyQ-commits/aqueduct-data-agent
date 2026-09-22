@@ -181,7 +181,11 @@ class Validator:
             if m and m.group(1).lower() not in _DIV_DENOM_SAFE:
                 if self._division_case_guarded(i - 1, m.group(1), m.start()):
                     continue
-                self._log("ERROR", "除法未做判空判零保护，应写为 a / nullif(b, 0)（§7.2）", i)
+                self._log(
+                    "ERROR",
+                    "除法未做判空判零保护，应写为 case when b = 0 then null else a / b end（§7.2）",
+                    i,
+                )
 
     def _division_case_guarded(self, div_idx: int, denom: str, div_start: int) -> bool:
         """识别分母的 CASE WHEN 守护：从除法行向上（含本行）扫 ≤6 行。

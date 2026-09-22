@@ -451,12 +451,26 @@ class TestCheckDivisionCalibration:
         assert len(v.results) == 0
 
     def test_raw_division_is_error(self):
-        """裸除法升级为 ERROR（§7.2 必须 nullif，金样本全部合规）。"""
+        """裸除法升级为 ERROR（§7.2 金样本全部合规）。"""
         v = Validator("")
         v.lines = ["select a / b as ratio from t;"]
         v.check_division()
         assert len(v.results) == 1
         assert v.results[0]["level"] == "ERROR"
+
+    def test_division_error_message_recommends_case_when(self):
+        """报错文案必须处方平台支持的 CASE WHEN 等价形式。
+
+        第五刀 5a（run 7 实录）：原文案"应写为 a / nullif(b, 0)"被逐字喂进
+        修复环，LLM 照抄产出 25 处 nullif，试跑全部报 Invalid function nullif
+        ——文案本身是教唆犯。平台 Hive 不支持 nullif。
+        """
+        v = Validator("")
+        v.lines = ["select a / b as ratio from t;"]
+        v.check_division()
+        msg = v.results[0]["message"]
+        assert "case when" in msg.lower(), "文案必须给出 CASE WHEN 等价写法"
+        assert "nullif" not in msg.lower(), "文案不得再处方平台不支持的 nullif"
 
 
 class TestDivisionCaseGuard:

@@ -65,7 +65,7 @@ _REVIEW_DIMENSIONS: list[_ReviewDimension] = [
         "name": "规范与影响",
         "focus": (
             "- 强制规范逐项核对：每个源表有分区过滤、禁 SELECT * 列出全部字段、"
-            "可空数值字段 COALESCE 兜底、除法 NULLIF 保护、JOIN 显式 CAST 无隐式"
+            "可空数值字段 COALESCE 兜底、除法判空判零保护（case when 分母判零）、JOIN 显式 CAST 无隐式"
             "类型转换、WHERE 不对分区字段做函数转换、子查询嵌套不超 2 层"
             "（超了应拆 TMP 临时表）、文件头元数据注释\n"
             "- 性能风险：全表扫描、count(distinct) 双层聚合\n"

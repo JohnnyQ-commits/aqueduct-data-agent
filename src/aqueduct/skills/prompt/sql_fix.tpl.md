@@ -33,6 +33,7 @@
 4. 输出完整的修复后 SQL（不要只输出 diff）
 5. SQL 关键字使用全小写
 6. 保留原有注释
+7. 平台方言约束：试跑报 `Invalid function xxx` 表示该函数平台不支持——用等价 case when 表达式改写（判空判零写法：`case when b = 0 then null else a / b end`），保留原有空值保护语义
 
 ---
 

@@ -341,7 +341,7 @@ Q4: 源表 ≥7 张或 60+ 字段？
 
 - 源表必须包含分区过滤（`inc_day = '${bizdate}'` 或类似条件）
 - 可空数值字段使用 `coalesce()` 兜底
-- 除法运算前使用 `nullif(divisor, 0)` 保护
+- 除法运算用 `case when divisor = 0 then null else dividend / divisor end` 保护（判空判零统一用 case when，平台通用写法）
 - 禁止 `SELECT *` —— 必须列出所有字段
 - 字符串比较大小写一致（统一用 `lower()` 或 `upper()`）
 
@@ -362,7 +362,7 @@ Q4: 源表 ≥7 张或 60+ 字段？
 🚫 **禁止字段名与 SQL 关键字冲突**（如 `order`, `group`, `select`）  
 🚫 **禁止字符串比较大小写不一致** —— 统一用 `lower()` 或 `upper()`  
 🚫 **禁止在 GROUP BY 中使用函数** —— 先转换再分组  
-🚫 **禁止遗漏除法保护** —— 所有除法必须用 `nullif(divisor, 0)` + `coalesce`  
+🚫 **禁止遗漏除法保护** —— 所有除法必须用 `case when divisor = 0 then null` 判零 + `coalesce`  
 🚫 **禁止遗漏文件头注释**  
 🚫 **禁止跳过数仓分层** —— 复杂需求（≥7 表或 60+ 字段）必须分层建表，不能堆在一个 SQL 里
 🚫 **禁止宽表隐藏判断中间字段** —— 宽表模式下，所有判断计算依赖的中间字段（orgcode、servicedept、single_area_id 等）必须 SELECT 暴露，方便排查
@@ -400,7 +400,7 @@ Q4: 源表 ≥7 张或 60+ 字段？
 | 4 | 右表有过滤条件时，是否推入子查询 + INNER JOIN？（宽表条件字段除外） | LEFT JOIN + WHERE 右表字段 |
 | 5 | 所有 select（含子查询/JOIN）字段都竖排了吗？ | 子查询里字段横排 |
 | 6 | 每个源表都有分区过滤（inc_day）吗？ | 遗漏分区条件导致全表扫描 |
-| 7 | 所有可空数值字段都有 coalesce？所有除法都有 nullif？ | 遗漏空值保护 |
+| 7 | 所有可空数值字段都有 coalesce？所有除法都有 case when 判零？ | 遗漏空值保护 |
 | 8 | 文件头注释完整吗？ | 漏掉源表列表或描述 |
 | 9 | 同源表是否合并为一个子查询？（用 CASE WHEN 区分不同用途） | 同一张表读两遍，一个聚合计数、一个 HAVING 过滤 |
 | 10 | 桥接表的 JOIN 条件是否只引用同层子查询？ | pc ON s.dept_code AND adm.dept_code（跨表依赖），应拆为子查询 A + B |
@@ -453,7 +453,7 @@ Q4: 源表 ≥7 张或 60+ 字段？
 
 - 每个字段必须有明确的来源表标注（通过表别名）
 - 所有可空数值字段必须有 coalesce 兜底
-- 所有除法必须有 nullif 保护
+- 所有除法必须有 case when 判零保护
 
 ### 完整性
 

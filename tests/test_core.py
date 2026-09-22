@@ -491,6 +491,41 @@ class TestFixFeedbackHardening:
         phases[2][1].assert_called_once()
 
 
+class TestNullifDialectConflict:
+    """第五刀 5a：nullif 方言冲突（run 7 实录，2026-09-22）。
+
+    试跑报 Invalid function nullif ×25——平台 Hive 不支持 nullif，但
+    linter 报错文案、审查维度 prompt、sql_develop 模板三处都在处方
+    `nullif(divisor, 0)`，LLM 照抄带病上试跑。修复方向：全部改处方
+    CASE WHEN 等价形式（linter 逻辑本就接受 case 守护，无需改动）。
+    """
+
+    def test_sql_develop_tpl_prescribes_case_when_not_nullif(self):
+        """sql_develop 模板（Phase 4 生成源头）不得处方 nullif。"""
+        from src.aqueduct.config.settings import get_settings
+
+        tpl = (get_settings().prompt_dir / "sql_develop.tpl.md").read_text(encoding="utf-8")
+        assert "nullif" not in tpl.lower(), "模板处方 nullif 是 25 处带病 SQL 的源头"
+        assert "case when" in tpl.lower(), "除法保护必须改处方 CASE WHEN 等价形式"
+
+    def test_review_dimension_focus_prescribes_case_when_not_nullif(self):
+        """审查维度 prompt（规范与影响）不得处方 NULLIF。"""
+        from src.aqueduct.engine.nodes.review import _REVIEW_DIMENSIONS
+
+        standards = next(d for d in _REVIEW_DIMENSIONS if d["key"] == "standards")
+        focus = standards["focus"]
+        assert "nullif" not in focus.lower(), "审查 prompt 处方 NULLIF 会随审查意见进修复环"
+        assert "case when" in focus.lower(), "必须引导审查认可 CASE WHEN 等价形式"
+
+    def test_sql_fix_tpl_has_platform_dialect_constraint(self):
+        """sql_fix 模板含平台方言约束：试跑报 Invalid function 时改写等价形式。"""
+        from src.aqueduct.config.settings import get_settings
+
+        tpl = (get_settings().prompt_dir / "sql_fix.tpl.md").read_text(encoding="utf-8")
+        assert "Invalid function" in tpl, "必须点名试跑报错形态（run 7: Invalid function nullif）"
+        assert "case when" in tpl.lower(), "必须给出改写方向：等价 CASE WHEN 形式"
+
+
 # ============================================================
 # OPT-4: _split_design_and_ddl 测试
 # ============================================================
