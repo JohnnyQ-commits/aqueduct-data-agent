@@ -55,6 +55,25 @@ class TestCheckSelectStar:
         v.check_select_star()
         assert len(v.results) == 0
 
+    def test_qualified_select_star_detected(self):
+        """select 别名.* 同样违规（sql_standards §2.3：派生表字段必须显式列出）。
+
+        sql_develop 模板新增"禁止 select d.*"约束后 linter 需对齐——裸
+        select * 正则漏检限定别名形态。
+        """
+        v = Validator("")
+        v.lines = ["select d.* from (select order_id from t) d;"]
+        v.check_select_star()
+        assert len(v.results) == 1, "select 别名.* 必须被 linter 拦截"
+        assert v.results[0]["level"] == "ERROR"
+
+    def test_arithmetic_star_not_flagged(self):
+        """select 1 * 2 算术星号不是 select *，不得误报。"""
+        v = Validator("")
+        v.lines = ["select amount * 2, 1 * 2 as ratio from t;"]
+        v.check_select_star()
+        assert len(v.results) == 0
+
 
 class TestCheckPartitionFilter:
     """检查 2: 分区过滤。"""

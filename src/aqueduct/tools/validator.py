@@ -26,7 +26,9 @@ class Issue(TypedDict):
 
 
 # Validator 专用正则（不与其他工具共享）
-_RE_SELECT_STAR = re.compile(r"\bselect\s+\*", re.IGNORECASE)
+# SELECT * 禁止（含 select 别名.* 形态——sql_standards §2.3 派生表字段
+# 必须显式列出；算术星号 select 1 * 2 不受影响）
+_RE_SELECT_STAR = re.compile(r"\bselect\s+(?:\w+\.)?\*", re.IGNORECASE)
 _RE_UNION = re.compile(r"\bunion\s+all\b|\bunion\b", re.IGNORECASE)
 _RE_WHERE = re.compile(r"\bwhere\b", re.IGNORECASE)
 _RE_DIVISION_VAR = re.compile(r"[a-zA-Z0-9_)]\s*/\s*([a-zA-Z_][\w.]*)")
