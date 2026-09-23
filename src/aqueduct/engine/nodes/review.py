@@ -528,6 +528,27 @@ def _parse_ddl_tables(ddl_masked: str) -> dict[str, list[str]]:
     return tables
 
 
+def _count_dynamic_partition_cols(part_segment: str) -> int:
+    """统计 insert 头 partition (...) 子句中的动态分区列数（不带值的裸列名）。
+
+    动态分区 partition (inc_day)：select 须携带分区列，期望列数 +1；
+    静态分区 partition (inc_day = 'x')：select 不得带分区列，不计数。
+    无 partition 子句返回 0。
+    """
+    pm = re.search(r"partition\s*\(", part_segment, re.IGNORECASE)
+    if not pm:
+        return 0
+    close = _find_matching_paren(part_segment, pm.end() - 1)
+    if close < 0:
+        return 0
+    count = 0
+    for item in _split_top_level(part_segment[pm.end() : close]):
+        item = item.strip()
+        if item and "=" not in item:
+            count += 1
+    return count
+
+
 def _ddl_column_alignment_issues(state: WorkflowState) -> list[dict[str, str]]:
     """7c: 最终 INSERT select 列数 vs 目标表 DDL 非分区列数（确定性，零 token）。
 
@@ -567,7 +588,12 @@ def _ddl_column_alignment_issues(state: WorkflowState) -> list[dict[str, str]]:
             p for p in _split_top_level(sql_masked[sel_idx + len("select") : from_idx]) if p.strip()
         ]
         ddl_cols = tables[target]
-        if len(select_cols) == len(ddl_cols):
+        # 第八刀 8c（run 10/11 实录）：动态分区 partition (p)（不带值）形态下
+        # select 末尾必须携带分区列——期望列数 = DDL 非分区列 + 动态分区列数；
+        # 静态分区（p = 'v'）分区列不得出现在 select，期望列数不变。
+        expected = len(ddl_cols) + _count_dynamic_partition_cols(sql_masked[m.end() : sel_idx])
+        dyn_note = f" + 动态分区列 {expected - len(ddl_cols)}" if expected > len(ddl_cols) else ""
+        if len(select_cols) == expected:
             continue
         issues.append(
             {
@@ -575,9 +601,10 @@ def _ddl_column_alignment_issues(state: WorkflowState) -> list[dict[str, str]]:
                 "dimension": "对齐",
                 "message": (
                     f"[对齐] INSERT 目标表 {target} 最终 select 列数 {len(select_cols)} "
-                    f"与 DDL 非分区列数 {len(ddl_cols)} 不一致——insert overwrite "
-                    "按位置映射会报列数不匹配或错位写入；DDL 字段清单（最终 select "
-                    "必须逐列同名同序对齐，不得另行命名/增删列）：" + ", ".join(ddl_cols)
+                    f"与期望列数 {expected}（DDL 非分区列 {len(ddl_cols)}{dyn_note}）"
+                    "不一致——insert overwrite 按位置映射会报列数不匹配或错位写入；"
+                    "DDL 字段清单（最终 select 必须逐列同名同序对齐，不得另行命名/增删列）："
+                    + ", ".join(ddl_cols)
                 ),
             }
         )

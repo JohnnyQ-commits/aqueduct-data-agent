@@ -921,3 +921,47 @@ class TestTrialSelectsStagingTableBlocked:
         assert all(i["severity"] == "Confirm" for i in issues), "承接表依赖不触发修复环"
         assert all(i["dimension"] == "试跑" for i in issues)
         assert "承接表" in issues[0]["message"]
+
+
+class TestDdlAlignmentDynamicPartition:
+    """第八刀 8c：动态分区 insert 的分区列不参与列数比对。
+
+    run 10/11 实录：5 条「列数不一致」全是整齐 +1——insert 用动态分区
+    `partition (inc_day)`（不带值），此形态 select 末尾必须携带分区列，
+    SQL 完全正确；门禁把分区列计入 select 列数 → 假 Critical 修复环
+    修不掉（2 轮空转 halt）。静态分区（partition (p = 'v')）多选分区列
+    仍应报错。
+    """
+
+    _DDL = """
+    create table if not exists dm.dws_t (
+        emp_code string comment '工号',
+        dept_code string comment '部门'
+    ) partitioned by (inc_day string);
+    """
+
+    def _issues(self, sql: str) -> list[dict[str, str]]:
+        from src.aqueduct.engine.nodes.review import _ddl_column_alignment_issues
+
+        return _ddl_column_alignment_issues(
+            _make_state() | {"sql_content": sql, "ddl_content": self._DDL}
+        )
+
+    def test_dynamic_partition_column_in_select_passes(self):
+        """动态分区 partition (inc_day)：select 携带分区列 = 正确形态。"""
+        sql = (
+            "insert overwrite table dm.dws_t partition (inc_day)\n"
+            "select\n    emp_code,\n    dept_code,\n    inc_day\n"
+            "from tmp_dm_pd.tmp_t;"
+        )
+        assert self._issues(sql) == []
+
+    def test_static_partition_extra_column_still_flagged(self):
+        """静态分区 partition (inc_day = 'x')：select 多带分区列仍是真错。"""
+        sql = (
+            "insert overwrite table dm.dws_t partition (inc_day = '1')\n"
+            "select\n    emp_code,\n    dept_code,\n    inc_day\n"
+            "from tmp_dm_pd.tmp_t;"
+        )
+        issues = self._issues(sql)
+        assert len(issues) == 1 and "3" in issues[0]["message"] and "2" in issues[0]["message"]
