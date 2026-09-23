@@ -236,23 +236,45 @@ class Validator:
         return False
 
     def check_join_without_on(self) -> None:
-        """检查 5: JOIN 未指定关联条件。"""
+        """检查 5: JOIN 未指定关联条件（括号深度感知）。"""
         for i, line in enumerate(self.lines, 1):
             if RE_COMMENT.match(line):
                 continue
             if RE_JOIN.search(line):
                 if RE_ON.search(line):
                     continue
-                found_on = False
-                for j in range(i, min(i + 10, len(self.lines))):
-                    next_line = self.lines[j]
-                    if RE_ON.search(next_line):
-                        found_on = True
-                        break
-                    if RE_JOIN.search(next_line) and j > i:
-                        break
-                if not found_on:
-                    self._log("WARN", "JOIN 语句缺少 ON 条件", i)
+                if self._on_follows_at_baseline(i - 1):
+                    continue
+                self._log("WARN", "JOIN 语句缺少 ON 条件", i)
+
+    def _on_follows_at_baseline(self, join_idx: int) -> bool:
+        """从 JOIN 行向后找 ON，遇到闭合回基线的兄弟 JOIN 才断。
+
+        第九刀 9a（run 11 实录）：嵌套子查询 JOIN（`full outer join (`）
+        的 ON 在闭合括号之后，子查询体可超旧固定 10 行窗口且体内可能有
+        嵌套 JOIN——深度回基线（depth <= 0）才认 ON / 断兄弟 JOIN。
+        """
+        depth = self._net_paren_delta(self.lines[join_idx])
+        for line in self.lines[join_idx + 1 : join_idx + 300]:
+            clean = self._strip_inline_comment(line)
+            if not clean.strip():
+                continue
+            if depth <= 0 and RE_JOIN.search(clean) and not RE_ON.search(clean):
+                return False
+            if RE_ON.search(clean) and (depth <= 0 or depth + self._net_paren_delta(clean) <= 0):
+                # depth<=0: ON 在基线行；depth+delta<=0: `) 别名 on ...`
+                # 闭合与 ON 同行（ON 语法上在闭合括号之后）
+                return True
+            depth += self._net_paren_delta(clean)
+        return False
+
+    @staticmethod
+    def _strip_inline_comment(line: str) -> str:
+        return line.split("--", 1)[0] if "--" in line else line
+
+    @staticmethod
+    def _net_paren_delta(line: str) -> int:
+        return line.count("(") - line.count(")")
 
     def check_nvl(self) -> None:
         """检查 6: SUM 聚合未使用 NVL 处理空值（INFO，金样本校准：裸 sum 为合法写法）。"""

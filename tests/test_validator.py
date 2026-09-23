@@ -165,6 +165,75 @@ class TestCheckJoinWithoutOn:
         assert len(v.results) == 0
 
 
+class TestJoinOnNestedSubquery:
+    """检查 5 补: 括号深度感知——嵌套子查询 JOIN 的 ON 在闭合括号之后。
+
+    run 11 实录：`full outer join (` 起子查询体 12 行，`) p` 闭合后才出现
+    ON，固定 10 行窗口 + 「见 JOIN 即断」双重罩不住，审查人工核验后判
+    linter 假阳性。修法：子查询体内（depth>0）碰到 JOIN 不断（嵌套兄弟），
+    回到闭合深度才认 ON / 断兄弟。
+    """
+
+    def test_nested_subquery_join_on_after_close_ok(self):
+        # run 11 真实形态复刻（合成表名）：ON 距 JOIN 14 行且隔闭合括号
+        v = Validator("")
+        v.lines = [
+            "select d.emp_code, p.inc_day",
+            "from (",
+            "    select emp_code, inc_day, count(distinct waybill_no) as deliver_volume",
+            "    from dwd_deliver_waybill_info_dtl_di",
+            "    where inc_day between '20260601' and '20260607'",
+            "    group by emp_code, inc_day",
+            ") d",
+            "full outer join (",
+            "    -- 子查询体超过旧 10 行窗口",
+            "    select emp_code, inc_day, count(distinct waybill_no) as pickup_volume,",
+            "        count(distinct case when scene_type = 'pickup' then waybill_no end) as pickup_v2,",
+            "        max(emp_name) as emp_name,",
+            "        split(max(concat(coalesce(dept_code, ''), '||', dept_type_code)), '\\|\\|')[0] as dept_code,",
+            "        count(distinct case when dept_type in ('A01','A02','A03','A04') then waybill_no end) as ecom_pickup",
+            "    from dwd_pickup_waybill_info_dtl_di",
+            "    where inc_day between '20260601' and '20260607'",
+            "    group by emp_code, inc_day",
+            ") p",
+            "on d.emp_code = p.emp_code and d.inc_day = p.inc_day;",
+        ]
+        v.check_join_without_on()
+        assert len(v.results) == 0
+
+    def test_on_same_line_as_close_paren_ok(self):
+        v = Validator("")
+        v.lines = [
+            "select a.id, b.cnt",
+            "from table_a a",
+            "left join (",
+            "    select id, count(*) as cnt",
+            "    from table_b",
+            "    group by id",
+            ") b on a.id = b.id;",
+        ]
+        v.check_join_without_on()
+        assert len(v.results) == 0
+
+    def test_sibling_join_still_warns(self):
+        # 子查询缺 ON，回到闭合深度后的兄弟 JOIN 处仍要断并报警
+        v = Validator("")
+        v.lines = [
+            "select a.id, b.cnt, c.name",
+            "from table_a a",
+            "left join (",
+            "    select id, count(*) as cnt",
+            "    from table_b",
+            "    group by id",
+            ") b",
+            "left join table_c c",
+            "on a.id = c.id;",
+        ]
+        v.check_join_without_on()
+        assert len(v.results) == 1
+        assert "ON" in v.results[0]["message"]
+
+
 class TestCheckNvl:
     """检查 6: SUM NVL。"""
 
