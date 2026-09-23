@@ -293,6 +293,29 @@ def _auto_validate(state: WorkflowState, sql_path: str) -> None:
         logger.warning("SQL 校验失败，跳过", exc_info=True)
 
 
+# 第八刀 8a（run 10 实录）：平台 "Table not found 'X'" 中的表名
+_RE_TABLE_NOT_FOUND = re.compile(r"table not found '([\w.]+)'", re.IGNORECASE)
+_RE_CREATE_TARGET = re.compile(r"create\s+table\s+(?:if\s+not\s+exists\s+)?([\w.]+)", re.IGNORECASE)
+_RE_INSERT_TARGET = re.compile(
+    r"insert\s+(?:overwrite|into)\s+(?:table\s+)?([\w.]+)", re.IGNORECASE
+)
+
+
+def _script_created_tables(sql_masked: str) -> set[str]:
+    """脚本自建表集合（CTAS / insert 目标，库限定名与裸表名都收）。
+
+    承接表策略下，SELECT 引用的 tmp 表由本脚本前置 drop+create...as select
+    创建——试跑单句执行时它们天然不存在，属结构性限制不是 SQL 缺陷。
+    """
+    names: set[str] = set()
+    for pattern in (_RE_CREATE_TARGET, _RE_INSERT_TARGET):
+        for m in pattern.finditer(sql_masked):
+            lowered = m.group(1).lower()
+            names.add(lowered)
+            names.add(lowered.split(".")[-1])
+    return names
+
+
 def _run_trial_selects(sql_content: str) -> dict:
     """对 SQL 中的 SELECT 查询体执行 LIMIT 10 试跑（P1-2 门禁核心）。
 
@@ -301,18 +324,24 @@ def _run_trial_selects(sql_content: str) -> dict:
     executor 通过函数内 import 获取（patch 点统一 tools.registry.get_tool）。
 
     Returns:
-        {"total": 可试跑语句数, "tested": 实际试跑数, "passed": 通过数, "errors": [错误信息]}
+        {"total": 可试跑语句数, "tested": 实际试跑数, "passed": 通过数,
+         "errors": [硬失败], "timeouts": [超时], "blocked": [承接表依赖改判]}
     """
     from ...tools.registry import get_tool
 
     select_stmts = _extract_select_statements(sql_content)
     if not select_stmts:
-        return {"total": 0, "tested": 0, "passed": 0, "errors": [], "timeouts": []}
+        return {"total": 0, "tested": 0, "passed": 0, "errors": [], "timeouts": [], "blocked": []}
 
     executor = get_tool("executor")
     trial_results: list[dict] = []
     errors: list[str] = []
     timeouts: list[str] = []
+    # 第八刀 8a（run 10 实录）：脚本自建承接表的 Table not found 单列 blocked——
+    # 试跑只单句执行 SELECT，承接表由前置 CTAS 创建，单句试跑结构性验证不了；
+    # 该 Critical 修复环修不掉（run 10 两轮空转 halt），与 6b 超时同构改判。
+    created = _script_created_tables(re.sub(r"--.*$", "", sql_content, flags=re.MULTILINE))
+    blocked: list[str] = []
 
     # 第六刀 6b（run 8 实录）：超时单列——平台已受理并执行（语法/字段无错），
     # 只是慢（大表全分区扫描在 5min 门禁阈值边缘抖动，复跑即过）。
@@ -336,7 +365,11 @@ def _run_trial_selects(sql_content: str) -> dict:
             if "任务超时" in str(result.error):
                 timeouts.append(msg)
             else:
-                errors.append(msg)
+                m = _RE_TABLE_NOT_FOUND.search(str(result.error))
+                if m and m.group(1).lower() in created:
+                    blocked.append(msg)
+                else:
+                    errors.append(msg)
 
     return {
         "total": len(select_stmts),
@@ -344,6 +377,7 @@ def _run_trial_selects(sql_content: str) -> dict:
         "passed": len(trial_results) - len(errors),
         "errors": errors,
         "timeouts": timeouts,
+        "blocked": blocked,
     }
 
 
@@ -397,6 +431,11 @@ def _auto_trial_run(state: WorkflowState, sql_path: str) -> None:
             # 第六刀 6b：超时是慢查询标注不是失败（SQL 语义有效，已计入通过）
             report_lines.append(f"- **超时(慢查询标注)**: {len(trial['timeouts'])}")
             report_lines.extend(f"  - ⏱ {t[:100]}" for t in trial["timeouts"])
+            report_lines.append("")
+        if trial.get("blocked"):
+            # 第八刀 8a：承接表依赖改判（单句试跑结构性验证不了，人工跑全脚本核验）
+            report_lines.append(f"- **承接表依赖(改判待人工核验)**: {len(trial['blocked'])}")
+            report_lines.extend(f"  - ⛔ {b[:100]}" for b in trial["blocked"])
             report_lines.append("")
         for i in range(trial["tested"]):
             status = "✅" if i < trial["passed"] else "❌"

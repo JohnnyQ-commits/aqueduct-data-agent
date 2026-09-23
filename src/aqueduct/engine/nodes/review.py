@@ -342,6 +342,19 @@ def _trial_run_issues(state: WorkflowState) -> list[dict[str, str]]:
                 "dimension": "试跑",
             }
         )
+    # 第八刀 8a（run 10 实录）：脚本自建承接表的 Table not found——试跑只单句
+    # 执行 SELECT，承接表由前置 CTAS 创建，单句试跑结构性验证不了；该 Critical
+    # 修复环修不掉（run 10 两轮空转 halt），与 6b 同构改判 Confirm 人工核验。
+    for blocked in trial.get("blocked", []):
+        issues.append(
+            {
+                "severity": "Confirm",
+                "message": f"[试跑] {blocked}（承接表依赖改判：报缺的表由本脚本"
+                "前置语句创建，单句试跑无法验证——SQL 语义自洽性不受影响，"
+                "人工执行全脚本核验承接表链路）",
+                "dimension": "试跑",
+            }
+        )
     return issues
 
 

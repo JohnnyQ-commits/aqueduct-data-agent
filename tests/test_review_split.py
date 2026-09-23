@@ -847,3 +847,77 @@ class TestDdlDeliveryCoverage:
             "select\n    emp_code\nfrom dwd.src\nwhere inc_day = '1';"
         )
         assert self._issues(sql, ddl) == [], "tmp_ 前缀表由 CTAS 落地，不要求 insert"
+
+
+class TestTrialSelectsStagingTableBlocked:
+    """第八刀 8a：承接表依赖改判——脚本自建表的 Table not found 不是 SQL 缺陷。
+
+    run 10 实录：day 表回归后 SQL 改用 tmp 承接表策略（前置 drop+create...
+    as select），试跑门禁只单句执行 SELECT，承接表从未被创建 → 3 条
+    Table not found Critical 全部修复环结构性修不掉，2 轮空转 → halt。
+    与 6b 同构：错误对 SQL 语义无罪，门禁不得注入修不掉的 Critical。
+    """
+
+    _SQL_WITH_STAGING = (
+        "drop table if exists tmp_dm_pd.tmp_knight_dtl_0601_0607;\n"
+        "create table tmp_dm_pd.tmp_knight_dtl_0601_0607 as\n"
+        "select emp_code from dwd.detail where inc_day = '1';\n"
+        "insert overwrite table ads.t partition (inc_day = '1')\n"
+        "select emp_code, count(1) as cnt from tmp_dm_pd.tmp_knight_dtl_0601_0607 group by emp_code;"
+    )
+
+    def _trial(self, error: str, sql: str) -> dict:
+        from src.aqueduct.engine.nodes.sql import _run_trial_selects
+
+        with (
+            patch("src.aqueduct.platform.get_platform_adapter") as mock_adapter,
+            patch("src.aqueduct.tools.registry.get_tool") as mock_get_tool,
+        ):
+            mock_adapter.return_value.has_capability.return_value = True
+            exec_result = MagicMock()
+            exec_result.success = False
+            exec_result.error = error
+            mock_get_tool.return_value.execute.return_value = exec_result
+            return _run_trial_selects(sql)
+
+    def test_table_not_found_of_self_created_is_blocked(self):
+        err = (
+            "提交失败: {'ok': False, 'message': \"SemanticException [Error 10001]: "
+            "Table not found 'tmp_knight_dtl_0601_0607'\"}"
+        )
+        trial = self._trial(err, self._SQL_WITH_STAGING)
+        assert trial["errors"] == [], "自建承接表缺失不是 SQL 硬失败"
+        assert len(trial["blocked"]) == 1 and "SELECT #1" in trial["blocked"][0]
+        assert trial["passed"] == trial["tested"], "改判语句计入通过"
+
+    def test_table_not_found_unknown_still_error(self):
+        err = "SemanticException [Error 10001]: Table not found 'totally_absent_tbl'"
+        trial = self._trial(err, "select a from totally_absent_tbl;")
+        assert len(trial["errors"]) == 1, "脚本外表缺失仍进 errors（Critical）"
+        assert trial["blocked"] == []
+
+    def test_review_gate_blocked_is_confirm(self):
+        from src.aqueduct.engine.nodes.review import _trial_run_issues
+
+        state = _make_state() | {"sql_content": self._SQL_WITH_STAGING}
+        with (
+            patch("src.aqueduct.platform.get_platform_adapter") as mock_adapter,
+            patch("src.aqueduct.tools.registry.get_tool") as mock_tool,
+            patch(
+                "src.aqueduct.engine.nodes.sql._run_trial_selects",
+                return_value={
+                    "errors": [],
+                    "timeouts": [],
+                    "blocked": ["SELECT #1: Table not found 'tmp_knight_dtl_0601_0607'"],
+                    "passed": 1,
+                    "tested": 1,
+                },
+            ),
+        ):
+            mock_adapter.return_value.has_capability.return_value = True
+            mock_tool.return_value.execute.return_value.success = True
+            issues = _trial_run_issues(state)
+        assert issues, "改判须落盘待确认标注，不得静默"
+        assert all(i["severity"] == "Confirm" for i in issues), "承接表依赖不触发修复环"
+        assert all(i["dimension"] == "试跑" for i in issues)
+        assert "承接表" in issues[0]["message"]
