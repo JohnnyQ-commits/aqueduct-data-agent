@@ -531,6 +531,163 @@ class TestFixFeedbackHardening:
         phases[2][1].assert_called_once()
 
 
+class TestPatchModeFix:
+    """第十刀：补丁模式 sql_fix（run 12 复盘，2026-09-24）。
+
+    run 12 实录：全文重写 = 抽签——接受后更差（9C→13C）、拒绝随机
+    （0→1、0→1、0→4、0→6）、同一 SQL 复审方差（10C→9C→7C→11C）。
+    根因：修复 LLM 重输出全文，未改动区域跟着重掷骰子，re-lint 门禁
+    只看 linter ERROR 数，语义损坏不可见。契约：
+    - 输出含补丁块（SEARCH/REPLACE 标记）→ 逐块应用，未改动区域逐字节保留
+    - SEARCH 0 次或多于 1 次命中 → 整次修复被拒，按第九刀 9b 消耗预算
+    - 无补丁块 → 回退全文重写路径（向后兼容，走既有 re-lint 门禁）
+    - 补丁结果同样过 re-lint 门禁（分层防护不降级）
+    """
+
+    _ORIGINAL = (
+        "select order_id, total / cnt as ratio\n"
+        "from dwd.dwd_order_detail_di\n"
+        "where inc_day = '20260101';"
+    )
+
+    @staticmethod
+    def _make_state(sql: str) -> dict:
+        return {
+            "requirement": "test",
+            "mode": "dev",
+            "metadata": {"requirement_name": "test_req"},
+            "errors": [],
+            "artifacts": [],
+            "sql_content": sql,
+            "_review_issues": [
+                {"severity": "Critical", "message": "除法未判零 (line 1)", "dimension": "规范"}
+            ],
+            "_needs_fix_loop": True,
+            "fix_iterations": 0,
+        }
+
+    @staticmethod
+    def _run(state: dict, response: str) -> dict:
+        with (
+            patch("src.aqueduct.engine.nodes.helpers.call_llm", return_value=response),
+            patch(
+                "src.aqueduct.engine.nodes.helpers.save_artifact",
+                side_effect=lambda s, n, c: f"output/{n}",
+            ),
+            patch("src.aqueduct.config.settings.get_settings") as mock_settings,
+        ):
+            mock_settings.return_value.max_fix_iterations = 3
+            return _run_fix_loop(state)
+
+    def test_patch_blocks_applied_locally(self):
+        """补丁块只替换 SEARCH 区域，未改动区域逐字节保留。"""
+        response = (
+            "修复除法未判零：\n"
+            "<<<<<<< SEARCH\n"
+            "select order_id, total / cnt as ratio\n"
+            "=======\n"
+            "select order_id, case when cnt = 0 then null else total / cnt end as ratio\n"
+            ">>>>>>> REPLACE"
+        )
+        result = self._run(self._make_state(self._ORIGINAL), response)
+
+        expected = (
+            "select order_id, case when cnt = 0 then null else total / cnt end as ratio\n"
+            "from dwd.dwd_order_detail_di\n"
+            "where inc_day = '20260101';"
+        )
+        assert result["sql_content"] == expected, "仅 SEARCH 区域被替换，其余逐字节保留"
+        assert result["fix_iterations"] == 1
+        assert result["_needs_fix_loop"] is False
+
+    def test_multi_patch_blocks_all_applied(self):
+        """多个补丁块依序全部应用。"""
+        original = (
+            "select order_id, total / cnt as ratio\n"
+            "from dwd.dwd_order_detail_di\n"
+            "where inc_day = '20260101';\n"
+            "select user_id, amount / 0 as bad from dwd.dwd_order_detail_di;"
+        )
+        response = (
+            "<<<<<<< SEARCH\n"
+            "select order_id, total / cnt as ratio\n"
+            "=======\n"
+            "select order_id, case when cnt = 0 then null else total / cnt end as ratio\n"
+            ">>>>>>> REPLACE\n"
+            "<<<<<<< SEARCH\n"
+            "amount / 0 as bad\n"
+            "=======\n"
+            "case when 0 = 0 then null else amount / 0 end as bad\n"
+            ">>>>>>> REPLACE"
+        )
+        result = self._run(self._make_state(original), response)
+
+        assert "case when cnt = 0" in result["sql_content"]
+        assert "case when 0 = 0" in result["sql_content"]
+        assert "where inc_day = '20260101';" in result["sql_content"], "未改动行保留"
+
+    def test_patch_search_not_found_rejected(self):
+        """SEARCH 0 次命中 → 整次修复被拒，保留原 SQL，按 9b 消耗预算。"""
+        response = (
+            "<<<<<<< SEARCH\n"
+            "select nonexistent_column from nowhere\n"
+            "=======\n"
+            "select 1\n"
+            ">>>>>>> REPLACE"
+        )
+        state = self._make_state(self._ORIGINAL)
+        result = self._run(state, response)
+
+        assert result["sql_content"] == self._ORIGINAL, "原 SQL 保留"
+        assert result["fix_iterations"] == 1, "被拒尝试消耗预算（第九刀 9b）"
+        assert result["_needs_fix_loop"] is False
+
+    def test_patch_search_ambiguous_rejected(self):
+        """SEARCH 多于 1 次命中（歧义）→ 整次修复被拒。"""
+        original = "select total / cnt as ratio from a;\nselect total / cnt as ratio from b;"
+        response = (
+            "<<<<<<< SEARCH\n"
+            "select total / cnt as ratio\n"
+            "=======\n"
+            "select case when cnt = 0 then null else total / cnt end as ratio\n"
+            ">>>>>>> REPLACE"
+        )
+        state = self._make_state(original)
+        result = self._run(state, response)
+
+        assert result["sql_content"] == original, "歧义命中不猜测，原 SQL 保留"
+        assert result["fix_iterations"] == 1
+
+    def test_no_patch_markers_falls_back_to_full_rewrite(self):
+        """无补丁块标记 → 回退全文重写路径（既有 re-lint 门禁语义不变）。"""
+        fixed = "select order_id, case when cnt = 0 then null else total / cnt end as ratio from dwd.dwd_order_detail_di where inc_day = '20260101';"
+        with (
+            patch("src.aqueduct.engine.nodes.helpers.call_llm", return_value=fixed),
+            patch("src.aqueduct.engine.nodes.helpers.extract_sql_block", side_effect=lambda x: x),
+            patch("src.aqueduct.engine.nodes.helpers.is_valid_sql", return_value=True),
+            patch(
+                "src.aqueduct.engine.nodes.helpers.save_artifact",
+                side_effect=lambda s, n, c: f"output/{n}",
+            ),
+            patch("src.aqueduct.config.settings.get_settings") as mock_settings,
+        ):
+            mock_settings.return_value.max_fix_iterations = 3
+            result = _run_fix_loop(self._make_state(self._ORIGINAL))
+
+        assert result["sql_content"] == fixed, "全文重写路径仍被接受"
+        assert result["fix_iterations"] == 1
+
+    def test_tpl_has_patch_contract(self):
+        """sql_fix 模板含补丁块输出契约，不再要求只输出完整 SQL。"""
+        from src.aqueduct.config.settings import get_settings
+
+        tpl = (get_settings().prompt_dir / "sql_fix.tpl.md").read_text(encoding="utf-8")
+        assert "SEARCH" in tpl and "REPLACE" in tpl, "必须给出补丁块标记格式"
+        assert "唯一" in tpl, "SEARCH 必须要求全文唯一命中"
+        assert "逐字节" in tpl or "逐字复制" in tpl, "SEARCH 片段必须从原文逐字复制"
+        assert "不要只输出 diff" not in tpl, "旧全文重写硬性要求必须移除"
+
+
 class TestNullifDialectConflict:
     """第五刀 5a：nullif 方言冲突（run 7 实录，2026-09-22）。
 

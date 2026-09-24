@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import re
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -105,6 +106,33 @@ def _is_halt_error(error_msg: str) -> bool:
     return any(marker in lowered for marker in halt_markers)
 
 
+# 第十刀（run 12 复盘）：补丁模式 sql_fix——修复 LLM 输出 SEARCH/REPLACE
+# 补丁块，未改动区域逐字节保留，从结构上根除「全文重写抽签」（run 12 实录：
+# 接受后更差 9C→13C、拒绝随机 0→6、同一 SQL 复审方差 10C→11C）。
+_RE_PATCH_BLOCK = re.compile(
+    r"<<{5,}\s*SEARCH[^\n]*\n(.*?)\n={5,}[^\n]*\n(.*?)\n>{5,}\s*REPLACE",
+    re.DOTALL,
+)
+
+
+def _apply_sql_patches(original: str, fix_response: str) -> str | None:
+    """将修复响应中的补丁块应用到原文。
+
+    每块 SEARCH 必须在当前文本中恰好命中 1 次（0 次或多于 1 次 → 整次
+    修复被拒，由调用方按第九刀 9b 消耗预算）——歧义不猜测。无补丁块返回
+    None（调用方回退全文重写路径，向后兼容）。
+    """
+    blocks = _RE_PATCH_BLOCK.findall(fix_response)
+    if not blocks:
+        return None
+    patched = original
+    for search_text, replace_text in blocks:
+        if patched.count(search_text) != 1:
+            return None
+        patched = patched.replace(search_text, replace_text)
+    return patched
+
+
 def _run_fix_loop(state: WorkflowState) -> WorkflowState:
     """审查→修复循环：根据审查发现的问题让 LLM 修复 SQL。"""
     from .config.settings import get_settings
@@ -167,17 +195,32 @@ def _run_fix_loop(state: WorkflowState) -> WorkflowState:
         state["_needs_fix_loop"] = False
         return state
 
-    fixed_sql = extract_sql_block(fix_response)
+    # 第十刀：响应含补丁块 → 逐块应用（SEARCH 恰好命中 1 次），未改动
+    # 区域逐字节保留；任一块失配 → 整次修复被拒，按 9b 消耗预算。
+    # 无补丁块 → 回退全文重写路径（向后兼容）。
+    if _RE_PATCH_BLOCK.search(fix_response):
+        patched = _apply_sql_patches(sql_content, fix_response)
+        if patched is None:
+            logger.warning(
+                "[task=%s] 修复循环: 补丁块应用失败（SEARCH 未恰好命中 1 次），拒绝本次修复",
+                req_name,
+            )
+            state["fix_iterations"] = state.get("fix_iterations", 0) + 1
+            state["_needs_fix_loop"] = False
+            return state
+        fixed_sql = patched
+    else:
+        fixed_sql = extract_sql_block(fix_response)
 
-    if not is_valid_sql(fixed_sql):
-        logger.warning(
-            "[task=%s] 修复循环: LLM 修复输出无效（%d 字符），保留原 SQL",
-            req_name,
-            len(fixed_sql),
-        )
-        state["fix_iterations"] = state.get("fix_iterations", 0) + 1
-        state["_needs_fix_loop"] = False
-        return state
+        if not is_valid_sql(fixed_sql):
+            logger.warning(
+                "[task=%s] 修复循环: LLM 修复输出无效（%d 字符），保留原 SQL",
+                req_name,
+                len(fixed_sql),
+            )
+            state["fix_iterations"] = state.get("fix_iterations", 0) + 1
+            state["_needs_fix_loop"] = False
+            return state
 
     # 刀②（run 5 复盘）：本地 re-lint 门禁——修复环曾越修越多
     # （7→10 个 Critical 振荡实录）。ERROR 数回退 = 本次修复在引入新问题，
