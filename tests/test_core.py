@@ -365,7 +365,13 @@ class TestFixFeedbackHardening:
     @patch("src.aqueduct.engine.nodes.helpers.extract_sql_block", side_effect=lambda x: x)
     @patch("src.aqueduct.engine.nodes.helpers.call_llm")
     def test_reject_fix_when_lint_regresses(self, mock_llm, _mock_extract, _mock_valid, _mock_save):
-        """re-lint ERROR 数回退（1→2）→ 拒绝修复保留原 SQL，不清算迭代（防振荡）。"""
+        """re-lint ERROR 数回退（1→2）→ 拒绝修复保留原 SQL，但消耗预算。
+
+        第九刀 9b（run 12 实录）：被拒轮次不计数 + 复审重置回环标志 =
+        审查→被拒→复审 无界循环（halt 条件 fix_iterations>=max 永远够不着，
+        试跑注入的确定性 Critical 在修复被接受前永不消）。预算改按尝试
+        次数计：被拒也消耗一轮，3 次尝试后 review 节点确定性 halt。
+        """
         mock_llm.side_effect = lambda st, t, p: self._SQL_2_ERRORS  # 比 before 多 1 ERROR
 
         state = self._make_state(
@@ -377,8 +383,28 @@ class TestFixFeedbackHardening:
             result = _run_fix_loop(state)
 
         assert result["sql_content"] == self._SQL_1_ERROR, "回退修复被拒绝，保留原 SQL"
-        assert result["_needs_fix_loop"] is False, "拒绝即终止回环（迭代不增，清标志防死循环）"
-        assert result["fix_iterations"] == 0
+        assert result["_needs_fix_loop"] is False, "拒绝即终止本次回环"
+        assert result["fix_iterations"] == 1, "被拒的尝试也消耗预算（防无界循环）"
+
+    @patch(
+        "src.aqueduct.engine.nodes.helpers.save_artifact", side_effect=lambda s, n, c: f"output/{n}"
+    )
+    @patch("src.aqueduct.engine.nodes.helpers.is_valid_sql", return_value=True)
+    @patch("src.aqueduct.engine.nodes.helpers.extract_sql_block", side_effect=lambda x: x)
+    @patch("src.aqueduct.engine.nodes.helpers.call_llm", side_effect=RuntimeError("网关超时"))
+    def test_llm_failure_consumes_iteration(self, mock_llm, _mock_extract, _mock_valid, _mock_save):
+        """LLM 调用失败路径同样消耗预算——否则网关持续故障时同样无界循环。"""
+        state = self._make_state(
+            self._SQL_1_ERROR,
+            [{"severity": "Critical", "message": "SELECT * 违规 (line 1)", "dimension": "规范"}],
+        )
+        with patch("src.aqueduct.config.settings.get_settings") as mock_settings:
+            mock_settings.return_value.max_fix_iterations = 2
+            result = _run_fix_loop(state)
+
+        assert result["sql_content"] == self._SQL_1_ERROR, "失败保留原 SQL"
+        assert result["fix_iterations"] == 1, "失败尝试消耗预算"
+        assert any("LLM 调用失败" in e for e in result["errors"])
 
     @patch(
         "src.aqueduct.engine.nodes.helpers.save_artifact", side_effect=lambda s, n, c: f"output/{n}"

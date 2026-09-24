@@ -153,7 +153,9 @@ def _run_fix_loop(state: WorkflowState) -> WorkflowState:
         fix_response = call_llm(state, "sql_fix", prompt)
     except Exception as e:
         # 修复失败不应炸管道（v4 实测：空响应重试耗尽曾杀死 Phase 6）——
-        # 降级：记录错误、保留未修复 SQL、清除回环标志、继续后续阶段
+        # 降级：记录错误、保留未修复 SQL、清除回环标志、继续后续阶段。
+        # 第九刀 9b（run 12 实录）：失败尝试同样消耗预算——否则网关持续
+        # 故障时审查→失败→复审 无界循环（review 的 halt 条件够不着）。
         state.setdefault("errors", []).append(f"修复循环 LLM 调用失败，保留未修复 SQL: {e!s}")
         logger.error(
             "[task=%s] 修复循环: LLM 调用失败，保留原 SQL 继续管道: %s",
@@ -161,6 +163,7 @@ def _run_fix_loop(state: WorkflowState) -> WorkflowState:
             e,
             exc_info=True,
         )
+        state["fix_iterations"] = state.get("fix_iterations", 0) + 1
         state["_needs_fix_loop"] = False
         return state
 
@@ -172,13 +175,17 @@ def _run_fix_loop(state: WorkflowState) -> WorkflowState:
             req_name,
             len(fixed_sql),
         )
+        state["fix_iterations"] = state.get("fix_iterations", 0) + 1
         state["_needs_fix_loop"] = False
         return state
 
     # 刀②（run 5 复盘）：本地 re-lint 门禁——修复环曾越修越多
     # （7→10 个 Critical 振荡实录）。ERROR 数回退 = 本次修复在引入新问题，
-    # 拒绝并保留原 SQL（与无效输出同路径清回环标志：fix_iterations 不增，
-    # 不清会死循环）；有净改善（含部分修复）则接受，交回审查复检。
+    # 拒绝并保留原 SQL；有净改善（含部分修复）则接受，交回审查复检。
+    # 第九刀 9b（run 12 实录）：被拒尝试同样消耗预算——旧语义「不增，
+    # 清标志防死循环」防不住复审重置回环标志（审查→被拒→复审 无界循环，
+    # halt 条件 fix_iterations>=max 永远够不着）。预算按尝试次数计：
+    # 连续 3 次被拒后 review 节点确定性 halt。
     from .engine.nodes.review import _lint_sql_issues
 
     before_errors = sum(1 for i in _lint_sql_issues(sql_content) if i["severity"] == "Critical")
@@ -190,6 +197,7 @@ def _run_fix_loop(state: WorkflowState) -> WorkflowState:
             before_errors,
             after_errors,
         )
+        state["fix_iterations"] = state.get("fix_iterations", 0) + 1
         state["_needs_fix_loop"] = False
         return state
     if after_errors:
