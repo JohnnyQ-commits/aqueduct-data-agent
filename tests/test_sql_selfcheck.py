@@ -170,6 +170,63 @@ class TestSelfCheckFix:
         # 复检两次：修复后一次 + 回退还原一次
         assert len(validate_calls) == 2
 
+    def test_patch_response_applied_to_original(self, tmp_path, fresh_settings, monkeypatch):
+        """run 13 实录（第十一刀 11a）：自检轮 LLM 遵模板输出补丁块 →
+        逐块应用到原 SQL（旧 extract 路径判"输出无效"，自检层报废）。"""
+        monkeypatch.setenv("AQUEDUCT_SQL_SELF_FIX_ROUNDS", "1")
+        state = self._make_state(tmp_path, _vr("除法未判零"))
+        saved, validate_calls, fake_validate = self._patches(tmp_path, [{"issues": []}])
+        canonical = tmp_path / "Phase4-test.sql"
+
+        patch_response = (
+            "修复除法未判零：\n"
+            "<<<<<<< SEARCH\n"
+            "select 1 as original\n"
+            "=======\n"
+            "select case when cnt = 0 then null else 1 end as original\n"
+            ">>>>>>> REPLACE"
+        )
+        with (
+            patch("src.aqueduct.engine.nodes.sql.call_llm", return_value=patch_response),
+            patch("src.aqueduct.engine.nodes.sql._auto_validate", side_effect=fake_validate),
+            patch(
+                "src.aqueduct.engine.nodes.sql.save_artifact",
+                side_effect=lambda st, name, content: saved.append(name) or "",
+            ),
+            patch("src.aqueduct.engine.nodes.sql._resolve_sql_path", return_value=canonical),
+        ):
+            _self_check_fix(state)
+
+        expected = "select case when cnt = 0 then null else 1 end as original"
+        assert state["sql_content"] == expected, "补丁块应用到原 SQL，未改动区域逐字节保留"
+        assert canonical.read_text(encoding="utf-8") == expected
+        assert saved == ["Phase4-test_selffix1.sql"]
+        assert validate_calls == ["validate"], "补丁接受后照常复检"
+
+    def test_patch_response_search_not_found_keeps_original(
+        self, tmp_path, fresh_settings, monkeypatch
+    ):
+        """自检轮补丁块 SEARCH 0 次命中 → 保持原 SQL 交审查侧兜底（歧义不猜测）。"""
+        monkeypatch.setenv("AQUEDUCT_SQL_SELF_FIX_ROUNDS", "1")
+        state = self._make_state(tmp_path, _vr("除法未判零"))
+        saved, _, fake_validate = self._patches(tmp_path, [])
+
+        patch_response = (
+            "<<<<<<< SEARCH\nselect nonexistent from nowhere\n=======\nselect 1\n>>>>>>> REPLACE"
+        )
+        with (
+            patch("src.aqueduct.engine.nodes.sql.call_llm", return_value=patch_response),
+            patch("src.aqueduct.engine.nodes.sql._auto_validate", side_effect=fake_validate),
+            patch(
+                "src.aqueduct.engine.nodes.sql.save_artifact",
+                side_effect=lambda st, name, content: saved.append(name) or "",
+            ),
+        ):
+            _self_check_fix(state)
+
+        assert state["sql_content"] == "select 1 as original", "失配保持原 SQL"
+        assert saved == [], "不落审计副本（修复未应用）"
+
     def test_llm_failure_keeps_original(self, tmp_path, fresh_settings, monkeypatch):
         """sql_fix LLM 调用失败 → 吞异常保持原 SQL（自检降级不炸管道）。"""
         monkeypatch.setenv("AQUEDUCT_SQL_SELF_FIX_ROUNDS", "1")

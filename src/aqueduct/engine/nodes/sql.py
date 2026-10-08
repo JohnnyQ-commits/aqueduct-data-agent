@@ -13,6 +13,8 @@ from ...skills.registry import get_skill
 from ...tools.registry import get_tool
 from ..state import WorkflowState
 from .helpers import (
+    RE_PATCH_BLOCK,
+    apply_sql_patches,
     build_sql_fix_prompt,
     call_llm,
     extract_sql_block,
@@ -195,14 +197,27 @@ def _self_check_fix(state: WorkflowState) -> None:
             )
             return
 
-        fixed_sql = extract_sql_block(fix_response)
-        if not is_valid_sql(fixed_sql):
-            logger.warning(
-                "[task=%s] 生成自检: 修复输出无效（%d 字符），保持原 SQL",
-                req_name,
-                len(fixed_sql),
-            )
-            return
+        # 第十一刀 11a（run 13 实录）：响应含补丁块 → 逐块应用到原 SQL
+        # （自检与修复环共用同一模板，LLM 遵契约输出补丁块，旧 extract 路径
+        # 判"输出无效"——自检层报废）；失配保持原 SQL 交审查侧兜底。
+        if RE_PATCH_BLOCK.search(fix_response):
+            patched = apply_sql_patches(sql_content, fix_response)
+            if patched is None:
+                logger.warning(
+                    "[task=%s] 生成自检: 补丁块应用失败（SEARCH 未恰好命中 1 次），保持原 SQL",
+                    req_name,
+                )
+                return
+            fixed_sql = patched
+        else:
+            fixed_sql = extract_sql_block(fix_response)
+            if not is_valid_sql(fixed_sql):
+                logger.warning(
+                    "[task=%s] 生成自检: 修复输出无效（%d 字符），保持原 SQL",
+                    req_name,
+                    len(fixed_sql),
+                )
+                return
 
         # 试接受：审计副本 + 规范文件回写（Phase4-*.sql 是交付物本体）+ 复检
         save_artifact(state, f"Phase4-{req_name}_selffix{round_no}.sql", fixed_sql)

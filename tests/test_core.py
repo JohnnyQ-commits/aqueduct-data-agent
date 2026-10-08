@@ -658,6 +658,52 @@ class TestPatchModeFix:
         assert result["sql_content"] == original, "歧义命中不猜测，原 SQL 保留"
         assert result["fix_iterations"] == 1
 
+    def test_truncated_full_rewrite_rejected(self):
+        """run 13 实录（第十一刀 11b）：全文重写体量 < 原 50% → 拒绝。
+
+        第 3 轮回退路径接受 2094 字符微缩输出（原 29KB）——语句删一半
+        re-lint ERROR 数自然降，门禁只数错误不看覆盖面。截断不是修复。
+        """
+        original = "\n".join(
+            f"select order_id_{i}, total / cnt as ratio_{i} "
+            f"from dwd.dwd_order_detail_di where inc_day_{i} = '20260101';"
+            for i in range(40)
+        )
+        response = "select 1;"  # 9 字符、0 ERROR——re-lint 会放行，截断门禁必须拦
+        # is_valid_sql mock 掉：隔离截断门禁（真实 is_valid_sql 对微缩输出本就 False，
+        # 会提前走无效输出路径，测不到门禁本身）
+        with (
+            patch("src.aqueduct.engine.nodes.helpers.is_valid_sql", return_value=True),
+            patch("src.aqueduct.engine.nodes.helpers.extract_sql_block", side_effect=lambda x: x),
+        ):
+            state = self._make_state(original)
+            result = self._run(state, response)
+
+        assert result["sql_content"] == original, "截断输出不接受，原 SQL 保留"
+        assert result["fix_iterations"] == 1, "被拒尝试消耗预算（第九刀 9b）"
+        assert result["_needs_fix_loop"] is False
+
+    def test_patch_result_not_subject_to_truncation_guard(self):
+        """补丁块应用结果不受截断门禁误伤（未改动区域逐字节保留 = 体量不减）。"""
+        original = "\n".join(
+            f"select order_id_{i}, total / cnt as ratio_{i} "
+            f"from dwd.dwd_order_detail_di where inc_day_{i} = '20260101';"
+            for i in range(40)
+        )
+        response = (
+            "<<<<<<< SEARCH\n"
+            "select order_id_0, total / cnt as ratio_0\n"
+            "=======\n"
+            "select order_id_0, case when cnt = 0 then null else total / cnt end as ratio_0\n"
+            ">>>>>>> REPLACE"
+        )
+        state = self._make_state(original)
+        result = self._run(state, response)
+
+        assert "case when cnt = 0" in result["sql_content"], "补丁正常应用"
+        assert result["fix_iterations"] == 1
+        assert len(result["sql_content"]) > len(original) * 0.5, "体量不减，门禁不触发"
+
     def test_no_patch_markers_falls_back_to_full_rewrite(self):
         """无补丁块标记 → 回退全文重写路径（既有 re-lint 门禁语义不变）。"""
         fixed = "select order_id, case when cnt = 0 then null else total / cnt end as ratio from dwd.dwd_order_detail_di where inc_day = '20260101';"

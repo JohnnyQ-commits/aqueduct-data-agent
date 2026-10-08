@@ -24,6 +24,33 @@ logger = logging.getLogger(__name__)
 # 项目根目录
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
 
+# 第十刀（run 12 复盘）：补丁模式 sql_fix——修复 LLM 输出 SEARCH/REPLACE
+# 补丁块，未改动区域逐字节保留，从结构上根除「全文重写抽签」。解析器放
+# helpers 供 core._run_fix_loop 与 sql._self_check_fix 共用（run 13 实录：
+# 自检层漏接，LLM 遵模板输出补丁块被 extract 路径判"无效"，自检报废）。
+RE_PATCH_BLOCK = re.compile(
+    r"<<{5,}\s*SEARCH[^\n]*\n(.*?)\n={5,}[^\n]*\n(.*?)\n>{5,}\s*REPLACE",
+    re.DOTALL,
+)
+
+
+def apply_sql_patches(original: str, fix_response: str) -> str | None:
+    """将修复响应中的补丁块应用到原文。
+
+    每块 SEARCH 必须在当前文本中恰好命中 1 次（0 次或多于 1 次 → 整次
+    修复被拒，由调用方按第九刀 9b 消耗预算）——歧义不猜测。无补丁块返回
+    None（调用方回退全文重写路径，向后兼容）。
+    """
+    blocks = RE_PATCH_BLOCK.findall(fix_response)
+    if not blocks:
+        return None
+    patched = original
+    for search_text, replace_text in blocks:
+        if patched.count(search_text) != 1:
+            return None
+        patched = patched.replace(search_text, replace_text)
+    return patched
+
 
 def get_output_dir(state: WorkflowState) -> Path:
     """获取输出目录，优先使用 metadata 中的 output_dir，否则用 output/。
