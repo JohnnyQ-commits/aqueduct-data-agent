@@ -410,6 +410,51 @@ class TestP0AutoHalt:
             with pytest.raises(WorkflowHaltError, match="Critical"):
                 node_review(state)
 
+    def test_review_enforce_off_bypasses_halt_and_loop(self):
+        """run 15/16 定向（用户指令：先跑通一次，不做 4.5 循环）：
+        review_enforce=False 时审查发现仅记录——不触发修复循环、不 halt，
+        管道走完；发现仍进 _review_issues 供记分卡如实呈现。"""
+        from src.aqueduct.engine.nodes.review import node_review
+
+        state = {
+            "requirement": "test",
+            "mode": "dev",
+            "metadata": {"requirement_name": "test_req"},
+            "errors": [],
+            "artifacts": [],
+            "sql_content": "SELECT * FROM t",
+            "requirement_summary": "test",
+            "domain_context": "",
+            "validation_result": {},
+            "fix_iterations": 2,  # 已达上限（旁路下应无关紧要）
+        }
+
+        review_report = (
+            "# 审查报告\n- [Critical] JOIN 条件缺失导致笛卡尔积\n- [Warning] 缺少分区过滤\n"
+            "**审查结论**: Critical: 1, Warning: 1, Confirm: 0\n"
+        )
+
+        with (
+            patch("src.aqueduct.engine.nodes.review.get_skill") as mock_skill,
+            patch("src.aqueduct.engine.nodes.review.call_llm", return_value=review_report),
+            patch(
+                "src.aqueduct.engine.nodes.review.save_artifact", return_value="output/report.md"
+            ),
+            patch("src.aqueduct.config.settings.get_settings") as mock_settings,
+        ):
+            mock_skill.return_value.execute.return_value = type(
+                "R", (), {"success": True, "data": {"prompt": "test"}}
+            )()
+            mock_settings.return_value.max_fix_iterations = 2
+            mock_settings.return_value.review_enforce = False
+
+            node_review(state)  # 不抛
+
+        assert state["_needs_fix_loop"] is False, "旁路下不触发修复循环"
+        assert any(i["severity"] == "Critical" for i in state.get("_review_issues", [])), (
+            "发现照记进 _review_issues，记分卡如实呈现"
+        )
+
     def test_warning_no_halt(self):
         """仅有 Warning（无 Critical）时不终止管道。"""
         from src.aqueduct.engine.nodes.review import node_review

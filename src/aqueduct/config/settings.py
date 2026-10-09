@@ -152,6 +152,15 @@ class Settings(BaseSettings):
         description="审查→修复循环最大迭代次数。",
     )
 
+    review_enforce: bool = Field(
+        default=True,
+        description=(
+            "审查门禁开关（Phase 4.5）。False 时审查发现仅记录（进 _review_issues"
+            " 供记分卡呈现），不触发修复循环、不 halt——评估基线快速通过模式。"
+            "注意 max_fix_iterations=0 不是旁路：那是首轮 Critical 即 halt。"
+        ),
+    )
+
     auto_resume_attempts: int = Field(
         default=1,
         description=(

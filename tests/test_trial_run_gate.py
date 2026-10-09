@@ -63,6 +63,7 @@ def _ok_settings(**overrides):
         {
             "execution_enabled": True,
             "max_fix_iterations": 3,
+            "review_enforce": True,
             **overrides,
         },
     )()

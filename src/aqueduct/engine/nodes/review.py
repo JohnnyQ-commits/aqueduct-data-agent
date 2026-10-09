@@ -791,7 +791,19 @@ def node_review(state: WorkflowState) -> WorkflowState:
 
         max_fix_iterations = get_settings().max_fix_iterations
 
-        if critical_count > 0 and fix_iterations < max_fix_iterations:
+        # 审查门禁旁路（review_enforce=False）：发现照记（记分卡如实呈现），
+        # 不触发修复循环、不 halt——评估基线快速通过模式。默认 True 不变。
+        if not get_settings().review_enforce:
+            state["_review_issues"] = issues
+            state["_needs_fix_loop"] = False
+            logger.warning(
+                "[task=%s] 审查旁路开启（review_enforce=False）：%d Critical + %d Warning"
+                " 仅记录不阻断",
+                req_name,
+                critical_count,
+                warning_count,
+            )
+        elif critical_count > 0 and fix_iterations < max_fix_iterations:
             logger.warning(
                 "[task=%s] 审查发现 %d Critical + %d Warning，启动修复循环（%d/%d）",
                 req_name,
