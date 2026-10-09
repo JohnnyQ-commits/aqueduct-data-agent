@@ -265,7 +265,13 @@ def score_case(
     )
 
     # 4. 规范 linter（复用 P0-1，Critical 一票否决，Warning 只记录）
-    sql_files = sorted(output_dir.glob("Phase4-*.sql"))
+    # 第十三刀（run 15 实录）：只 lint manifest 声明的规范 SQL——glob 全扫会把
+    # 被拒审计副本（_fixN/_selffixN，设计上就带伤）与上轮遗留文件计入，
+    # 规范产物 0 error 仍被判 fail。
+    declared_sql = {
+        a for a in case.required_artifacts if a.startswith("Phase4-") and a.endswith(".sql")
+    }
+    sql_files = [p for p in sorted(output_dir.glob("Phase4-*.sql")) if p.name in declared_sql]
     if not sql_files:
         checks.append(CheckResult(LINT_CHECK, "skip", "未找到 Phase4 SQL"))
     else:

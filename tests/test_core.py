@@ -723,15 +723,16 @@ class TestPatchModeFix:
         assert result["sql_content"] == fixed, "全文重写路径仍被接受"
         assert result["fix_iterations"] == 1
 
-    def test_tpl_has_patch_contract(self):
-        """sql_fix 模板含补丁块输出契约，不再要求只输出完整 SQL。"""
+    def test_tpl_has_full_rewrite_contract(self):
+        """run 14/15 实录（第十三刀定案）：修复 LLM 对补丁契约零遵从（连两 run
+        修复环零补丁块输出），模板放弃补丁契约、改述全文重写契约——
+        完整输出 + 最小改动纪律；代码侧补丁路径保留为机会主义兼容。"""
         from src.aqueduct.config.settings import get_settings
 
         tpl = (get_settings().prompt_dir / "sql_fix.tpl.md").read_text(encoding="utf-8")
-        assert "SEARCH" in tpl and "REPLACE" in tpl, "必须给出补丁块标记格式"
-        assert "唯一" in tpl, "SEARCH 必须要求全文唯一命中"
-        assert "逐字节" in tpl or "逐字复制" in tpl, "SEARCH 片段必须从原文逐字复制"
-        assert "不要只输出 diff" not in tpl, "旧全文重写硬性要求必须移除"
+        assert "完整输出" in tpl, "必须要求输出完整 SQL（防截断，run 13 微缩输出实录）"
+        assert "逐字节保持原文" in tpl, "最小改动纪律必须落字（run 15 重写引入无效列实录）"
+        assert "禁止只输出改动片段" in tpl, "禁止只输出改动片段"
 
 
 class TestNullifDialectConflict:

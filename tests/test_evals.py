@@ -348,6 +348,20 @@ class TestScoreCase:
         assert check.status == "fail"
         assert "Critical" in check.detail
 
+    def test_linter_ignores_audit_copies(self, tmp_path: Path) -> None:
+        """run 15 实录（第十三刀）：记分卡 linter 用 glob 扫全部 Phase4-*.sql，
+        被拒审计副本（设计上就带伤）与上轮遗留文件全被计入——规范产物 0 error
+        仍被判 fail。只 lint manifest 声明的规范 SQL，审计副本剔除。"""
+        out = tmp_path / "runs" / "demo_case"
+        _write_good_artifacts(out)
+        _write(out / "Phase4-demo_fix1.sql", BAD_SQL)  # 被拒修复的审计副本
+        _write(out / "Phase4-demo_selffix1.sql", BAD_SQL)
+
+        score = score_case(_make_case(), out, _good_state())
+
+        check = _check(score, "规范 linter")
+        assert check.status == "pass", "审计副本不进记分卡，规范产物 0 error 即 pass"
+
     def test_dqc_below_minimum_fails(self, tmp_path: Path) -> None:
         out = tmp_path / "runs" / "demo_case"
         _write_good_artifacts(out)
