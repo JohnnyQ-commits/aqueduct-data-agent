@@ -134,6 +134,47 @@ class TestCheckDivision:
         assert len(v.results) == 1
         assert "除法" in v.results[0]["message"]
 
+    def test_message_carries_denominator_and_snippet(self):
+        """第十二刀（run 14 实录）：除法报错消息内嵌分母名 + 原行片段。
+
+        三 run 实录修复环修不掉内联除法——(line N) 锚点在修复环里失效：
+        行号随修复漂移、一行多条除法无法区分、LLM 要自己回猜原文。
+        构造性锚点（7c DDL 列对齐同思路）：消息自带可搜索原文 + 具名改写公式，
+        补丁模式 SEARCH 可直接命中。
+        """
+        v = Validator("")
+        v.lines = ["select order_id, total / cnt as ratio\nfrom dw_demo.dwd_order_info_di;"]
+        v.check_division()
+        div = [r for r in v.results if "除法" in r["message"]]
+        assert len(div) == 1
+        msg = div[0]["message"]
+        assert "cnt" in msg, "消息必须点名分母"
+        assert "total / cnt as ratio" in msg, "消息必须内嵌原行片段（可搜索锚点）"
+        assert "case when cnt = 0 then null else a / cnt end" in msg, "必须给出该分母的具名改写公式"
+
+    def test_snippet_truncated_for_long_lines(self):
+        """超长行片段截断到 80 字符——消息可读，锚点仍在行首。"""
+        long_expr = "x" * 200
+        v = Validator("")
+        v.lines = [f"select {long_expr} / cnt as ratio from test;"]
+        v.check_division()
+        div = [r for r in v.results if "除法" in r["message"]]
+        assert len(div) == 1
+        snippet = div[0]["message"].split("原行片段：")[1].split("）")[0]
+        assert len(snippet) <= 80, "片段截断到 80 字符"
+
+    def test_snippet_is_raw_line_not_stripped(self):
+        """片段必须取原始行（含字面量）——剥离后的 clean 行与原文字节不一致，
+        补丁模式 SEARCH 会失配（锚点失去意义）。"""
+        v = Validator("")
+        v.lines = ["select 'yyyy/MM/dd' as fmt, total / cnt as ratio from test;"]
+        v.check_division()
+        div = [r for r in v.results if "除法" in r["message"]]
+        assert len(div) == 1
+        assert "'yyyy/MM/dd' as fmt, total / cnt as ratio" in div[0]["message"], (
+            "片段保留字面量原文（字节级锚点）"
+        )
+
     def test_nvl_protected_division_ok(self):
         v = Validator("")
         v.lines = ["select nvl(a, 0) / nvl(b, 1) as ratio from test;"]

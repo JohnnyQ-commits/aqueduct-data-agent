@@ -187,9 +187,18 @@ class Validator:
             if m and m.group(1).lower() not in _DIV_DENOM_SAFE:
                 if self._division_case_guarded(i - 1, m.group(1), m.start()):
                     continue
+                # 第十二刀（run 14 实录）：消息内嵌分母名 + 原行片段——
+                # 三 run 实录修复环修不掉内联除法，(line N) 锚点随修复漂移、
+                # 一行多条除法无法区分。构造性锚点（7c DDL 列对齐同思路）：
+                # 消息自带可搜索原文 + 具名改写公式，补丁模式 SEARCH 可直接命中。
+                # 片段取原始行（非剥离后的 clean）——字节级一致才是有效锚点。
+                denom = m.group(1)
+                snippet = line.strip()[:80]
                 self._log(
                     "ERROR",
-                    "除法未做判空判零保护，应写为 case when b = 0 then null else a / b end（§7.2）",
+                    f"除法未做判空判零保护：分母 {denom} 未受保护"
+                    f"（原行片段：{snippet}），"
+                    f"应改写为 case when {denom} = 0 then null else a / {denom} end（§7.2）",
                     i,
                 )
 
