@@ -150,6 +150,26 @@ def build_retry_prompt(prompt: str, filename: str, missing: list[str]) -> str:
     )
 
 
+def build_skeleton_prompt(prompt: str, missing: list[str]) -> str:
+    """骨架填空式重试 prompt（第十四刀，run 17 实录）。
+
+    定向重生成「原 prompt + 缺章警示」被模型连续无视（自写知识库更新纪要
+    文体）——改换 prompt 形态：逐字给出标题行骨架，只允许在标题下填空。
+    骨架恒含全 5 章（不只缺章）——独立响应只按骨架输出，缺哪章补哪章
+    会产出"只有缺章"的新残缺文档（测试实录：部分骨架永不收敛）。
+    """
+    skeleton_sections = ("业务域知识", "表结构经验", "SQL 开发经验", "指标口径", "待确认事项")
+    skeleton = "\n\n".join(f"## {name}\n\n（在此填充{name}）" for name in skeleton_sections)
+    return (
+        f"{prompt}\n\n---\n\n"
+        f"⚠️ **输出格式强制（骨架填空）**：你的响应必须严格采用下面的骨架——"
+        f"标题行逐字保留、顺序不变、不增不减，只允许在每个标题下填充内容；"
+        f"某节确无内容就写「（本次无相关提炼）」，不要编造、不要改动标题、"
+        f"不要输出骨架以外的章节。当前缺失章节：{'、'.join(missing)}。\n\n"
+        f"# 知识沉淀\n\n{skeleton}\n"
+    )
+
+
 def gate_response(
     prompt: str,
     response: str,

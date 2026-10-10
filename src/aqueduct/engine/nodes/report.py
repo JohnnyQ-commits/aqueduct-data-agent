@@ -14,6 +14,7 @@ from ...tools.registry import get_tool
 from ..contract import (
     _add_banner,
     build_retry_prompt,
+    build_skeleton_prompt,
     ensure_structure,
     scan_degradation,
     validate_structure,
@@ -627,6 +628,19 @@ def _generate_knowledge_doc(state: WorkflowState) -> str:
                 "Phase6-知识沉淀.md",
                 call_llm(state, "knowledge_extract", retry_prompt),
             )
+            # 第十四刀（run 17 实录）：重试后仍缺 → 骨架填空第三次。
+            # 「原 prompt + 警示」形态被模型连续无视（自写知识库更新纪要
+            # 文体），换骨架填空形态——逐字标题行，只在标题下填充。
+            if kn_missing:
+                logger.warning(
+                    "知识沉淀定向重生成后仍缺章: %s，骨架填空重试 1 次",
+                    "、".join(kn_missing),
+                )
+                skeleton_prompt = build_skeleton_prompt(prompt, kn_missing)
+                knowledge_doc, kn_missing = ensure_structure(
+                    "Phase6-知识沉淀.md",
+                    call_llm(state, "knowledge_extract", skeleton_prompt),
+                )
 
         logger.info("知识沉淀 LLM 提取完成: %d 字符", len(knowledge_doc))
         return knowledge_doc

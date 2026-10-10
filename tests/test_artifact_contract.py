@@ -465,12 +465,30 @@ class TestNodeReportGate:
         assert state["errors"] == []
 
     def test_knowledge_doc_retry_then_degrade(self):
-        """knowledge_extract 缺章 → 重生成 1 次 → 仍缺 → 横幅落盘 + errors 记录。"""
+        """knowledge_extract 缺章 → 重生成 1 次 → 仍缺 → 骨架填空第 3 次 →
+        仍缺才横幅落盘 + errors 记录（第十四刀：三次调用全失败路径）。"""
         # 缺指标口径与待确认两章（保留 ≥100 字符不走 fallback）
         bad_kn = VALID_KNOWLEDGE.split("### 四、指标口径")[0] + "x" * 60
-        state, _, kn_prompts, saved = self._run_report([VALID_DESIGN_DOC], [bad_kn, bad_kn])
+        state, _, kn_prompts, saved = self._run_report([VALID_DESIGN_DOC], [bad_kn, bad_kn, bad_kn])
 
-        assert len(kn_prompts) == 2
+        assert len(kn_prompts) == 3
         assert "结构警示" in kn_prompts[1]
+        assert "骨架填空" in kn_prompts[2]
         assert saved["Phase6-知识沉淀.md"].startswith("> ⚠️")
         assert any("Phase6-知识沉淀.md" in e and "缺章" in e for e in state["errors"])
+
+    def test_knowledge_doc_skeleton_third_attempt_recovers(self):
+        """run 17 实录（第十四刀）：重试后模型仍写知识库更新纪要文体（连续
+        无视结构警示）→ 骨架填空式第三次调用——prompt 逐字给出 5 章骨架行，
+        输出合规即收、无横幅无降级。"""
+        bad_kn = VALID_KNOWLEDGE.split("### 四、指标口径")[0] + "x" * 60
+        state, _, kn_prompts, saved = self._run_report(
+            [VALID_DESIGN_DOC], [bad_kn, bad_kn, VALID_KNOWLEDGE]
+        )
+
+        assert len(kn_prompts) == 3
+        # 骨架行逐字在场（标题行原文复制，编号剥离——正文标题不带"一、"）
+        for heading in ("业务域知识", "表结构经验", "SQL 开发经验", "指标口径", "待确认事项"):
+            assert f"## {heading}" in kn_prompts[2], heading
+        assert not saved["Phase6-知识沉淀.md"].startswith("> ⚠️")
+        assert state["errors"] == []
