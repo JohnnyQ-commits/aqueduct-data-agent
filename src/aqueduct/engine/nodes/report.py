@@ -636,7 +636,18 @@ def _generate_knowledge_doc(state: WorkflowState) -> str:
                     "知识沉淀定向重生成后仍缺章: %s，骨架填空重试 1 次",
                     "、".join(kn_missing),
                 )
-                skeleton_prompt = build_skeleton_prompt(prompt, kn_missing)
+                # 第十五刀（run 20 实录）：骨架重试改极简独立 prompt——
+                # 剥离模板 persona 与 domain_context（维护文体的模仿对象，
+                # 模型据此自代入"写入被拒的知识库维护 agent"），骨架置开头，
+                # 只给交付物事实。review_result 同 P2-2 不进（回跳时是过期结果）。
+                facts = (
+                    f"需求名称: {req_name}\n\n"
+                    f"原始需求: {state.get('requirement', '')[:2000]}\n\n"
+                    f"设计方案: {state.get('design_scheme', '')[:2000]}\n\n"
+                    f"目标表 DDL: {state.get('ddl_content', '')[:1500]}\n\n"
+                    f"核心 SQL: {state.get('sql_content', '')[:3000]}\n"
+                )
+                skeleton_prompt = build_skeleton_prompt(facts, kn_missing)
                 knowledge_doc, kn_missing = ensure_structure(
                     "Phase6-知识沉淀.md",
                     call_llm(state, "knowledge_extract", skeleton_prompt),

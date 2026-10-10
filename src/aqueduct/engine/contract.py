@@ -150,23 +150,28 @@ def build_retry_prompt(prompt: str, filename: str, missing: list[str]) -> str:
     )
 
 
-def build_skeleton_prompt(prompt: str, missing: list[str]) -> str:
-    """骨架填空式重试 prompt（第十四刀，run 17 实录）。
+def build_skeleton_prompt(facts: str, missing: list[str]) -> str:
+    """骨架填空式重试 prompt（第十四刀引入，第十五刀重构为极简独立形态）。
 
-    定向重生成「原 prompt + 缺章警示」被模型连续无视（自写知识库更新纪要
-    文体）——改换 prompt 形态：逐字给出标题行骨架，只允许在标题下填空。
+    第十四刀版把骨架追加在原 prompt（含模板 persona 与 domain_context）尾部，
+    run 20 实录模型仍自代入「写入被拒的知识库维护 agent」产出补丁纪要——
+    维护文体的模仿对象是 domain_context（知识文件里的版本/落盘操作笔记），
+    骨架追加在 40KB prompt 尾部压不住开头建立的 persona。
+    重构：极简独立 prompt——骨架置开头（首位权重），剥离模板 persona 与
+    domain_context，只给交付物事实；明令禁止纪要文体（前言/落盘操作/版本记录）。
     骨架恒含全 5 章（不只缺章）——独立响应只按骨架输出，缺哪章补哪章
-    会产出"只有缺章"的新残缺文档（测试实录：部分骨架永不收敛）。
+    会产出"只有缺章"的新残缺文档（第十四刀测试实录：部分骨架永不收敛）。
     """
     skeleton_sections = ("业务域知识", "表结构经验", "SQL 开发经验", "指标口径", "待确认事项")
     skeleton = "\n\n".join(f"## {name}\n\n（在此填充{name}）" for name in skeleton_sections)
     return (
-        f"{prompt}\n\n---\n\n"
-        f"⚠️ **输出格式强制（骨架填空）**：你的响应必须严格采用下面的骨架——"
-        f"标题行逐字保留、顺序不变、不增不减，只允许在每个标题下填充内容；"
-        f"某节确无内容就写「（本次无相关提炼）」，不要编造、不要改动标题、"
-        f"不要输出骨架以外的章节。当前缺失章节：{'、'.join(missing)}。\n\n"
-        f"# 知识沉淀\n\n{skeleton}\n"
+        f"⚠️ **输出格式强制（骨架填空）**：你的完整响应必须且只能是下面骨架的填空结果——"
+        f"5 个标题行逐字保留、顺序不变、不增不减，只允许在每个标题下填充从下方"
+        f"素材中提炼的内容；某节确无内容就写「（本次无相关提炼）」，不要编造。"
+        f"除骨架外不得输出任何文字：不要前言或说明，不要写「知识库更新纪要」"
+        f"「落盘操作」「版本记录」等维护文体——你不是在维护知识库文件，"
+        f"是在产出一份知识文档。当前缺失章节：{'、'.join(missing)}。\n\n"
+        f"# 知识沉淀\n\n{skeleton}\n\n---\n\n交付物事实：\n\n{facts}\n"
     )
 
 

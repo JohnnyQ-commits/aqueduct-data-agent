@@ -153,8 +153,9 @@ def _self_check_fix(state: WorkflowState) -> None:
     生成端就地修复只花一次 sql_fix。
     守护：仅 ERROR 级触发（与 review 侧 ERROR→Critical 映射同口径）；
     修复必须让 ERROR 数严格下降才接受，否则回退原 SQL 并还原校验结果；
-    轮数上限 AQUEDUCT_SQL_SELF_FIX_ROUNDS（默认 1，0=关闭）；LLM 失败/
-    输出无效均保持原状——审查侧 P1-2 现场复检门禁照常兜底，语义不变。
+    轮数上限 AQUEDUCT_SQL_SELF_FIX_ROUNDS（默认 1，0=关闭）——失败轮消耗
+    预算继续重试（第十五刀：run 20 实录 1 次失败烧光预算，旁路下无兜底）；
+    LLM 失败/输出无效均保持原状——审查侧 P1-2 现场复检门禁照常兜底，语义不变。
     """
     from ...config.settings import get_settings
 
@@ -234,7 +235,13 @@ def _self_check_fix(state: WorkflowState) -> None:
         _auto_validate(state, canonical)
 
         if len(_error_issues()) >= len(errors):
-            # 修复未改善（甚至更差）→ 回退原 SQL 并还原校验结果，交审查侧兜底
+            # 修复未改善（甚至更差）→ 回退原 SQL 并还原校验结果。
+            # 第十五刀（run 20 实录）：失败轮消耗 1 轮预算继续循环——原实现
+            # 直接 return，1 次失败尝试烧光全部预算（AQUEDUCT_SQL_SELF_FIX_ROUNDS=3
+            # 的轮 2/3 从未执行）。旁路模式（review_enforce=False）下无 4.5 兜底，
+            # 重试是唯一自救；状态已还原重试安全，振荡由接受门禁（严格下降）
+            # + rounds_left 上限兜底。LLM 异常/输出无效路径保持 return 不变
+            # （网关故障重试无意义 / 输出形态问题同 prompt 大概率复现）。
             logger.warning(
                 "[task=%s] 生成自检: 修复未让 ERROR 下降（%d → %d），回退原 SQL",
                 req_name,
@@ -248,7 +255,8 @@ def _self_check_fix(state: WorkflowState) -> None:
                 except Exception:
                     logger.warning("[task=%s] 生成自检: 原SQL回写失败", req_name, exc_info=True)
             _auto_validate(state, canonical)
-            return
+            rounds_left -= 1
+            continue
 
         logger.info(
             "[task=%s] 生成自检: 第 %d 轮修复生效（%d → %d ERROR）",

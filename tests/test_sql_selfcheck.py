@@ -326,6 +326,44 @@ class TestSelfCheckFix:
         assert saved == ["Phase4-test_selffix1.sql", "Phase4-test_selffix2.sql"]
         assert validate_calls == ["validate", "validate"]  # 每轮接受后复检一次
 
+    def test_failed_round_consumes_budget_and_retries(self, tmp_path, fresh_settings, monkeypatch):
+        """run 20 实录（第十五刀靶 B）：修复失败（ERROR 未下降）回退后消耗
+        1 轮继续循环——原实现直接 return，1 次失败尝试烧光全部预算
+        （AQUEDUCT_SQL_SELF_FIX_ROUNDS=3 的轮 2/3 从未执行）。
+        rounds=2：轮 1 修复未改善回退，轮 2 修复生效清零。"""
+        monkeypatch.setenv("AQUEDUCT_SQL_SELF_FIX_ROUNDS", "2")
+        state = self._make_state(tmp_path, _vr("e1", "e2"))
+        # 复检队列：轮1 试接受(3) → 回退还原(2) → 轮2 接受(0)
+        saved, validate_calls, fake_validate = self._patches(
+            tmp_path, [_vr("e1", "e2", "e3"), _vr("e1", "e2"), {"issues": []}]
+        )
+        canonical = tmp_path / "Phase4-test.sql"
+        fixed_outputs = iter(["select bad1", "select fixed2"])
+
+        with (
+            patch("src.aqueduct.engine.nodes.sql.call_llm", return_value="```sql\nx\n```") as llm,
+            patch(
+                "src.aqueduct.engine.nodes.sql.extract_sql_block",
+                side_effect=lambda _r: next(fixed_outputs),
+            ),
+            patch("src.aqueduct.engine.nodes.sql.is_valid_sql", return_value=True),
+            patch("src.aqueduct.engine.nodes.sql._auto_validate", side_effect=fake_validate),
+            patch(
+                "src.aqueduct.engine.nodes.sql.save_artifact",
+                side_effect=lambda st, name, content: saved.append(name) or "",
+            ),
+            patch("src.aqueduct.engine.nodes.sql._resolve_sql_path", return_value=canonical),
+        ):
+            _self_check_fix(state)
+
+        assert llm.call_count == 2, "失败轮消耗 1 轮预算，轮 2 继续重试"
+        assert state["sql_content"] == "select fixed2", "轮 2 修复被接受"
+        assert canonical.read_text(encoding="utf-8") == "select fixed2"
+        # 轮 1 失败副本（审计存档）+ 轮 2 接受副本
+        assert saved == ["Phase4-test_selffix1.sql", "Phase4-test_selffix2.sql"]
+        # 复检 3 次：轮1 试接受 + 轮1 回退还原 + 轮2 接受
+        assert len(validate_calls) == 3
+
 
 class TestNodeSqlWiring:
     """node_sql 接线：自检在 validate 之后、试跑/血缘/成本之前（基于修复后 SQL）。"""

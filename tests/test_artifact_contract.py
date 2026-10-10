@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from src.aqueduct.engine.contract import (
     build_retry_prompt,
+    build_skeleton_prompt,
     ensure_structure,
     scan_degradation,
     validate_structure,
@@ -274,6 +275,35 @@ class TestBuildRetryPrompt:
         assert retry.index(prompt) < retry.index("取数逻辑")
 
 
+class TestBuildSkeletonPrompt:
+    """build_skeleton_prompt：骨架填空式重试（第十五刀：极简独立形态）。
+
+    run 20 实录：第十四刀版把骨架追加在原 prompt（含模板 persona 与
+    domain_context）尾部，模型仍自代入「写入被拒的知识库维护 agent」
+    产出补丁纪要——维护文体来自 domain_context，骨架压不住 persona。
+    """
+
+    def test_skeleton_first_facts_last(self):
+        """骨架置开头（首位权重），交付物事实在骨架之后（素材仍要给）。"""
+        facts = "需求名称: 每日订单统计\n\n核心 SQL: select 1"
+        prompt = build_skeleton_prompt(facts, ["指标口径"])
+        assert prompt.index("# 知识沉淀") < prompt.index("交付物事实")
+        assert facts in prompt
+        assert "指标口径" in prompt  # 缺章清单在场
+
+    def test_all_five_sections_always_present(self):
+        """骨架恒含全 5 章（部分骨架产出新残缺永不收敛，第十四刀测试实录）。"""
+        prompt = build_skeleton_prompt("f", ["指标口径"])
+        for heading in ("业务域知识", "表结构经验", "SQL 开发经验", "指标口径", "待确认事项"):
+            assert f"## {heading}" in prompt
+
+    def test_bans_memo_genre(self):
+        """明令禁止纪要文体（run 20 实录：模型自写知识库更新纪要+落盘操作）。"""
+        prompt = build_skeleton_prompt("f", [])
+        assert "知识库更新纪要" in prompt
+        assert "落盘" in prompt
+
+
 class TestScanDegradation:
     """scan_degradation：横幅标记扫描（供节点统一记 errors）。"""
 
@@ -492,3 +522,18 @@ class TestNodeReportGate:
             assert f"## {heading}" in kn_prompts[2], heading
         assert not saved["Phase6-知识沉淀.md"].startswith("> ⚠️")
         assert state["errors"] == []
+
+    def test_knowledge_skeleton_retry_minimal_prompt(self):
+        """run 20 实录（第十五刀靶 A）：骨架重试改极简独立 prompt——剥离
+        模板 persona 与 domain_context（维护文体的模仿对象），骨架置开头。"""
+        bad_kn = VALID_KNOWLEDGE.split("### 四、指标口径")[0] + "x" * 60
+        _, _, kn_prompts, _ = self._run_report([VALID_DESIGN_DOC], [bad_kn, bad_kn, bad_kn])
+
+        skeleton_prompt = kn_prompts[2]
+        assert "域上下文" not in skeleton_prompt, "domain_context 不进骨架重试 prompt"
+        assert "资深数据仓库知识管理专家" not in skeleton_prompt, "模板 persona 剥离"
+        assert "骨架填空" in skeleton_prompt
+        assert skeleton_prompt.index("# 知识沉淀") < skeleton_prompt.index("交付物事实")
+        # 交付物事实仍在（骨架填空需要素材），但不含审查/域知识等无关输入
+        assert "SELECT 1" in skeleton_prompt
+        assert "审查通过" not in skeleton_prompt
