@@ -365,12 +365,15 @@ class TestSelfCheckFix:
         assert len(validate_calls) == 3
 
 
-class TestPartitionOverLimitSelfFix:
-    """第十六刀（run 22 实录）：试跑分区超限（PartitionOverLimit）定向自修。
+class TestTrialSelfFix:
+    """第十六/十七刀：试跑硬失败（分区超限 / 幻觉表）定向自修。
 
-    根因：模型把维表/快照表排除在「源表」外，引用分区表未带 inc_day 过滤，
-    平台 hook 编译期拒绝（LIMIT 挡不住）。修法=极简 prompt（错误+原 SQL+
-    分区硬规则，第十五刀纪律），修后复跑试跑，通过且 linter 复检无 ERROR
+    第十六刀（run 22 实录）：分区超限自修；第十七刀（run 23 实录）泛化为
+    试跑定向自修：(a) 幻觉表（Table not found）同样可自愈——prompt 注入
+    table_schemas 真实表清单，强制换表或删逻辑；(b) 接受门禁按错误类别
+    分桶（partition/table/other）——分区修好但残留其他类错误=部分改善应
+    接受（run 23：全有全无门禁否决了分区已修好的 SQL）；(c) 分区 prompt
+    静态点名缺 inc_day 的表引用。修后复跑经分桶门禁且 linter 复检无 ERROR
     才接受；仅一轮，失败保持原状（试跑结果照旧记录）。
     """
 
@@ -388,31 +391,68 @@ class TestPartitionOverLimitSelfFix:
         "select u.name from ods_rmds.tb_res_user u "
         "where u.is_deleted = 0 and u.inc_day = '20260601'"
     )
+    _TABLE_SQL = (
+        "insert overwrite table dw.t partition (inc_day = '${bizdate}')\n"
+        "select u.name from dw.dw_first_working_detail_tmp20260507 u where u.is_deleted = 0"
+    )
+    _TABLE_ERR = (
+        "FAILED: SemanticException [Error 10001]: "
+        "Table not found 'dw_first_working_detail_tmp20260507'"
+    )
+    _TABLE_FIXED_SQL = (
+        "insert overwrite table dw.t partition (inc_day = '${bizdate}')\n"
+        "select u.name from ods_rmds.tb_res_user u "
+        "where u.is_deleted = 0 and u.inc_day = '20260601'"
+    )
+    _SQL_MULTI = (
+        "insert overwrite table dw.t partition (inc_day = '${bizdate}')\n"
+        "select u.name from ods_rmds.tb_res_user u where u.is_deleted = 0"
+        ";\n"
+        "insert overwrite table dw.t2 partition (inc_day = '${bizdate}')\n"
+        "select x.name from dw.dw_first_working_detail_tmp20260507 x where x.is_deleted = 0"
+    )
+    _PARTIAL_FIXED_SQL = (
+        "insert overwrite table dw.t partition (inc_day = '${bizdate}')\n"
+        "select u.name from ods_rmds.tb_res_user u "
+        "where u.is_deleted = 0 and u.inc_day = '20260601'"
+        ";\n"
+        "insert overwrite table dw.t2 partition (inc_day = '${bizdate}')\n"
+        "select x.name from dw.dw_first_working_detail_tmp20260507 x where x.is_deleted = 0"
+    )
 
     @staticmethod
-    def _make_state(tmp_path: Path) -> dict:
+    def _make_state(tmp_path: Path, sql: str | None = None) -> dict:
+        sql = sql if sql is not None else TestTrialSelfFix._SQL
         canonical = tmp_path / "Phase4-test.sql"
-        canonical.write_text(TestPartitionOverLimitSelfFix._SQL, encoding="utf-8")
+        canonical.write_text(sql, encoding="utf-8")
         return {
             "requirement": "需求",
             "mode": "dev",
             "metadata": {"requirement_name": "test"},
             "errors": [],
             "artifacts": [],
-            "sql_content": TestPartitionOverLimitSelfFix._SQL,
+            "sql_content": sql,
             "sql_file": "output/test/Phase4-test.sql",
+            "table_schemas": {
+                "ods_rmds.tb_res_user": "-- 用户表\nname string",
+                "dwd.trade_order_di": "-- 交易订单\norder_id string",
+            },
             "validation_result": {"issues": []},
         }
 
     @staticmethod
     def _executor(exec_results: list[bool], error: str):
+        return TestTrialSelfFix._executor_seq([(ok, error) for ok in exec_results])
+
+    @staticmethod
+    def _executor_seq(results: list[tuple[bool, str]]):
         calls = {"n": 0}
 
         class _T:
             def execute(self, **kwargs):
-                ok = exec_results[min(calls["n"], len(exec_results) - 1)]
+                ok, err = results[min(calls["n"], len(results) - 1)]
                 calls["n"] += 1
-                return type("R", (), {"success": ok, "error": None if ok else error})()
+                return type("R", (), {"success": ok, "error": None if ok else err})()
 
         return _T()
 
@@ -482,7 +522,7 @@ class TestPartitionOverLimitSelfFix:
         # 接受：state 与规范文件更新，审计副本落盘
         assert state["sql_content"] == self._FIXED_SQL
         assert (tmp_path / "Phase4-test.sql").read_text(encoding="utf-8") == self._FIXED_SQL
-        assert "Phase4-test_partitionfix.sql" in saved
+        assert "Phase4-test_trialfix.sql" in saved
         # 试跑结果更新为修复后的复跑（通过）
         assert state["trial_run_result"]["passed"] == 1
         assert state["trial_run_result"]["errors"] == []
@@ -490,7 +530,7 @@ class TestPartitionOverLimitSelfFix:
         assert validate_calls == ["validate"]
 
     def test_partition_fix_rejected_when_retrial_still_fails(self, tmp_path):
-        """修复后复跑仍失败 → 保持原 SQL，试跑结果维持首次记录（照旧报告）。"""
+        """修复后复跑同类别错误未减少 → 保持原 SQL，试跑结果维持首次记录。"""
         state = self._make_state(tmp_path)
         executor = self._executor([False, False], self._PARTITION_ERR)
 
@@ -501,20 +541,20 @@ class TestPartitionOverLimitSelfFix:
         assert len(llm_calls) == 1  # 仅一轮，不重试
         assert state["sql_content"] == self._SQL
         assert (tmp_path / "Phase4-test.sql").read_text(encoding="utf-8") == self._SQL
-        assert "Phase4-test_partitionfix.sql" not in saved
+        assert "Phase4-test_trialfix.sql" not in saved
         assert validate_calls == []
         assert state["trial_run_result"]["passed"] == 0
         assert state["trial_run_result"]["errors"]  # 原样记录
 
-    def test_non_partition_error_no_fix(self, tmp_path):
-        """非分区类试跑错误（语法等）→ 不触发定向自修（走既有门禁）。"""
+    def test_non_selffixable_error_no_fix(self, tmp_path):
+        """不可自愈类试跑错误（语法等）→ 不触发定向自修（走既有门禁）。"""
         state = self._make_state(tmp_path)
         executor = self._executor([False], "ParseException: 语法错误 near 'form'")
 
         llm_calls, saved, validate_calls = self._run(state, tmp_path, executor, "x", [])
 
         assert llm_calls == []
-        assert "Phase4-test_partitionfix.sql" not in saved
+        assert "Phase4-test_trialfix.sql" not in saved
         assert validate_calls == []
         assert state["sql_content"] == self._SQL
 
@@ -529,7 +569,7 @@ class TestPartitionOverLimitSelfFix:
 
         assert len(llm_calls) == 1
         assert state["sql_content"] == self._SQL
-        assert "Phase4-test_partitionfix.sql" not in saved
+        assert "Phase4-test_trialfix.sql" not in saved
         assert state["trial_run_result"]["errors"]
 
     def test_partition_fix_rolled_back_on_linter_error(self, tmp_path):
@@ -549,10 +589,106 @@ class TestPartitionOverLimitSelfFix:
         assert state["sql_content"] == self._SQL  # 回退
         assert (tmp_path / "Phase4-test.sql").read_text(encoding="utf-8") == self._SQL
         # 审计副本已留痕（与 _self_check_fix 同语义：失败尝试不抹除）
-        assert "Phase4-test_partitionfix.sql" in saved
+        assert "Phase4-test_trialfix.sql" in saved
         # 复检两次：接受尝试一次 + 回退还原一次
         assert len(validate_calls) == 2
         assert state["trial_run_result"]["passed"] == 0  # 保持首次（失败）记录
+
+    def test_table_not_found_fix_accepted(self, tmp_path):
+        """第十七刀(a)：幻觉表 → 定向自修，prompt 注入真实表清单 → 换表后接受。"""
+        state = self._make_state(tmp_path, self._TABLE_SQL)
+        executor = self._executor([False, True], self._TABLE_ERR)
+
+        llm_calls, saved, validate_calls = self._run(
+            state, tmp_path, executor, f"```sql\n{self._TABLE_FIXED_SQL}\n```", [{"issues": []}]
+        )
+
+        assert llm_calls, "Table not found 必须触发定向自修 LLM 调用"
+        prompt = llm_calls[0]
+        assert "Table not found" in prompt  # 错误信息在场
+        assert "ods_rmds.tb_res_user" in prompt  # 真实表清单注入
+        assert "dwd.trade_order_di" in prompt
+        assert self._TABLE_SQL in prompt  # 原 SQL 在场
+        # 接受：换表 SQL 回写 + 审计副本落盘
+        assert state["sql_content"] == self._TABLE_FIXED_SQL
+        assert "Phase4-test_trialfix.sql" in saved
+        assert state["trial_run_result"]["passed"] == 1
+        assert validate_calls == ["validate"]
+
+    def test_partition_prompt_names_unfiltered_tables(self, tmp_path):
+        """第十七刀(c)：分区 prompt 静态点名缺 inc_day 的表引用（构造性锚点）。"""
+        state = self._make_state(tmp_path)
+        executor = self._executor([False, True], self._PARTITION_ERR)
+
+        llm_calls, _saved, _v = self._run(
+            state, tmp_path, executor, f"```sql\n{self._FIXED_SQL}\n```", [{"issues": []}]
+        )
+
+        prompt = llm_calls[0]
+        assert "未检测到 inc_day 分区过滤" in prompt
+        # 原 SQL 里出现一次，锚点点名再出现一次
+        assert prompt.count("ods_rmds.tb_res_user") >= 2
+
+    def test_partial_improvement_accepted(self, tmp_path):
+        """第十七刀(b) run 23 实录：分区修好但残留 table 类错误 = 部分改善，接受。"""
+        state = self._make_state(tmp_path, self._SQL_MULTI)
+        executor = self._executor_seq(
+            [
+                (False, self._PARTITION_ERR),  # 首次试跑 SELECT #1：分区超限
+                (False, self._TABLE_ERR),  # 首次试跑 SELECT #2：幻觉表
+                (True, ""),  # 复跑 SELECT #1：已修好
+                (False, self._TABLE_ERR),  # 复跑 SELECT #2：仍幻觉表
+            ]
+        )
+
+        llm_calls, saved, validate_calls = self._run(
+            state, tmp_path, executor, f"```sql\n{self._PARTIAL_FIXED_SQL}\n```", [{"issues": []}]
+        )
+
+        assert len(llm_calls) == 1
+        # 部分改善应被接受（原门禁全有全无会否决）
+        assert state["sql_content"] == self._PARTIAL_FIXED_SQL
+        assert "Phase4-test_trialfix.sql" in saved
+        # 试跑结果=复跑的部分通过记录
+        assert state["trial_run_result"]["passed"] == 1
+        assert len(state["trial_run_result"]["errors"]) == 1
+        assert "Table not found" in state["trial_run_result"]["errors"][0]
+        assert validate_calls == ["validate"]
+
+    def test_category_worse_rejected(self, tmp_path):
+        """分区修好但引入新类别错误（幻觉表）→ not_worse 不满足 → 拒绝保持原状。"""
+        state = self._make_state(tmp_path)
+        worse_sql = self._TABLE_SQL  # 去掉分区过滤 + 换成幻觉表
+        executor = self._executor_seq([(False, self._PARTITION_ERR), (False, self._TABLE_ERR)])
+
+        llm_calls, saved, validate_calls = self._run(
+            state, tmp_path, executor, f"```sql\n{worse_sql}\n```", []
+        )
+
+        assert len(llm_calls) == 1
+        assert state["sql_content"] == self._SQL
+        assert "Phase4-test_trialfix.sql" not in saved
+        assert validate_calls == []
+        assert state["trial_run_result"]["passed"] == 0
+
+    def test_minified_output_rejected(self, tmp_path):
+        """修复输出长度 < 原 SQL 一半（丢逻辑嫌疑）→ 直接拒绝，不进入复跑。"""
+        state = self._make_state(tmp_path)
+        executor = self._executor([False], self._PARTITION_ERR)
+
+        llm_calls, saved, validate_calls = self._run(
+            state,
+            tmp_path,
+            executor,
+            "```sql\ninsert overwrite table dw.t partition (inc_day = 'x')\nselect 1\n```",
+            [],
+        )
+
+        assert len(llm_calls) == 1
+        assert state["sql_content"] == self._SQL
+        assert "Phase4-test_trialfix.sql" not in saved
+        assert validate_calls == []
+        assert state["trial_run_result"]["passed"] == 0  # 首次（失败）记录原样
 
 
 class TestNodeSqlWiring:

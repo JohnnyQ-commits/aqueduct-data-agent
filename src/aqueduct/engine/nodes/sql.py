@@ -440,10 +440,13 @@ def _auto_trial_run(state: WorkflowState, sql_path: str) -> None:
         # 记录结果
         state["trial_run_result"] = trial
 
-        # 第十六刀（run 22 实录）：分区超限是试跑唯一可自愈的硬失败——
-        # 定向自修一轮，成功则以复跑结果替代（试跑报告与门禁读它）
-        if trial["errors"] and any(_RE_PARTITION_OVER_LIMIT.search(e) for e in trial["errors"]):
-            fixed_trial = _partition_over_limit_fix(state, trial)
+        # 第十六/十七刀（run 22/23 实录）：分区超限与幻觉表是试跑可自愈的
+        # 硬失败——定向自修一轮，部分改善经分桶门禁接受后以复跑结果替代
+        if trial["errors"] and any(
+            _RE_PARTITION_OVER_LIMIT.search(e) or _RE_TABLE_NOT_FOUND.search(e)
+            for e in trial["errors"]
+        ):
+            fixed_trial = _trial_self_fix(state, trial)
             if fixed_trial is not None:
                 trial = fixed_trial
                 state["trial_run_result"] = trial
@@ -487,15 +490,60 @@ def _auto_trial_run(state: WorkflowState, sql_path: str) -> None:
         logger.warning("试跑验证失败，跳过", exc_info=True)
 
 
-def _partition_over_limit_fix(state: WorkflowState, trial: dict) -> dict | None:
-    """分区超限（PartitionOverLimit）定向自修——仅一轮（第十六刀）。
+def _classify_trial_errors(errors: list[str]) -> dict[str, list[str]]:
+    """试跑错误分桶（第十七刀）：partition / table / other。
+
+    接受门禁按类别判定部分改善——run 23 实录：全有全无门禁否决了
+    分区已修好、仅残留其他类错误的 SQL。分区类先判（错误串可能同时
+    提及表名），幻觉表类次之，其余归 other。
+    """
+    cats: dict[str, list[str]] = {"partition": [], "table": [], "other": []}
+    for e in errors:
+        if _RE_PARTITION_OVER_LIMIT.search(e):
+            cats["partition"].append(e)
+        elif _RE_TABLE_NOT_FOUND.search(e):
+            cats["table"].append(e)
+        else:
+            cats["other"].append(e)
+    return cats
+
+
+def _unfiltered_tables(sql_content: str) -> list[str]:
+    """静态找出未带 inc_day 过滤的表引用（第十七刀(c) 构造性锚点）。
+
+    run 23 实录：自修 prompt 只给抽象规则，模型不知道「哪张表缺过滤」，
+    修复输出原样保留漏网之鱼。启发式：对每个 `from/join 库.表` 引用取
+    它到下一个引用之间的窗口，窗口内无 inc_day 即嫌疑（注释已剥离，
+    派生表 `from (select` 不匹配带点表名，天然跳过）。
+    """
+    cleaned = re.sub(r"--.*$", "", sql_content, flags=re.MULTILINE)
+    cleaned = re.sub(r"/\*.*?\*/", "", cleaned, flags=re.DOTALL)
+    refs = list(re.finditer(r"\b(?:from|join)\s+([\w]+\.[\w]+)", cleaned, re.IGNORECASE))
+    suspects: list[str] = []
+    for i, m in enumerate(refs):
+        end = refs[i + 1].start() if i + 1 < len(refs) else len(cleaned)
+        if not re.search(r"\binc_day\b", cleaned[m.end() : end], re.IGNORECASE):
+            name = m.group(1).lower()
+            if name not in suspects:
+                suspects.append(name)
+    return suspects
+
+
+def _trial_self_fix(state: WorkflowState, trial: dict) -> dict | None:
+    """试跑硬失败（分区超限/幻觉表）定向自修——仅一轮（第十六/十七刀）。
 
     run 22 实录：模型把维表/快照表排除在「源表」外，引用 ods_rmds.tb_res_user
     未带 inc_day 过滤，平台 hook 编译期拒绝全表 1455 分区扫描（LIMIT 挡不住，
-    分区裁剪是编译期检查）。修复 prompt 走极简独立形态（错误 + 原 SQL + 分区
-    硬规则，不携带 persona/domain_context——第十五刀纪律）；复跑试跑通过且
-    linter 复检无 ERROR 才接受（审计副本落盘 + 规范文件回写 + 校验结果刷新），
-    否则回退原状——trial_run_result 维持首次记录，不重试（同 prompt 大概率复现）。
+    分区裁剪是编译期检查）。run 23 实录：幻觉表（Table not found）复发为周期
+    性缺陷，且全有全无接受门禁否决了分区已修好的部分改善。
+
+    修法（极简 prompt，第十五刀纪律，不携带 persona/domain_context）：
+    - 分区类：静态点名缺 inc_day 的表引用（构造性锚点）+ 分区硬规则
+    - 幻觉表类：注入 table_schemas 真实表清单，强制换表或删逻辑
+    复跑接受门禁按类别分桶：有类别改善且无类别恶化（部分改善可接受）；
+    修复输出长度 < 原文一半视为丢逻辑直接拒绝；接受仍需 linter 复检无
+    ERROR（审计副本落盘 + 规范文件回写 + 校验结果刷新），否则回退原状
+    ——trial_run_result 维持首次记录，不重试（同 prompt 大概率复现）。
 
     Returns:
         修复后的复跑试跑结果；未接受时 None。
@@ -504,45 +552,88 @@ def _partition_over_limit_fix(state: WorkflowState, trial: dict) -> dict | None:
     canonical = state.get("sql_file") or ""
     req_name = state.get("metadata", {}).get("requirement_name", "etl_sql")
     errors_formatted = "\n".join(trial["errors"][:2])
+
+    error_rules = ""
+    if any(_RE_PARTITION_OVER_LIMIT.search(e) for e in trial["errors"]):
+        suspects = _unfiltered_tables(sql_content)
+        anchor_note = (
+            f"注意：未检测到 inc_day 分区过滤的表引用——{'、'.join(suspects)}，优先补齐。\n\n"
+            if suspects
+            else ""
+        )
+        error_rules += (
+            "原因：平台限制单次查询最多扫描 400 个分区。数仓表默认分区键为 "
+            "inc_day（string，格式 YYYYMMDD），所有 FROM/JOIN 引用的数仓表"
+            "（包括维表、快照表、用户表等非事实表）都必须带 inc_day 过滤。\n\n"
+            "要求：给所有缺少分区过滤的表引用补上 inc_day 条件——事实表参照原 SQL "
+            "中已有事实表的过滤范围，维表/快照表取相同日期；其余逻辑逐字保留，"
+            "不改字段、不改聚合、不改输出列。\n\n"
+            f"{anchor_note}"
+        )
+    if any(_RE_TABLE_NOT_FOUND.search(e) for e in trial["errors"]):
+        real_tables = sorted((state.get("table_schemas") or {}).keys())
+        real_list = "\n".join(f"- {t}" for t in real_tables) if real_tables else "（未获取）"
+        error_rules += (
+            "原因：SQL 引用了不存在的表。以下为本次需求真实可用的源表清单"
+            "（来自元数据平台，唯一权威）：\n"
+            f"{real_list}\n\n"
+            "要求：把不存在的表替换为清单中最接近的真实表（字段不兼容时同步调整"
+            "引用字段），或删除对该表的引用逻辑；其余逻辑逐字保留，不改字段、"
+            "不改聚合、不改输出列。\n\n"
+        )
+
     prompt = (
         "以下 Hive SQL 试跑被平台拒绝，请修复并输出完整 SQL（```sql 代码块，"
         "不要输出任何解释或说明）：\n\n"
         f"错误信息：\n{errors_formatted}\n\n"
-        "原因：平台限制单次查询最多扫描 400 个分区。数仓表默认分区键为 "
-        "inc_day（string，格式 YYYYMMDD），所有 FROM/JOIN 引用的数仓表"
-        "（包括维表、快照表、用户表等非事实表）都必须带 inc_day 过滤。\n\n"
-        "要求：给所有缺少分区过滤的表引用补上 inc_day 条件——事实表参照原 SQL "
-        "中已有事实表的过滤范围，维表/快照表取相同日期；其余逻辑逐字保留，"
-        "不改字段、不改聚合、不改输出列。\n\n"
+        f"{error_rules}"
         f"原 SQL：\n{sql_content}\n"
     )
-    logger.info("[task=%s] 试跑分区超限，定向自修（1 轮）", req_name)
+    logger.info("[task=%s] 试跑发现可自愈错误，定向自修（1 轮）", req_name)
     try:
         fix_response = call_llm(state, "sql_fix", prompt)
     except Exception as e:
-        logger.warning("[task=%s] 试跑分区自修: LLM 调用失败，保持原 SQL: %s", req_name, e)
+        logger.warning("[task=%s] 试跑自修: LLM 调用失败，保持原 SQL: %s", req_name, e)
         return None
 
     fixed_sql = extract_sql_block(fix_response)
     if not is_valid_sql(fixed_sql) or fixed_sql == sql_content:
-        logger.warning("[task=%s] 试跑分区自修: 修复输出无效或未变更，保持原 SQL", req_name)
+        logger.warning("[task=%s] 试跑自修: 修复输出无效或未变更，保持原 SQL", req_name)
+        return None
+    if len(fixed_sql) < len(sql_content) * 0.5:
+        # 第十七刀：长度腰斩=丢逻辑嫌疑（run 20 骨架残缺同族），直接拒绝
+        logger.warning(
+            "[task=%s] 试跑自修: 修复输出过短（%d 字符 < 原 %d 一半），疑似丢逻辑，保持原 SQL",
+            req_name,
+            len(fixed_sql),
+            len(sql_content),
+        )
         return None
 
-    # 复跑试跑：仍失败 → 保持原状（trial_run_result 维持首次记录）
+    # 复跑试跑：按类别分桶判定（改善=某类减少且无类别增加；部分改善接受）
     new_trial = _run_trial_selects(fixed_sql)
-    if new_trial["errors"]:
-        logger.warning("[task=%s] 试跑分区自修: 修复后复跑仍失败，保持原 SQL", req_name)
+    old_cats = _classify_trial_errors(trial["errors"])
+    new_cats = _classify_trial_errors(new_trial["errors"])
+    improved = any(len(new_cats[k]) < len(old_cats[k]) for k in old_cats)
+    not_worse = all(len(new_cats[k]) <= len(old_cats[k]) for k in old_cats)
+    if not (improved and not_worse):
+        logger.warning(
+            "[task=%s] 试跑自修: 复跑未改善（错误分桶 %s → %s），保持原 SQL",
+            req_name,
+            {k: len(v) for k, v in old_cats.items()},
+            {k: len(v) for k, v in new_cats.items()},
+        )
         return None
 
     # 接受：审计副本 + 规范文件回写 + linter 复检（修复不得引入新 ERROR）
-    save_artifact(state, f"Phase4-{req_name}_partitionfix.sql", fixed_sql)
+    save_artifact(state, f"Phase4-{req_name}_trialfix.sql", fixed_sql)
     state["sql_content"] = fixed_sql
     if canonical:
         try:
             _resolve_sql_path(state, canonical).write_text(fixed_sql, encoding="utf-8")
         except Exception:
             logger.warning(
-                "[task=%s] 试跑分区自修: 规范文件回写失败（审计副本已保存）",
+                "[task=%s] 试跑自修: 规范文件回写失败（审计副本已保存）",
                 req_name,
                 exc_info=True,
             )
@@ -555,7 +646,7 @@ def _partition_over_limit_fix(state: WorkflowState, trial: dict) -> dict | None:
     if error_issues:
         # linter 复检不过 → 回退原 SQL 并还原校验结果（第十五刀同款回退纪律）
         logger.warning(
-            "[task=%s] 试跑分区自修: 修复引入 linter ERROR（%d 个），回退原 SQL",
+            "[task=%s] 试跑自修: 修复引入 linter ERROR（%d 个），回退原 SQL",
             req_name,
             len(error_issues),
         )
@@ -564,11 +655,11 @@ def _partition_over_limit_fix(state: WorkflowState, trial: dict) -> dict | None:
             try:
                 _resolve_sql_path(state, canonical).write_text(sql_content, encoding="utf-8")
             except Exception:
-                logger.warning("[task=%s] 试跑分区自修: 原SQL回写失败", req_name, exc_info=True)
+                logger.warning("[task=%s] 试跑自修: 原SQL回写失败", req_name, exc_info=True)
         _auto_validate(state, canonical)
         return None
 
-    logger.info("[task=%s] 试跑分区自修: 修复生效（复跑试跑通过）", req_name)
+    logger.info("[task=%s] 试跑自修: 修复生效（复跑经分桶门禁改善）", req_name)
     return new_trial
 
 
