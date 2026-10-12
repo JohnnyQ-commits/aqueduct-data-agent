@@ -612,23 +612,43 @@ def _ddl_column_alignment_issues(state: WorkflowState) -> list[dict[str, str]]:
     # 核对产物后推翻——最终 SQL 只交付了 hour 表，day 表（SQL-1）整个缺失，
     # keyword 抓的是真缺陷。DDL 产出表缺 insert 目标 = 交付缺表，与 6a 的
     # 「DDL 逐表建齐」同款约束搬到 SQL 侧；tmp_ 前缀表由 CTAS 落地，不在其列。
+    # 第十八刀(c) run 24 实录：缺交付按数仓分层区分——ads_ 最终产出表缺失
+    # 保持 Critical；dws_/dwd_/dim_ 中间层缺失降 Warning（模板「多层合并」
+    # 明确允许 DWD+DWS 合并进 ADS，run 24 的 3 条 Critical 全是 Phase 2
+    # 过度设计 + Phase 4 合并的正常偏离，enforce 模式下会逼修复环空转加表）；
+    # 未知前缀保守默认 Critical（不放松 run 9 防护）。
     missing = [
         name
         for name in tables
         if not name.split(".", 1)[0].startswith("tmp_") and name not in insert_targets
     ]
     for name in sorted(missing):
-        issues.append(
-            {
-                "severity": "Critical",
-                "dimension": "对齐",
-                "message": (
-                    f"[对齐] 目标表 {name} 在 DDL 已定义但 SQL 无对应 insert overwrite"
-                    "——需求点名的产出表必须逐表交付，缺失即未完成交付（禁止只建表"
-                    "不落数）；补齐该表的完整 insert overwrite 语句"
-                ),
-            }
-        )
+        tbl_name = name.rsplit(".", 1)[-1]
+        if tbl_name.startswith("ads_") or not tbl_name.startswith(("dws_", "dwd_", "dim_")):
+            issues.append(
+                {
+                    "severity": "Critical",
+                    "dimension": "对齐",
+                    "message": (
+                        f"[对齐] 目标表 {name} 在 DDL 已定义但 SQL 无对应 insert overwrite"
+                        "——需求点名的产出表必须逐表交付，缺失即未完成交付（禁止只建表"
+                        "不落数）；补齐该表的完整 insert overwrite 语句"
+                    ),
+                }
+            )
+        else:
+            issues.append(
+                {
+                    "severity": "Warning",
+                    "dimension": "对齐",
+                    "message": (
+                        f"[对齐] 中间层表 {name} 在 DDL 已定义但 SQL 无对应 insert "
+                        "overwrite——模板允许 DWD+DWS 多层合并进 ADS（中间表可合法"
+                        "不落），故降为 Warning 供人工确认；若该表为需求点名产出，"
+                        "请补齐该表的 insert overwrite"
+                    ),
+                }
+            )
     return issues
 
 
@@ -762,12 +782,18 @@ def node_review(state: WorkflowState) -> WorkflowState:
             )
         # 第七刀 7c: DDL 列对齐确定性门禁（零 token，与 linter 同构）——
         # run 9 实录：select 8 列 vs DDL 11 列的错位写入，LLM 审查 2 轮没修掉
+        # 第十八刀(c) run 24 实录：门禁含 7b 交付覆盖（缺 insert），日志不得
+        # 统称「列数不一致」——按严重度分开报
         ddl_issues = _ddl_column_alignment_issues(state)
         if ddl_issues:
+            n_ddl_critical = sum(1 for i in ddl_issues if i["severity"] == "Critical")
             logger.warning(
-                "[task=%s] DDL 列对齐门禁: %d 条 INSERT select 与 DDL 列数不一致，注入 Critical",
+                "[task=%s] DDL 对齐门禁: %d 项（列数不一致/最终表缺交付 Critical %d"
+                " + 中间层未落 Warning %d）",
                 req_name,
                 len(ddl_issues),
+                n_ddl_critical,
+                len(ddl_issues) - n_ddl_critical,
             )
         # PERF-11: Confirm 级（需人工确认的口径/依赖问题）单独路由——
         # 改代码无法消除，不进修复循环（greenfield 待确认是常态，

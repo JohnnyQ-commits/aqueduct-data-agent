@@ -114,6 +114,25 @@ class TestSkillExecution:
         assert "都必须带分区过滤" in prompt
         assert "维表" in prompt
 
+    def test_sql_develop_forbids_tables_outside_schema_list(self):
+        """第十八刀(b)（run 24 实录）：禁止引用源表清单之外的表——幻觉表
+        3/6 run 复发（dw_first_working_detail_tmp 同款），生成端必须明确
+        清单外的表不存在，宁可删逻辑也不编造表名。"""
+        skill = get_skill("sql_develop")
+        context = SkillContext(
+            input={
+                "requirement_doc": "查询数据",
+                "ddl_content": "CREATE TABLE test (id INT);",
+                "design_scheme": "从 source 表取数",
+                "domain_context": "",
+            },
+            state={},
+        )
+        result = skill.execute(context)
+        prompt = result.data["prompt"]
+        assert "源表清单之外" in prompt
+        assert "视为不存在" in prompt
+
     def test_code_review_execution(self):
         skill = get_skill("code_review")
         context = SkillContext(

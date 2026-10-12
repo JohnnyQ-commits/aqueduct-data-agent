@@ -609,6 +609,9 @@ class TestTrialSelfFix:
         assert "ods_rmds.tb_res_user" in prompt  # 真实表清单注入
         assert "dwd.trade_order_di" in prompt
         assert self._TABLE_SQL in prompt  # 原 SQL 在场
+        # 第十八刀(a) run 24 实录：换表要求必须连带分区规则——run 24 模型换表
+        # 成功（table 1→0）但换上的裸表撞分区钩子（partition 0→1），一错换一错
+        assert "换上的表必须带 inc_day 分区过滤" in prompt
         # 接受：换表 SQL 回写 + 审计副本落盘
         assert state["sql_content"] == self._TABLE_FIXED_SQL
         assert "Phase4-test_trialfix.sql" in saved

@@ -848,6 +848,57 @@ class TestDdlDeliveryCoverage:
         )
         assert self._issues(sql, ddl) == [], "tmp_ 前缀表由 CTAS 落地，不要求 insert"
 
+    def test_dws_intermediate_table_without_insert_is_warning(self):
+        """第十八刀(c) run 24 实录：DWS 中间层缺 insert 降为 Warning——
+
+        Phase 2 设计了 DWS 中间表、Phase 4 走模板明确允许的「多层合并」
+        （DWD+DWS 合并进 ADS），run 24 的 3 条 Critical 全是这类设计偏离
+        而非真缺交付（两个真实 ADS INSERT 列数全对）。ADS 最终产出表缺失
+        仍保持 Critical（run 9 真缺陷不放松）；未知前缀保守默认 Critical。
+        """
+        ddl = (
+            self._DDL
+            + """
+        create table if not exists dm_dw_demo.dws_knight_weekly_agg_di (
+            dept_code string comment '部门编码'
+        ) partitioned by (inc_day string);
+        """
+        )
+        sql = (
+            "insert overwrite table ads_dw_demo.ads_knight_weekly_di partition (inc_day = '1')\n"
+            "select\n    emp_code,\n    dept_code\n"
+            "from tmp_dw_demo.tmp_base\nwhere inc_day = '1';\n"
+            "insert overwrite table ads_dw_demo.ads_knight_weekly_hour_di partition (inc_day = '1')\n"
+            "select\n    emp_code,\n    hour_bucket\nfrom tmp_dw_demo.tmp_base\nwhere inc_day = '1';"
+        )
+        issues = self._issues(sql, ddl)
+        dws_issues = [i for i in issues if "dws_knight_weekly_agg_di" in i["message"]]
+        assert len(dws_issues) == 1, "DWS 中间表缺 insert 应报 1 条"
+        assert dws_issues[0]["severity"] == "Warning", "中间层降 Warning，不进修复环"
+        assert "多层合并" in dws_issues[0]["message"], "说明降级依据供人工判断"
+
+    def test_unknown_prefix_table_without_insert_stays_critical(self):
+        """非 ads_ 也非已知中间层前缀 → 保守默认 Critical（不放松 run 9 防护）。"""
+        ddl = (
+            self._DDL
+            + """
+        create table if not exists report_dw_demo.rpt_knight_weekly (
+            dept_code string comment '部门编码'
+        ) partitioned by (inc_day string);
+        """
+        )
+        sql = (
+            "insert overwrite table ads_dw_demo.ads_knight_weekly_di partition (inc_day = '1')\n"
+            "select\n    emp_code,\n    dept_code\n"
+            "from tmp_dw_demo.tmp_base\nwhere inc_day = '1';\n"
+            "insert overwrite table ads_dw_demo.ads_knight_weekly_hour_di partition (inc_day = '1')\n"
+            "select\n    emp_code,\n    hour_bucket\nfrom tmp_dw_demo.tmp_base\nwhere inc_day = '1';"
+        )
+        issues = self._issues(sql, ddl)
+        rpt_issues = [i for i in issues if "rpt_knight_weekly" in i["message"]]
+        assert len(rpt_issues) == 1
+        assert rpt_issues[0]["severity"] == "Critical"
+
 
 class TestTrialSelectsStagingTableBlocked:
     """第八刀 8a：承接表依赖改判——脚本自建表的 Table not found 不是 SQL 缺陷。
