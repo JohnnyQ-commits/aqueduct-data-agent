@@ -13,6 +13,7 @@ AQUEDUCT_SQL_SELF_FIX_ROUNDS（默认 1，0=关闭）；修不动保持原状—
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -404,6 +405,7 @@ class TestTrialSelfFix:
         "select u.name from ods_rmds.tb_res_user u "
         "where u.is_deleted = 0 and u.inc_day = '20260601'"
     )
+    _OTHER_ERR = "SELECT #1: 任务执行失败: FAILED: RuntimeException: 无关执行错误"
     _SQL_MULTI = (
         "insert overwrite table dw.t partition (inc_day = '${bizdate}')\n"
         "select u.name from ods_rmds.tb_res_user u where u.is_deleted = 0"
@@ -692,6 +694,85 @@ class TestTrialSelfFix:
         assert "Phase4-test_trialfix.sql" not in saved
         assert validate_calls == []
         assert state["trial_run_result"]["passed"] == 0  # 首次（失败）记录原样
+
+    def test_dual_heal_accepts_despite_new_other_error(self, tmp_path):
+        """第十九刀(b) run 25 实录：使命类别（partition+table）双清零时，
+        other 新增错误不再一票否决——「二换一」应被接受，残留 other 交审查
+        门禁处理（run 25：partition+table 全修好却被 other 0→1 否决，且被拒
+        SQL 无留痕无法归因）。"""
+        state = self._make_state(tmp_path, self._SQL_MULTI)
+        executor = self._executor_seq(
+            [
+                (False, self._PARTITION_ERR),  # 首次 #1：分区超限
+                (False, self._TABLE_ERR),  # 首次 #2：幻觉表
+                (True, ""),  # 复跑 #1：已修好
+                (False, self._OTHER_ERR),  # 复跑 #2：新 other 执行错误
+            ]
+        )
+        # 修复 SQL：#1 补分区 + #2 换真表（使命类别全清），#2 换表后引入 other
+        fixed_sql = (
+            "insert overwrite table dw.t partition (inc_day = '${bizdate}')\n"
+            "select u.name from ods_rmds.tb_res_user u "
+            "where u.is_deleted = 0 and u.inc_day = '20260601'"
+            ";\n"
+            "insert overwrite table dw.t2 partition (inc_day = '${bizdate}')\n"
+            "select x.name from ods_rmds.tb_res_user x where x.is_deleted = 0"
+        )
+
+        llm_calls, saved, validate_calls = self._run(
+            state, tmp_path, executor, f"```sql\n{fixed_sql}\n```", [{"issues": []}]
+        )
+
+        assert len(llm_calls) == 1
+        # 双修好 + other 新增 → 接受（run 25 被一票否决的反例）
+        assert state["sql_content"] == fixed_sql
+        assert "Phase4-test_trialfix.sql" in saved
+        assert "Phase4-test_trialfix_reject.sql" not in saved  # 接受不留 reject 副本
+        assert state["trial_run_result"]["passed"] == 1
+        assert len(state["trial_run_result"]["errors"]) == 1
+        assert validate_calls == ["validate"]
+
+    def test_bucket_rejection_saves_reject_audit_copy(self, tmp_path, caplog):
+        """第十九刀(a)：分桶拒绝时留痕——被拒修复 SQL 存 trialfix_reject
+        审计副本，复跑错误文本进日志（_self_check_fix 同语义：失败尝试
+        不抹除，事后可归因）。"""
+        state = self._make_state(tmp_path)
+        worse_sql = self._TABLE_SQL  # 换成幻觉表（分区修好但引入 table 错）
+        executor = self._executor_seq([(False, self._PARTITION_ERR), (False, self._TABLE_ERR)])
+
+        with caplog.at_level(logging.WARNING, logger="src.aqueduct.engine.nodes.sql"):
+            llm_calls, saved, validate_calls = self._run(
+                state, tmp_path, executor, f"```sql\n{worse_sql}\n```", []
+            )
+
+        assert len(llm_calls) == 1
+        assert state["sql_content"] == self._SQL  # 保持原状
+        assert "Phase4-test_trialfix_reject.sql" in saved  # 被拒修复留痕
+        assert "Phase4-test_trialfix.sql" not in saved
+        assert validate_calls == []
+        # 复跑错误文本进日志（事后归因）
+        assert "Table not found" in caplog.text
+
+    def test_other_increase_without_mission_clear_still_rejected(self):
+        """other 豁免仅在使命类别双清零时生效——部分改善+other 新增仍拒绝。
+
+        分桶 {p:1,t:1,o:0} → {p:0,t:1,o:1}：分区修好但幻觉表残留且 other
+        新增——mission 未清，other 豁免不适用，应拒绝（防「换进更差 other」）。
+        """
+        from src.aqueduct.engine.nodes.sql import _classify_trial_errors
+
+        old = _classify_trial_errors([self._PARTITION_ERR, self._TABLE_ERR])
+        new = _classify_trial_errors([self._TABLE_ERR, self._OTHER_ERR])
+        assert old == {"partition": [self._PARTITION_ERR], "table": [self._TABLE_ERR], "other": []}
+        assert new["partition"] == [] and new["table"] and new["other"]
+
+        healable = ("partition", "table")
+        improved = any(len(new[k]) < len(old[k]) for k in healable)
+        not_worse = all(len(new[k]) <= len(old[k]) for k in healable)
+        mission_cleared = all(len(new[k]) == 0 for k in healable if old[k])
+        other_ok = len(new["other"]) <= len(old["other"]) or mission_cleared
+        assert improved and not_worse  # 使命类别维度看是部分改善
+        assert not other_ok  # mission 未清 + other 新增 → 拒绝
 
 
 class TestNodeSqlWiring:

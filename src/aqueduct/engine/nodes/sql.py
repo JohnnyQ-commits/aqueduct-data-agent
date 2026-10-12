@@ -540,10 +540,13 @@ def _trial_self_fix(state: WorkflowState, trial: dict) -> dict | None:
     修法（极简 prompt，第十五刀纪律，不携带 persona/domain_context）：
     - 分区类：静态点名缺 inc_day 的表引用（构造性锚点）+ 分区硬规则
     - 幻觉表类：注入 table_schemas 真实表清单，强制换表或删逻辑
-    复跑接受门禁按类别分桶：有类别改善且无类别恶化（部分改善可接受）；
-    修复输出长度 < 原文一半视为丢逻辑直接拒绝；接受仍需 linter 复检无
-    ERROR（审计副本落盘 + 规范文件回写 + 校验结果刷新），否则回退原状
-    ——trial_run_result 维持首次记录，不重试（同 prompt 大概率复现）。
+    复跑接受门禁按类别分桶（第十九刀 run 25 实录修订）：改善与不恶化只看
+    使命类别 partition/table（部分改善可接受）；other 新增仅在使命类别
+    双清零时豁免（残留 other 交审查门禁），mission 未清时 other 新增仍否决；
+    拒绝时被拒修复 SQL 存 trialfix_reject 审计副本 + 复跑错误文本进日志
+    （事后可归因）。修复输出长度 < 原文一半视为丢逻辑直接拒绝；接受仍需
+    linter 复检无 ERROR（审计副本落盘 + 规范文件回写 + 校验结果刷新），
+    否则回退原状——trial_run_result 维持首次记录，不重试（同 prompt 大概率复现）。
 
     Returns:
         修复后的复跑试跑结果；未接受时 None。
@@ -611,18 +614,30 @@ def _trial_self_fix(state: WorkflowState, trial: dict) -> dict | None:
         )
         return None
 
-    # 复跑试跑：按类别分桶判定（改善=某类减少且无类别增加；部分改善接受）
+    # 复跑试跑：按类别分桶判定（第十九刀 run 25 实录修订）——改善与不恶化
+    # 只看使命类别（partition/table，自修的触发类别），部分改善接受；other
+    # 新增仅在使命类别双清零时豁免（残留 other 交审查门禁），mission 未清
+    # 时 other 新增仍否决（防「换进更差 other」）
     new_trial = _run_trial_selects(fixed_sql)
     old_cats = _classify_trial_errors(trial["errors"])
     new_cats = _classify_trial_errors(new_trial["errors"])
-    improved = any(len(new_cats[k]) < len(old_cats[k]) for k in old_cats)
-    not_worse = all(len(new_cats[k]) <= len(old_cats[k]) for k in old_cats)
-    if not (improved and not_worse):
+    healable = ("partition", "table")
+    improved = any(len(new_cats[k]) < len(old_cats[k]) for k in healable)
+    not_worse = all(len(new_cats[k]) <= len(old_cats[k]) for k in healable)
+    mission_cleared = all(len(new_cats[k]) == 0 for k in healable if old_cats[k])
+    other_ok = len(new_cats["other"]) <= len(old_cats["other"]) or mission_cleared
+    if not (improved and not_worse and other_ok):
+        # 拒绝留痕（run 25「二换一被拒」无法事后归因的教训；_self_check_fix
+        # 同语义：失败尝试不抹除，事后可归因）
+        save_artifact(state, f"Phase4-{req_name}_trialfix_reject.sql", fixed_sql)
         logger.warning(
-            "[task=%s] 试跑自修: 复跑未改善（错误分桶 %s → %s），保持原 SQL",
+            "[task=%s] 试跑自修: 复跑未改善（错误分桶 %s → %s），保持原 SQL；"
+            "被拒修复已存 Phase4-%s_trialfix_reject.sql，复跑错误: %s",
             req_name,
             {k: len(v) for k, v in old_cats.items()},
             {k: len(v) for k, v in new_cats.items()},
+            req_name,
+            "; ".join(new_trial["errors"])[:300],
         )
         return None
 
