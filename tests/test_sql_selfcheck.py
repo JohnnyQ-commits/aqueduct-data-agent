@@ -365,6 +365,196 @@ class TestSelfCheckFix:
         assert len(validate_calls) == 3
 
 
+class TestPartitionOverLimitSelfFix:
+    """第十六刀（run 22 实录）：试跑分区超限（PartitionOverLimit）定向自修。
+
+    根因：模型把维表/快照表排除在「源表」外，引用分区表未带 inc_day 过滤，
+    平台 hook 编译期拒绝（LIMIT 挡不住）。修法=极简 prompt（错误+原 SQL+
+    分区硬规则，第十五刀纪律），修后复跑试跑，通过且 linter 复检无 ERROR
+    才接受；仅一轮，失败保持原状（试跑结果照旧记录）。
+    """
+
+    _SQL = (
+        "insert overwrite table dw.t partition (inc_day = '${bizdate}')\n"
+        "select u.name from ods_rmds.tb_res_user u where u.is_deleted = 0"
+    )
+    _PARTITION_ERR = (
+        "SELECT #1: 任务执行失败: FAILED: Hive Internal Error: "
+        "com.sf.bdp.hive.hooks.PartitionOverLimitException"
+        "(can only query max 400 partition,but current query partitions is 1455)"
+    )
+    _FIXED_SQL = (
+        "insert overwrite table dw.t partition (inc_day = '${bizdate}')\n"
+        "select u.name from ods_rmds.tb_res_user u "
+        "where u.is_deleted = 0 and u.inc_day = '20260601'"
+    )
+
+    @staticmethod
+    def _make_state(tmp_path: Path) -> dict:
+        canonical = tmp_path / "Phase4-test.sql"
+        canonical.write_text(TestPartitionOverLimitSelfFix._SQL, encoding="utf-8")
+        return {
+            "requirement": "需求",
+            "mode": "dev",
+            "metadata": {"requirement_name": "test"},
+            "errors": [],
+            "artifacts": [],
+            "sql_content": TestPartitionOverLimitSelfFix._SQL,
+            "sql_file": "output/test/Phase4-test.sql",
+            "validation_result": {"issues": []},
+        }
+
+    @staticmethod
+    def _executor(exec_results: list[bool], error: str):
+        calls = {"n": 0}
+
+        class _T:
+            def execute(self, **kwargs):
+                ok = exec_results[min(calls["n"], len(exec_results) - 1)]
+                calls["n"] += 1
+                return type("R", (), {"success": ok, "error": None if ok else error})()
+
+        return _T()
+
+    @staticmethod
+    def _run(state, tmp_path, executor, llm_side_effect, validate_queue):
+        """跑 _auto_trial_run，返回 (llm_calls, saved, validate_calls)。"""
+        canonical = tmp_path / "Phase4-test.sql"
+        llm_calls: list[str] = []
+        saved: list[str] = []
+        validate_calls: list[str] = []
+
+        def fake_llm(_st, task_type, prompt):
+            llm_calls.append(prompt)
+            if isinstance(llm_side_effect, Exception):
+                raise llm_side_effect
+            return llm_side_effect
+
+        def fake_validate(st, _path):
+            validate_calls.append("validate")
+            if validate_queue:
+                st["validation_result"] = validate_queue.pop(0)
+
+        adapter = MagicMock()
+        adapter.has_capability.return_value = True
+
+        with (
+            patch("src.aqueduct.platform.get_platform_adapter", return_value=adapter),
+            patch("src.aqueduct.tools.registry.get_tool", return_value=executor),
+            patch(
+                "src.aqueduct.engine.nodes.sql.call_llm",
+                side_effect=fake_llm,
+            ),
+            patch(
+                "src.aqueduct.engine.nodes.sql._auto_validate",
+                side_effect=fake_validate,
+            ),
+            patch(
+                "src.aqueduct.engine.nodes.sql.save_artifact",
+                side_effect=lambda st, name, content: saved.append(name) or "",
+            ),
+            patch(
+                "src.aqueduct.engine.nodes.sql._resolve_sql_path",
+                return_value=canonical,
+            ),
+        ):
+            from src.aqueduct.engine.nodes.sql import _auto_trial_run
+
+            _auto_trial_run(state, "output/test/Phase4-test.sql")
+
+        return llm_calls, saved, validate_calls
+
+    def test_partition_over_limit_fix_accepted(self, tmp_path):
+        """分区超限 → 定向自修 → 复跑通过 + linter 干净 → 接受（回写+审计副本）。"""
+        state = self._make_state(tmp_path)
+        executor = self._executor([False, True], self._PARTITION_ERR)
+
+        llm_calls, saved, validate_calls = self._run(
+            state, tmp_path, executor, f"```sql\n{self._FIXED_SQL}\n```", [{"issues": []}]
+        )
+
+        assert llm_calls, "分区超限必须触发定向自修 LLM 调用"
+        prompt = llm_calls[0]
+        assert "PartitionOverLimit" in prompt  # 错误信息在场
+        assert "inc_day" in prompt  # 分区硬规则在场
+        assert self._SQL in prompt  # 原 SQL 在场
+        assert "400" in prompt  # 平台分区上限背景在场
+        # 接受：state 与规范文件更新，审计副本落盘
+        assert state["sql_content"] == self._FIXED_SQL
+        assert (tmp_path / "Phase4-test.sql").read_text(encoding="utf-8") == self._FIXED_SQL
+        assert "Phase4-test_partitionfix.sql" in saved
+        # 试跑结果更新为修复后的复跑（通过）
+        assert state["trial_run_result"]["passed"] == 1
+        assert state["trial_run_result"]["errors"] == []
+        # 接受前 linter 复检一次
+        assert validate_calls == ["validate"]
+
+    def test_partition_fix_rejected_when_retrial_still_fails(self, tmp_path):
+        """修复后复跑仍失败 → 保持原 SQL，试跑结果维持首次记录（照旧报告）。"""
+        state = self._make_state(tmp_path)
+        executor = self._executor([False, False], self._PARTITION_ERR)
+
+        llm_calls, saved, validate_calls = self._run(
+            state, tmp_path, executor, f"```sql\n{self._FIXED_SQL}\n```", []
+        )
+
+        assert len(llm_calls) == 1  # 仅一轮，不重试
+        assert state["sql_content"] == self._SQL
+        assert (tmp_path / "Phase4-test.sql").read_text(encoding="utf-8") == self._SQL
+        assert "Phase4-test_partitionfix.sql" not in saved
+        assert validate_calls == []
+        assert state["trial_run_result"]["passed"] == 0
+        assert state["trial_run_result"]["errors"]  # 原样记录
+
+    def test_non_partition_error_no_fix(self, tmp_path):
+        """非分区类试跑错误（语法等）→ 不触发定向自修（走既有门禁）。"""
+        state = self._make_state(tmp_path)
+        executor = self._executor([False], "ParseException: 语法错误 near 'form'")
+
+        llm_calls, saved, validate_calls = self._run(state, tmp_path, executor, "x", [])
+
+        assert llm_calls == []
+        assert "Phase4-test_partitionfix.sql" not in saved
+        assert validate_calls == []
+        assert state["sql_content"] == self._SQL
+
+    def test_partition_fix_llm_failure_keeps_original(self, tmp_path):
+        """LLM 调用失败 → 保持原 SQL，试跑结果照旧记录。"""
+        state = self._make_state(tmp_path)
+        executor = self._executor([False], self._PARTITION_ERR)
+
+        llm_calls, saved, _validate_calls = self._run(
+            state, tmp_path, executor, RuntimeError("网关炸了"), []
+        )
+
+        assert len(llm_calls) == 1
+        assert state["sql_content"] == self._SQL
+        assert "Phase4-test_partitionfix.sql" not in saved
+        assert state["trial_run_result"]["errors"]
+
+    def test_partition_fix_rolled_back_on_linter_error(self, tmp_path):
+        """复跑通过但修复引入 linter ERROR → 回退原 SQL 并还原校验结果。"""
+        state = self._make_state(tmp_path)
+        executor = self._executor([False, True], self._PARTITION_ERR)
+
+        llm_calls, saved, validate_calls = self._run(
+            state,
+            tmp_path,
+            executor,
+            f"```sql\n{self._FIXED_SQL}\n```",
+            [{"issues": [{"level": "ERROR", "message": "除法未判零", "line": 3}]}, {"issues": []}],
+        )
+
+        assert len(llm_calls) == 1
+        assert state["sql_content"] == self._SQL  # 回退
+        assert (tmp_path / "Phase4-test.sql").read_text(encoding="utf-8") == self._SQL
+        # 审计副本已留痕（与 _self_check_fix 同语义：失败尝试不抹除）
+        assert "Phase4-test_partitionfix.sql" in saved
+        # 复检两次：接受尝试一次 + 回退还原一次
+        assert len(validate_calls) == 2
+        assert state["trial_run_result"]["passed"] == 0  # 保持首次（失败）记录
+
+
 class TestNodeSqlWiring:
     """node_sql 接线：自检在 validate 之后、试跑/血缘/成本之前（基于修复后 SQL）。"""
 

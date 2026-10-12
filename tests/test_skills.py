@@ -95,6 +95,25 @@ class TestSkillExecution:
         assert result.success
         assert "prompt" in result.data
 
+    def test_sql_develop_partition_rule_covers_dimension_tables(self):
+        """第十六刀（run 22 实录）：分区过滤规则必须覆盖维表/快照表——
+        模型曾把 ods 用户维表排除在「源表」外，1455 全表分区扫描被平台
+        编译期拒绝（PartitionOverLimit）。"""
+        skill = get_skill("sql_develop")
+        context = SkillContext(
+            input={
+                "requirement_doc": "查询数据",
+                "ddl_content": "CREATE TABLE test (id INT);",
+                "design_scheme": "从 source 表取数",
+                "domain_context": "",
+            },
+            state={},
+        )
+        result = skill.execute(context)
+        prompt = result.data["prompt"]
+        assert "都必须带分区过滤" in prompt
+        assert "维表" in prompt
+
     def test_code_review_execution(self):
         skill = get_skill("code_review")
         context = SkillContext(
