@@ -152,6 +152,15 @@ class Settings(BaseSettings):
         description="审查→修复循环最大迭代次数。",
     )
 
+    review_parse_oracle: bool = Field(
+        default=True,
+        description=(
+            "审查语法声称的机械 oracle 改判开关（Phase 4.5，第二十一刀）。"
+            "LLM 审查的语法残缺类 Critical 先过 sqlglot 解析，解析干净即"
+            "降级 Confirm（疑似审查幻觉）。False 时审查发现照旧处理。"
+        ),
+    )
+
     review_enforce: bool = Field(
         default=True,
         description=(

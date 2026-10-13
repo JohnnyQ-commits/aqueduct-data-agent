@@ -1016,3 +1016,125 @@ class TestDdlAlignmentDynamicPartition:
         )
         issues = self._issues(sql)
         assert len(issues) == 1 and "3" in issues[0]["message"] and "2" in issues[0]["message"]
+
+
+# ── 第二十一刀：审查语法类 Critical 的 oracle 改判（run 31 实录）──────────────
+# run 31（2026-10-13）实录：终审 2 个 Critical（「work_hours_before_13h 表达式
+# 残缺」「ao 子查询块整体残缺」）经 3 轮修复无法收敛触发 [终止]——事后逐字节
+# 核对磁盘 SQL：两处均完好（表达式完整、子查询结构齐全），sqlglot 全量解析
+# 通过。审查 LLM 幻觉语法缺陷 → 修复循环治不存在的病 → 轮次耗尽 halt。
+# 契约：LLM 来源的 Critical 若消息声称语法级残缺（残缺/断裂/语法/无法编译/
+# 编译失败/截断/非法/缺失比较条件），先过 sqlglot（hive 方言）机械解析——
+# 解析干净 → 降级 Confirm（[oracle改判] 前缀）进人工确认清单，不再喂修复循环；
+# 解析器也报错 → 保持 Critical（oracle 与审查一致，真问题）。确定性来源
+# （试跑/linter/DDL 对齐）不参与改判。oracle 失能（sqlglot 缺失/开关关闭）
+# 时一切照旧。
+
+
+class TestParseOracleAdjudication:
+    """node_review：语法声称 Critical 的机械改判接线。"""
+
+    def _run_node_review(self, logic_issues: list[str], sql: str | None = None) -> dict:
+        state = _make_state()
+        if sql is not None:
+            state["sql_content"] = sql
+        queues = {
+            "alignment": [_dim_response("需求与设计对齐", [])],
+            "logic": [_dim_response("逻辑正确性", logic_issues)],
+            "standards": [_dim_response("规范与影响", [])],
+        }
+        with (
+            patch(
+                "src.aqueduct.engine.nodes.review.call_llm",
+                side_effect=TestReviewByDimensions._call_router(queues),
+            ),
+            patch("src.aqueduct.engine.nodes.review.save_artifact", return_value="output/x.md"),
+            patch("src.aqueduct.engine.nodes.review.start_dqc_speculative"),
+            patch("src.aqueduct.engine.nodes.review.start_knowledge_speculative"),
+        ):
+            node_review(state)
+        return state
+
+    def test_hallucinated_syntax_critical_downgraded(self):
+        """run 31 同款：声称表达式残缺但 SQL 解析干净 → 降级 Confirm 不进修复环。"""
+        state = self._run_node_review(
+            [
+                "- [Critical] work_hours_before_13h 表达式残缺："
+                "sum(case when substr(hour_bucket, 1, 2)  0 then 1 else 0 end) "
+                "缺失 '< '13'' 比较条件（注释声称 Critical#6 修复补全比较条件）"
+            ]
+        )
+        assert state["_needs_fix_loop"] is False, "幻觉语法 Critical 不得触发修复循环"
+        adjudicated = [c for c in state["review_confirmations"] if "[oracle改判]" in c["message"]]
+        assert len(adjudicated) == 1, "降级项须带 [oracle改判] 前缀进人工确认清单"
+        remaining = [
+            i for i in state.get("_review_issues") or [] if i["severity"].lower() == "critical"
+        ]
+        assert remaining == [], "降级后不得残留 Critical"
+
+    def test_subquery_break_claim_downgraded(self):
+        """run 31 第二条同款：声称子查询断裂 → 同样降级。"""
+        state = self._run_node_review(
+            [
+                "- [Critical] ao 子查询块整体残缺：sum(case when ecom_aoi_vol "
+                "之后直接跳到派件分支的 where 尾巴，select/from/group by 整段缺失，"
+                "当前 SQL 语法非法无法编译"
+            ]
+        )
+        assert state["_needs_fix_loop"] is False
+
+    def test_nonsyntax_critical_not_adjudicated(self):
+        """非语法声称的 Critical（除法判零）不碰 oracle，照常触发修复循环。"""
+        with patch("src.aqueduct.engine.nodes.review._parse_sql_oracle") as oracle_mock:
+            state = self._run_node_review(["- [Critical] 除法未判零 (line 42) — 加 nullif"])
+        oracle_mock.assert_not_called()
+        assert state["_needs_fix_loop"] is True
+
+    def test_parser_agrees_broken_keeps_critical(self):
+        """解析器也报错 → 审查与 oracle 一致，保持 Critical 触发修复循环。"""
+        with patch(
+            "src.aqueduct.engine.nodes.review._parse_sql_oracle",
+            return_value=["Line 1, Col: 49: Expected END after CASE"],
+        ):
+            state = self._run_node_review(
+                ["- [Critical] work_hours_before_13h 表达式残缺，缺失 '< '13'' 比较条件"]
+            )
+        assert state["_needs_fix_loop"] is True
+
+    def test_oracle_unavailable_keeps_critical(self):
+        """sqlglot 不可用（oracle 返回 None）→ 不改判，照旧触发修复循环。"""
+        with patch(
+            "src.aqueduct.engine.nodes.review._parse_sql_oracle",
+            return_value=None,
+        ):
+            state = self._run_node_review(["- [Critical] work_hours_before_13h 表达式残缺"])
+        assert state["_needs_fix_loop"] is True
+
+
+class TestParseSqlOracle:
+    """_parse_sql_oracle：机械解析 oracle 的方向性契约（干净=[]/残缺=报错）。"""
+
+    def test_clean_sql_returns_empty(self):
+        from src.aqueduct.engine.nodes.review import _parse_sql_oracle
+
+        assert (
+            _parse_sql_oracle(
+                "select sum(case when substr(hour_bucket, 1, 2) < '13' "
+                "and hour_total_volume > 0 then 1 else 0 end) as x from t;"
+            )
+            == []
+        )
+
+    def test_broken_expression_reports_error(self):
+        from src.aqueduct.engine.nodes.review import _parse_sql_oracle
+
+        result = _parse_sql_oracle(
+            "select sum(case when substr(hour_bucket, 1, 2)  0 then 1 else 0 end) as x from t;"
+        )
+        assert result, "缺失比较条件的表达式必须被解析器抓到"
+
+    def test_multistatement_one_broken_reports(self):
+        from src.aqueduct.engine.nodes.review import _parse_sql_oracle
+
+        result = _parse_sql_oracle("select a from t; select sum(case when x  1 then 1 end) from u;")
+        assert result

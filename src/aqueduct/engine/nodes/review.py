@@ -290,6 +290,109 @@ def _lint_sql_issues(sql_content: str) -> list[dict[str, str]]:
     return issues
 
 
+# ── 第二十一刀：审查语法声称的机械 oracle 改判（run 31 实录）─────────────────
+# run 31（2026-10-13）终审 2 个 Critical（「work_hours_before_13h 表达式残缺」
+# 「ao 子查询块整体残缺」）经 3 轮修复无法收敛触发 [终止]——事后逐字节核对：
+# 磁盘 SQL 两处均完好，sqlglot 全量解析通过。审查 LLM 幻觉语法缺陷 → 修复
+# 循环治不存在的病 → 轮次耗尽 halt。修法：LLM 来源的语法声称 Critical 先过
+# 机械解析（sqlglot hive 方言），解析干净即降级 Confirm（疑似审查幻觉）；
+# 解析器也报错则保持 Critical。方向性信任：解析干净高度可信（误放行罕见），
+# 解析报错有方言误报——只用于保持原severity，绝不用于凭空升级。
+
+# 语法声称模式：仅匹配「编译级残缺」类措辞（run 31 两条实录均命中）；
+# 「缺失 inc_day 过滤」「列数不一致」等非解析可判定的声称不匹配，不误降级
+_RE_SYNTAX_CLAIM = re.compile(
+    r"残缺|断裂|语法|无法编译|编译失败|截断|非法|缺失[^，。）]{0,20}(?:条件|操作符|括号|引号|分号)"
+)
+
+
+def _parse_sql_oracle(sql_content: str) -> list[str] | None:
+    """机械解析 oracle：sqlglot（hive 方言）全量解析 SQL。
+
+    返回值三态：[] = 解析干净（可作幻觉改判依据）；非空 = 解析器也报错
+    （与审查一致，保持原判）；None = oracle 失能（sqlglot 缺失/内部异常），
+    调用方不得据此改判任何东西。
+    """
+    if not sql_content or not sql_content.strip():
+        return None
+    try:
+        import sqlglot
+    except ImportError:
+        return None
+    try:
+        statements = sqlglot.parse(sql_content, read="hive")
+    except Exception as e:
+        return [f"解析失败: {e}"]
+    broken = [f"语句 {i + 1} 解析失败" for i, s in enumerate(statements) if s is None]
+    return broken
+
+
+def _adjudicate_syntax_claims(
+    llm_issues: list[dict[str, str]], sql_content: str, req_name: str
+) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    """对 LLM 来源的语法声称 Critical 做 oracle 改判。
+
+    返回 (剩余 issues, 降级为 Confirm 的 issues)。仅当存在语法声称 Critical
+    且解析 oracle 判定 SQL 干净时才降级；确定性来源（试跑/linter/DDL 对齐）
+    不进本函数——机器来源的问题不需要第二台机器背书。
+    """
+    suspects = [
+        i
+        for i in llm_issues
+        if i.get("severity", "").lower() == "critical"
+        and _RE_SYNTAX_CLAIM.search(i.get("message", ""))
+    ]
+    if not suspects:
+        return llm_issues, []
+
+    from ...config.settings import get_settings
+
+    if not get_settings().review_parse_oracle:
+        return llm_issues, []
+
+    parse_errors = _parse_sql_oracle(sql_content)
+    if parse_errors is None:
+        logger.info(
+            "[task=%s] oracle 失能（sqlglot 不可用），%d 条语法声称 Critical 照旧",
+            req_name,
+            len(suspects),
+        )
+        return llm_issues, []
+    if parse_errors:
+        logger.info(
+            "[task=%s] oracle 复核: 解析器亦报 %d 项错误，%d 条语法声称 Critical 保持原判",
+            req_name,
+            len(parse_errors),
+            len(suspects),
+        )
+        return llm_issues, []
+
+    suspect_ids = {id(i) for i in suspects}
+    downgraded: list[dict[str, str]] = []
+    kept: list[dict[str, str]] = []
+    for issue in llm_issues:
+        if id(issue) in suspect_ids:
+            downgraded.append(
+                {
+                    **issue,
+                    "severity": "Confirm",
+                    "message": (
+                        "[oracle改判] 审查声称语法残缺但 sqlglot 解析通过"
+                        "（疑似审查幻觉），降级人工确认: " + issue["message"]
+                    ),
+                }
+            )
+        else:
+            kept.append(issue)
+    logger.warning(
+        "[task=%s] oracle 改判: %d 条语法声称 Critical 降级 Confirm"
+        "（SQL 解析干净，疑似审查幻觉——run 31 形态），交人工确认不进修复循环",
+        req_name,
+        len(downgraded),
+    )
+    return kept, downgraded
+
+
 def _trial_run_issues(state: WorkflowState) -> list[dict[str, str]]:
     """P1-2: 真实试跑门禁——每次审查对当前 SQL 现场试跑（LIMIT 10）。
 
@@ -801,6 +904,10 @@ def node_review(state: WorkflowState) -> WorkflowState:
         parsed = _parse_review_issues(llm_response)
         confirmations = [i for i in parsed if i["severity"].lower() == "confirm"]
         llm_issues = [i for i in parsed if i["severity"].lower() != "confirm"]
+        # 第二十一刀: LLM 来源的语法声称 Critical 先过机械解析 oracle——
+        # 解析干净即降级 Confirm（疑似审查幻觉），防修复循环治不存在的病
+        llm_issues, adjudicated = _adjudicate_syntax_claims(llm_issues, sql_content, req_name)
+        confirmations = confirmations + adjudicated
         state["review_confirmations"] = confirmations
         if confirmations:
             logger.info(
