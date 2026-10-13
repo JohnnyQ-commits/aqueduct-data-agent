@@ -775,6 +775,254 @@ class TestTrialSelfFix:
         assert not other_ok  # mission 未清 + other 新增 → 拒绝
 
 
+class TestHallucinationGuard:
+    """第二十刀（run 29 实录）：生成端幻觉表静态拦截。
+
+    幻觉表 5/8 run 复发（run 17/23/24/25/29），模板禁止清单外表规则持续
+    被 LLM 方差击穿。修法：生成后、试跑前静态比对 FROM/JOIN 表引用与
+    table_schemas 在册清单（扣除脚本自建表与 CTE 别名），命中即定向重
+    生成一轮——省掉一次注定失败的平台试跑；复检仍引用清单外表则保持
+    原 SQL 留痕（trialfix 自修兜底）。
+    """
+
+    _SQL = (
+        "insert overwrite table dw.t partition (inc_day = '${bizdate}')\n"
+        "select u.name, h.tag from ods_rmds.tb_res_user u\n"
+        "left join dm_x.halluc_tmp20260507 h on u.name = h.name\n"
+        "where u.is_deleted = 0"
+    )
+    _CURED_SQL = (
+        "insert overwrite table dw.t partition (inc_day = '${bizdate}')\n"
+        "select u.name from ods_rmds.tb_res_user u where u.is_deleted = 0"
+    )
+    _STILL_SQL = (
+        "insert overwrite table dw.t partition (inc_day = '${bizdate}')\n"
+        "select u.name, h.tag from ods_rmds.tb_res_user u\n"
+        "left join dm_y.halluc_other_tmp20260508 h on u.name = h.name\n"
+        "where u.is_deleted = 0"
+    )
+    _SCHEMAS = {
+        "ods_rmds.tb_res_user": "-- 用户表\nname string",
+        "dwd.trade_order_di": "-- 交易订单\norder_id string",
+    }
+
+    @staticmethod
+    def _make_state() -> dict:
+        return {
+            "requirement": "需求",
+            "mode": "dev",
+            "metadata": {"requirement_name": "test"},
+            "errors": [],
+            "artifacts": [],
+            "sql_content": TestHallucinationGuard._SQL,
+            "table_schemas": dict(TestHallucinationGuard._SCHEMAS),
+        }
+
+    def test_flags_unknown_refs_skips_known_cte_and_self_created(self):
+        """清单外表（库限定+裸表）标记；在册表/CTE 别名/脚本自建表/注释提及放行。"""
+        from src.aqueduct.engine.nodes.sql import _hallucinated_tables
+
+        sql = (
+            "with agg as (select 1 as x from dwd.trade_order_di)\n"
+            "insert overwrite table dw.t partition (inc_day = '1')\n"
+            "select a.x, u.name from agg a\n"
+            "join ods_rmds.tb_res_user u on a.x = u.id\n"
+            "left join DM_X.HALLUC_TMP20260507 h on u.name = h.name\n"
+            "-- 注释里提到 dm_fake.comment_table 不算\n"
+            "union all select 2 from dw_stage.bare_unknown"
+        )
+        schemas = dict(self._SCHEMAS)
+        schemas["dw_stage.real_stage"] = "-- st"
+        assert _hallucinated_tables(sql, schemas) == [
+            "dm_x.halluc_tmp20260507",
+            "dw_stage.bare_unknown",
+        ]
+
+    def test_bare_ref_matches_dotted_schema_key(self):
+        """裸表名引用与库限定 schema key 互认，不误报。"""
+        from src.aqueduct.engine.nodes.sql import _hallucinated_tables
+
+        sql = "select name from tb_res_user where inc_day = '1'"
+        assert _hallucinated_tables(sql, dict(self._SCHEMAS)) == []
+
+    def test_empty_schemas_disables_check(self):
+        """table_schemas 为空（元数据未获取）→ 直接放行防误杀。"""
+        from src.aqueduct.engine.nodes.sql import _hallucinated_tables
+
+        assert _hallucinated_tables(self._SQL, {}) == []
+
+    def test_regen_accepts_cured_sql(self, tmp_path, caplog):
+        """重生成清零清单外表 → 采用修复 SQL，审计副本落盘，prompt 带靶。"""
+        from src.aqueduct.engine.nodes.sql import _hallucination_regenerate
+
+        prompts: list[str] = []
+        saved: list[str] = []
+        state = self._make_state()
+
+        with (
+            patch(
+                "src.aqueduct.engine.nodes.sql.call_llm",
+                side_effect=lambda _st, _tt, p: (
+                    prompts.append(p) or f"```sql\n{self._CURED_SQL}\n```"
+                ),
+            ),
+            patch(
+                "src.aqueduct.engine.nodes.sql.save_artifact",
+                side_effect=lambda st, name, content: saved.append(name) or "",
+            ),
+            caplog.at_level(logging.INFO, logger="src.aqueduct.engine.nodes.sql"),
+        ):
+            result = _hallucination_regenerate(state, self._SQL, ["dm_x.halluc_tmp20260507"])
+
+        assert result == self._CURED_SQL
+        assert "Phase4-test_hallucfix.sql" in saved
+        assert len(prompts) == 1
+        assert "halluc_tmp20260507" in prompts[0]  # 幻觉表点名
+        assert "tb_res_user" in prompts[0]  # 真实表清单在场
+        assert "inc_day" in prompts[0]  # 换表分区要求在场
+        assert "清单外的表视为不存在" in prompts[0]
+
+    def test_regen_rejected_when_still_hallucinated(self, tmp_path, caplog):
+        """复检仍引用清单外表（换了个新幻觉表）→ 保持原 SQL + 拒绝留痕。"""
+        from src.aqueduct.engine.nodes.sql import _hallucination_regenerate
+
+        saved: list[str] = []
+        state = self._make_state()
+
+        with (
+            patch(
+                "src.aqueduct.engine.nodes.sql.call_llm",
+                return_value=f"```sql\n{self._STILL_SQL}\n```",
+            ),
+            patch(
+                "src.aqueduct.engine.nodes.sql.save_artifact",
+                side_effect=lambda st, name, content: saved.append(name) or "",
+            ),
+            caplog.at_level(logging.WARNING, logger="src.aqueduct.engine.nodes.sql"),
+        ):
+            result = _hallucination_regenerate(state, self._SQL, ["dm_x.halluc_tmp20260507"])
+
+        assert result is None
+        assert "Phase4-test_hallucfix_reject.sql" in saved
+        assert "halluc_other_tmp20260508" in caplog.text  # 复检点名新幻觉表
+        assert "保持原 SQL" in caplog.text
+
+    def test_regen_rejected_on_invalid_output(self, tmp_path, caplog):
+        """重生成输出非 SQL → 拒绝留痕，不采用。"""
+        from src.aqueduct.engine.nodes.sql import _hallucination_regenerate
+
+        saved: list[str] = []
+        state = self._make_state()
+
+        with (
+            patch(
+                "src.aqueduct.engine.nodes.sql.call_llm",
+                return_value="抱歉，我无法完成这个任务。",
+            ),
+            patch(
+                "src.aqueduct.engine.nodes.sql.save_artifact",
+                side_effect=lambda st, name, content: saved.append(name) or "",
+            ),
+            caplog.at_level(logging.WARNING, logger="src.aqueduct.engine.nodes.sql"),
+        ):
+            result = _hallucination_regenerate(state, self._SQL, ["dm_x.halluc_tmp20260507"])
+
+        assert result is None
+        assert "Phase4-test_hallucfix_reject.sql" in saved
+        assert "无效" in caplog.text
+
+    def test_node_sql_regeneration_hook(self, tmp_path):
+        """node_sql 接线：生成含幻觉表 → 重生成清零 → 后续链路基于修复后 SQL。"""
+        order: list[str] = []
+        saved_contents: list[tuple[str, str]] = []
+        prompts: list[str] = []
+        responses = [f"```sql\n{self._SQL}\n```", f"```sql\n{self._CURED_SQL}\n```"]
+
+        state = {
+            "requirement": "需求文档" * 20,
+            "mode": "dev",
+            "metadata": {"requirement_name": "test"},
+            "errors": [],
+            "artifacts": [],
+            "sql_content": "",
+            "sql_file": "output/test/Phase4-test.sql",
+            "table_schemas": dict(self._SCHEMAS),
+        }
+        skill = MagicMock()
+        skill.execute.return_value = MagicMock(success=True, data={"prompt": "p"})
+
+        def fake_llm(_st, _tt, prompt):
+            prompts.append(prompt)
+            return responses[len(prompts) - 1]
+
+        def mark(name):
+            return MagicMock(side_effect=lambda *a, **k: order.append(name) or None)
+
+        with (
+            patch("src.aqueduct.engine.nodes.sql.get_skill", return_value=skill),
+            patch("src.aqueduct.engine.nodes.sql.call_llm", side_effect=fake_llm),
+            patch(
+                "src.aqueduct.engine.nodes.sql.save_artifact",
+                side_effect=lambda st, name, content: (
+                    saved_contents.append((name, content)) or "output/test/x.sql"
+                ),
+            ),
+            patch("src.aqueduct.engine.nodes.sql._auto_validate", mark("validate")),
+            patch("src.aqueduct.engine.nodes.sql._self_check_fix", mark("self_check")),
+            patch("src.aqueduct.engine.nodes.sql._auto_trial_run", mark("trial")),
+            patch("src.aqueduct.engine.nodes.sql._auto_lineage_async", mark("lineage")),
+            patch("src.aqueduct.engine.nodes.sql._auto_cost_estimate", mark("cost")),
+        ):
+            node_sql(state)
+
+        assert len(prompts) == 2  # sql_gen + 幻觉表定向重生成
+        assert "halluc_tmp20260507" in prompts[1]
+        assert state["sql_content"] == self._CURED_SQL
+        # 规范文件保存的是清零后的 SQL
+        canonical = [c for name, c in saved_contents if name == "Phase4-test.sql"]
+        assert canonical == [self._CURED_SQL]
+        assert order == ["validate", "self_check", "trial", "lineage", "cost"]
+
+    def test_node_sql_no_hallucination_single_llm_call(self, tmp_path):
+        """生成 SQL 无幻觉表 → 不触发重生成，全程仅 1 次 LLM 调用。"""
+        clean_sql = (
+            "insert overwrite table dw.t partition (inc_day = '${bizdate}')\n"
+            "select u.name from ods_rmds.tb_res_user u where u.is_deleted = 0"
+        )
+        prompts: list[str] = []
+        state = {
+            "requirement": "需求文档" * 20,
+            "mode": "dev",
+            "metadata": {"requirement_name": "test"},
+            "errors": [],
+            "artifacts": [],
+            "sql_content": "",
+            "sql_file": "output/test/Phase4-test.sql",
+            "table_schemas": dict(self._SCHEMAS),
+        }
+        skill = MagicMock()
+        skill.execute.return_value = MagicMock(success=True, data={"prompt": "p"})
+
+        def fake_llm(_st, _tt, prompt):
+            prompts.append(prompt)
+            return f"```sql\n{clean_sql}\n```"
+
+        with (
+            patch("src.aqueduct.engine.nodes.sql.get_skill", return_value=skill),
+            patch("src.aqueduct.engine.nodes.sql.call_llm", side_effect=fake_llm),
+            patch("src.aqueduct.engine.nodes.sql.save_artifact", return_value="x"),
+            patch("src.aqueduct.engine.nodes.sql._auto_validate"),
+            patch("src.aqueduct.engine.nodes.sql._self_check_fix"),
+            patch("src.aqueduct.engine.nodes.sql._auto_trial_run"),
+            patch("src.aqueduct.engine.nodes.sql._auto_lineage_async"),
+            patch("src.aqueduct.engine.nodes.sql._auto_cost_estimate"),
+        ):
+            node_sql(state)
+
+        assert len(prompts) == 1
+        assert state["sql_content"] == clean_sql
+
+
 class TestNodeSqlWiring:
     """node_sql 接线：自检在 validate 之后、试跑/血缘/成本之前（基于修复后 SQL）。"""
 

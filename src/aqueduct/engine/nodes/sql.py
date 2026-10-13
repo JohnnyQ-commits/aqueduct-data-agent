@@ -101,6 +101,12 @@ def node_sql(state: WorkflowState) -> WorkflowState:
             )
             return state
 
+        # 第二十刀（run 29 实录）：生成端幻觉表静态拦截——清单外表在进
+        # 试跑前先定向重生成一轮，省掉一次注定失败的平台试跑
+        hallucinated = _hallucinated_tables(sql_content, state.get("table_schemas") or {})
+        if hallucinated:
+            sql_content = _hallucination_regenerate(state, sql_content, hallucinated) or sql_content
+
         req_name = state.get("metadata", {}).get("requirement_name", "etl_sql")
         sql_path = save_artifact(state, f"Phase4-{req_name}.sql", sql_content)
         state["sql_content"] = sql_content
@@ -324,6 +330,8 @@ def _auto_validate(state: WorkflowState, sql_path: str) -> None:
 
 # 第八刀 8a（run 10 实录）：平台 "Table not found 'X'" 中的表名
 _RE_TABLE_NOT_FOUND = re.compile(r"table not found '([\w.]+)'", re.IGNORECASE)
+_RE_TABLE_REF = re.compile(r"\b(?:from|join)\s+([\w]+(?:\.[\w]+)?)", re.IGNORECASE)
+_RE_CTE_ALIAS = re.compile(r"(?:\bwith\b|,|\))\s*(\w+)\s+as\s*\(", re.IGNORECASE)
 _RE_CREATE_TARGET = re.compile(r"create\s+table\s+(?:if\s+not\s+exists\s+)?([\w.]+)", re.IGNORECASE)
 _RE_INSERT_TARGET = re.compile(
     r"insert\s+(?:overwrite|into)\s+(?:table\s+)?([\w.]+)", re.IGNORECASE
@@ -527,6 +535,114 @@ def _unfiltered_tables(sql_content: str) -> list[str]:
             if name not in suspects:
                 suspects.append(name)
     return suspects
+
+
+def _hallucinated_tables(sql_content: str, table_schemas: dict) -> list[str]:
+    """生成端幻觉表静态拦截（第二十刀，run 29 实录）。
+
+    幻觉表 5/8 run 复发，模板禁止清单外表规则被 LLM 方差击穿。在试跑前
+    静态比对 FROM/JOIN 表引用与 table_schemas 在册清单（大小写不敏感，
+    库限定名与裸表名互认），扣除脚本自建表（CTAS/insert 目标——多层合并
+    下 SELECT 可合法引用本脚本前段产出的 DWS 中间表）与 CTE 别名；空清单
+    （元数据未获取）直接放行防误杀。漏网者由试跑 Table not found 自修
+    （第十七刀）兜底。
+    """
+    if not table_schemas:
+        return []
+    cleaned = re.sub(r"--.*$", "", sql_content, flags=re.MULTILINE)
+    cleaned = re.sub(r"/\*.*?\*/", "", cleaned, flags=re.DOTALL)
+    cte = {m.group(1).lower() for m in _RE_CTE_ALIAS.finditer(cleaned)}
+    known = _script_created_tables(cleaned)
+    for key in table_schemas:
+        lowered = key.lower()
+        known.add(lowered)
+        known.add(lowered.split(".")[-1])
+    suspects: list[str] = []
+    for m in _RE_TABLE_REF.finditer(cleaned):
+        name = m.group(1).lower()
+        if name in known or name in cte or name in suspects:
+            continue
+        suspects.append(name)
+    return suspects
+
+
+def _hallucination_regenerate(
+    state: WorkflowState, sql_content: str, hallucinated: list[str]
+) -> str | None:
+    """生成端幻觉表定向重生成（第二十刀）——仅一轮，试跑前拦截。
+
+    run 29 实录：幻觉表被试跑自修的换表治好，但代价是先浪费一次平台
+    试跑。静态拦截后置前，LLM 换表/删逻辑省一轮试跑。prompt 极简纪律
+    （第十五刀）：幻觉表点名 + 真实表清单 + 换表分区要求，不携带
+    persona/domain_context。接受门禁：复检清单外表清零才采用（审计副本
+    hallucfix 落盘，由调用方走规范保存）；输出无效/未变更/长度腰斩/
+    复检仍引用清单外表 → 保持原 SQL 并留痕（hallucfix_reject），由试跑
+    Table not found 自修（第十七刀）兜底。
+
+    Returns:
+        清零后的修复 SQL；未接受时 None。
+    """
+    req_name = state.get("metadata", {}).get("requirement_name", "etl_sql")
+    real_tables = sorted((state.get("table_schemas") or {}).keys())
+    real_list = "\n".join(f"- {t}" for t in real_tables) if real_tables else "（未获取）"
+    prompt = (
+        "以下 Hive SQL 引用了源表清单之外的表（幻觉表，平台编译必失败），"
+        "请修复并输出完整 SQL（```sql 代码块，不要输出任何解释或说明）：\n\n"
+        f"幻觉表：{'、'.join(hallucinated)}\n\n"
+        "以下为本次需求真实可用的源表清单（来自元数据平台，唯一权威），"
+        "清单外的表视为不存在：\n"
+        f"{real_list}\n\n"
+        "要求：把幻觉表替换为清单中最接近的真实表（字段不兼容时同步调整"
+        "引用字段），或删除对该表的引用逻辑；换上的表必须带 inc_day 分区"
+        "过滤（参照原 SQL 中已有事实表的日期范围）；其余逻辑逐字保留，"
+        "不改字段、不改聚合、不改输出列。\n\n"
+        f"原 SQL：\n{sql_content}\n"
+    )
+    logger.info(
+        "[task=%s] 生成端幻觉表静态拦截: %s，定向重生成（1 轮）",
+        req_name,
+        "、".join(hallucinated),
+    )
+    try:
+        fix_response = call_llm(state, "sql_fix", prompt)
+    except Exception as e:
+        logger.warning("[task=%s] 幻觉表重生成: LLM 调用失败，保持原 SQL: %s", req_name, e)
+        return None
+
+    fixed_sql = extract_sql_block(fix_response)
+    if not is_valid_sql(fixed_sql) or fixed_sql == sql_content:
+        save_artifact(state, f"Phase4-{req_name}_hallucfix_reject.sql", fixed_sql)
+        logger.warning(
+            "[task=%s] 幻觉表重生成: 修复输出无效或未变更，保持原 SQL"
+            "（被拒输出已存 Phase4-%s_hallucfix_reject.sql）",
+            req_name,
+            req_name,
+        )
+        return None
+    if len(fixed_sql) < len(sql_content) * 0.5:
+        # 长度腰斩=丢逻辑嫌疑（run 20 骨架残缺同族），直接拒绝
+        save_artifact(state, f"Phase4-{req_name}_hallucfix_reject.sql", fixed_sql)
+        logger.warning(
+            "[task=%s] 幻觉表重生成: 修复输出过短（%d 字符 < 原 %d 一半），疑似丢逻辑，保持原 SQL",
+            req_name,
+            len(fixed_sql),
+            len(sql_content),
+        )
+        return None
+    still = _hallucinated_tables(fixed_sql, state.get("table_schemas") or {})
+    if still:
+        save_artifact(state, f"Phase4-{req_name}_hallucfix_reject.sql", fixed_sql)
+        logger.warning(
+            "[task=%s] 幻觉表重生成: 复检仍引用清单外表（%s），保持原 SQL；"
+            "被拒修复已存 Phase4-%s_hallucfix_reject.sql，试跑自修兜底",
+            req_name,
+            "、".join(still),
+            req_name,
+        )
+        return None
+    save_artifact(state, f"Phase4-{req_name}_hallucfix.sql", fixed_sql)
+    logger.info("[task=%s] 幻觉表重生成: 复检清零，采用修复 SQL", req_name)
+    return fixed_sql
 
 
 def _trial_self_fix(state: WorkflowState, trial: dict) -> dict | None:
