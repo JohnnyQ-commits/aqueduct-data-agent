@@ -87,6 +87,18 @@ def node_sql(state: WorkflowState) -> WorkflowState:
             llm_response = call_llm(state, "sql_gen", prompt)
             sql_content = extract_sql_block(llm_response)
 
+            # 第二十一刀配套 P1(b)（run 27 实录）：网关截断等产出无效 SQL
+            # 时以同一 prompt 全新重生成一次（不追加警示——第十五刀极简
+            # 重试纪律：换形态优于补丁）；两次皆无效才走下方失败路径
+            if not is_valid_sql(sql_content):
+                logger.warning(
+                    "[task=%s] sql_gen 输出无效（%d 字符，非 SQL），重试 1/1",
+                    req_name,
+                    len(sql_content),
+                )
+                llm_response = call_llm(state, "sql_gen", prompt)
+                sql_content = extract_sql_block(llm_response)
+
         # SQL 有效性校验（防止 LLM 超时/异常产出垃圾内容）
         if not is_valid_sql(sql_content):
             error_msg = (

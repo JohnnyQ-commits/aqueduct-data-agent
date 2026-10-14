@@ -1138,3 +1138,91 @@ class TestParseSqlOracle:
 
         result = _parse_sql_oracle("select a from t; select sum(case when x  1 then 1 end) from u;")
         assert result
+
+
+class TestHaltFollowupChecklist:
+    """第二十二刀（run 33 实录）：halt 时产出人工跟进清单交接单。
+
+    run 33 终局：AOI 分母口径 Critical（无 oracle 语义类）2 轮修不动 →
+    [终止] 只剩一行日志，「转人工」没有承接机制。修法：halt 分支落
+    `Phase5-{req}_人工跟进清单.md`——终止原因 + 未解决 Critical 清单 +
+    待确认事项（含 [oracle改判] 降级项）+ 交接物指引，让 enforce 终态
+    从「管道终止」变成「管道终止 + 交接单」。
+    """
+
+    def _run_halt(self, logic_issues: list[str]):
+        import pytest as _pytest
+
+        from src.aqueduct.exceptions import WorkflowHaltError
+
+        state = _make_state()
+        saved: list[tuple[str, str]] = []
+        queues = {
+            "alignment": [_dim_response("需求与设计对齐", [])],
+            "logic": [_dim_response("逻辑正确性", logic_issues)],
+            "standards": [_dim_response("规范与影响", [])],
+        }
+
+        with (
+            patch(
+                "src.aqueduct.engine.nodes.review.call_llm",
+                side_effect=TestReviewByDimensions._call_router(queues),
+            ),
+            patch(
+                "src.aqueduct.engine.nodes.review.save_artifact",
+                side_effect=lambda st, name, content: (
+                    saved.append((name, content)) or "output/x.md"
+                ),
+            ),
+            patch("src.aqueduct.engine.nodes.review.start_dqc_speculative"),
+            patch("src.aqueduct.engine.nodes.review.start_knowledge_speculative"),
+            patch("src.aqueduct.config.settings.get_settings") as gs,
+        ):
+            gs.return_value.review_enforce = True
+            gs.return_value.max_fix_iterations = 0  # 首轮 Critical 即 halt
+            gs.return_value.review_parse_oracle = True
+            with _pytest.raises(WorkflowHaltError):
+                node_review(state)
+        return saved, state
+
+    def test_halt_writes_followup_checklist(self):
+        """halt 分支必须落交接单：终止原因 + 未解决 Critical + 确认事项。"""
+        saved, _ = self._run_halt(["- [Critical] 除法未判零 (line 42) — 加 nullif"])
+        checklist = [(n, c) for n, c in saved if "人工跟进清单" in n]
+        assert len(checklist) == 1, "halt 必须产出人工跟进清单"
+        name, content = checklist[0]
+        assert name == "Phase5-test_人工跟进清单.md"
+        assert "除法未判零" in content, "未解决 Critical 须带原文进清单"
+        assert "终止原因" in content and "未解决 Critical" in content
+
+    def test_no_halt_no_checklist(self):
+        """无 Critical 不 halt → 不产出交接单（正常路径零开销）。"""
+        state = _make_state()
+        saved: list[str] = []
+        queues = {
+            "alignment": [_dim_response("需求与设计对齐", [])],
+            "logic": [_dim_response("逻辑正确性", [])],
+            "standards": [_dim_response("规范与影响", ["- [Confirm] 状态码字典未知"])],
+        }
+        with (
+            patch(
+                "src.aqueduct.engine.nodes.review.call_llm",
+                side_effect=TestReviewByDimensions._call_router(queues),
+            ),
+            patch(
+                "src.aqueduct.engine.nodes.review.save_artifact",
+                side_effect=lambda st, name, content: saved.append(name) or "output/x.md",
+            ),
+            patch("src.aqueduct.engine.nodes.review.start_dqc_speculative"),
+            patch("src.aqueduct.engine.nodes.review.start_knowledge_speculative"),
+        ):
+            node_review(state)
+
+        assert state["_needs_fix_loop"] is False
+        assert not [n for n in saved if "人工跟进清单" in n], "非 halt 不得产出交接单"
+
+    def test_checklist_includes_confirmations(self):
+        """交接单须带待人工确认事项（含 [oracle改判] 降级项）。"""
+        saved, _ = self._run_halt(["- [Critical] 除法未判零 (line 42) — 加 nullif"])
+        _, content = next((n, c) for n, c in saved if "人工跟进清单" in n)
+        assert "待人工确认事项" in content

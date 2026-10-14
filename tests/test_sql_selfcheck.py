@@ -1060,3 +1060,104 @@ class TestNodeSqlWiring:
             node_sql(state)
 
         assert order == ["validate", "self_check", "trial", "lineage", "cost"]
+
+
+class TestSqlGenInvalidRetry:
+    """第二十二刀配套（run 27 实录）：sql_gen 输出无效重试一轮。
+
+    run 27：网关截断返回 222 字符字段列表碎片（55 completion tokens / 585s），
+    is_valid_sql 拦下后直接死整轮 run，无重试。修法：输出无效时以同一 prompt
+    全新重生成一次（不追加警示——第十五刀极简重试纪律：尾部警示压不住开头
+    persona，换形态优于补丁），两次皆无效才走原失败路径。
+    """
+
+    _VALID = (
+        "```sql\ninsert overwrite table dw.t partition (inc_day = 'd')\n"
+        "select u.name from ods_rmds.tb_res_user u where u.is_deleted = 0\n```"
+    )
+    _GARBAGE = "```\n抱歉，我无法完成该任务\n```"
+
+    def _state(self) -> dict:
+        return {
+            "requirement": "需求文档" * 20,
+            "mode": "dev",
+            "metadata": {"requirement_name": "test"},
+            "errors": [],
+            "artifacts": [],
+            "sql_content": "",
+            "sql_file": "output/test/Phase4-test.sql",
+            "table_schemas": {},
+        }
+
+    def _wiring(self):
+        skill = MagicMock()
+        skill.execute.return_value = MagicMock(success=True, data={"prompt": "p"})
+        order: list[str] = []
+        mark = lambda name: MagicMock(  # noqa: E731
+            side_effect=lambda *a, **k: order.append(name) or None
+        )
+        return skill, order, mark
+
+    def test_invalid_output_retries_once(self):
+        """首次输出无效 → 同 prompt 重试一次 → 重试有效则继续后续链路。"""
+        from src.aqueduct.engine.nodes.sql import node_sql
+
+        skill, order, mark = self._wiring()
+        prompts: list[str] = []
+        responses = [self._GARBAGE, self._VALID]
+
+        def fake_llm(_st, _tt, prompt):
+            prompts.append(prompt)
+            return responses[len(prompts) - 1]
+
+        saved: list[tuple[str, str]] = []
+        with (
+            patch("src.aqueduct.engine.nodes.sql.get_skill", return_value=skill),
+            patch("src.aqueduct.engine.nodes.sql.call_llm", side_effect=fake_llm),
+            patch(
+                "src.aqueduct.engine.nodes.sql.save_artifact",
+                side_effect=lambda st, name, content: (
+                    saved.append((name, content)) or "output/test/x.sql"
+                ),
+            ),
+            patch("src.aqueduct.engine.nodes.sql._auto_validate", mark("validate")),
+            patch("src.aqueduct.engine.nodes.sql._self_check_fix", mark("self_check")),
+            patch("src.aqueduct.engine.nodes.sql._auto_trial_run", mark("trial")),
+            patch("src.aqueduct.engine.nodes.sql._auto_lineage_async", mark("lineage")),
+            patch("src.aqueduct.engine.nodes.sql._auto_cost_estimate", mark("cost")),
+        ):
+            node_sql(self._state())
+
+        assert len(prompts) == 2, "无效输出必须恰好重试一次"
+        assert prompts[0] == prompts[1], "重试用同一 prompt（极简重试纪律）"
+        assert order == ["validate", "self_check", "trial", "lineage", "cost"]
+        canonical = [c for name, c in saved if name == "Phase4-test.sql"]
+        assert canonical and "ods_rmds.tb_res_user" in canonical[0]
+
+    def test_double_invalid_fails_gracefully(self):
+        """两次皆无效 → 走原失败路径，不炸管道、不再多打 LLM。"""
+        from src.aqueduct.engine.nodes.sql import node_sql
+
+        skill, order, mark = self._wiring()
+        calls: list[int] = []
+
+        def fake_llm(_st, _tt, _prompt):
+            calls.append(1)
+            return self._GARBAGE
+
+        state = self._state()
+        with (
+            patch("src.aqueduct.engine.nodes.sql.get_skill", return_value=skill),
+            patch("src.aqueduct.engine.nodes.sql.call_llm", side_effect=fake_llm),
+            patch("src.aqueduct.engine.nodes.sql.save_artifact", return_value="x"),
+            patch("src.aqueduct.engine.nodes.sql._auto_validate", mark("validate")),
+            patch("src.aqueduct.engine.nodes.sql._self_check_fix", mark("self_check")),
+            patch("src.aqueduct.engine.nodes.sql._auto_trial_run", mark("trial")),
+            patch("src.aqueduct.engine.nodes.sql._auto_lineage_async", mark("lineage")),
+            patch("src.aqueduct.engine.nodes.sql._auto_cost_estimate", mark("cost")),
+        ):
+            node_sql(state)
+
+        assert len(calls) == 2, "只重试一次，不得无界打 LLM"
+        assert order == [], "生成失败不得进入后续链路"
+        assert any("有效 SQL" in e for e in state.get("errors", []))

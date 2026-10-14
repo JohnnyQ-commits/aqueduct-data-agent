@@ -813,6 +813,65 @@ def _should_parallel_review(sql_content: str) -> bool:
     return lines > 100 and len(blocks) > 1
 
 
+def _save_halt_followup(
+    state: WorkflowState, req_name: str, issues: list[dict[str, str]], halt_msg: str
+) -> None:
+    """第二十二刀（run 33 实录）：halt 时落人工跟进清单交接单。
+
+    run 33 终局：AOI 分母口径 Critical（语义类无 oracle）2 轮修不动 →
+    [终止] 只剩一行日志，「转人工」没有承接机制。修法：halt 分支落
+    `Phase5-{req}_人工跟进清单.md`——终止原因 + 未解决 Critical 清单 +
+    待人工确认事项（含 [oracle改判] 降级项）+ 交接物指引。落盘失败不
+    阻断终止（交接单是增值交付，halt 本身必须照常发生）。
+    """
+    unresolved = [i for i in issues if i.get("severity", "").lower() == "critical"]
+    confirmations = state.get("review_confirmations") or []
+    lines = [
+        "# 人工跟进清单（审查门禁终止交接单）",
+        "",
+        "> 管道于 Phase 4.5 审查门禁终止。以下事项需人工裁决：线下修复 SQL",
+        "> 后重跑，或确认属误报后调整门禁配置重跑。",
+        "",
+        "## 终止原因",
+        "",
+        halt_msg,
+        "",
+        f"## 未解决 Critical（{len(unresolved)} 项）",
+        "",
+    ]
+    for idx, issue in enumerate(unresolved, 1):
+        dim = issue.get("dimension", "")
+        prefix = f"[{dim}] " if dim else ""
+        lines.append(f"{idx}. {prefix}{issue.get('message', '')}")
+    lines += [
+        "",
+        f"## 待人工确认事项（{len(confirmations)} 项，含 [oracle改判] 降级项）",
+        "",
+    ]
+    for idx, issue in enumerate(confirmations, 1):
+        lines.append(f"{idx}. {issue.get('message', '')}")
+    sql_file = state.get("sql_file", "")
+    sql_hint = sql_file or "（见 evals 产物目录 Phase4-*.sql）"
+    lines += [
+        "",
+        "## 交接物指引",
+        "",
+        f"- 当前 SQL（修复基础）：{sql_hint}",
+        f"- 审查报告：Phase5-{req_name}_审查报告.md",
+        "",
+    ]
+    try:
+        save_artifact(state, f"Phase5-{req_name}_人工跟进清单.md", "\n".join(lines))
+        logger.info(
+            "[task=%s] 人工跟进清单已落盘（未解决 Critical %d 项 + 待确认 %d 项）",
+            req_name,
+            len(unresolved),
+            len(confirmations),
+        )
+    except Exception:
+        logger.warning("[task=%s] 人工跟进清单落盘失败（不阻断终止）", req_name, exc_info=True)
+
+
 def node_review(state: WorkflowState) -> WorkflowState:
     """Phase 4.5: 代码审查节点。
 
@@ -956,6 +1015,7 @@ def node_review(state: WorkflowState) -> WorkflowState:
                     f"经 {max_fix_iterations} 轮修复仍未解决，管道终止"
                 )
                 logger.error("[task=%s] %s", req_name, msg)
+                _save_halt_followup(state, req_name, issues, msg)
                 raise WorkflowHaltError(msg)
             if warning_count > 0 and critical_count == 0:
                 logger.info(
