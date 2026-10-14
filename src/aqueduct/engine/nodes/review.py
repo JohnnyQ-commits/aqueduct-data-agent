@@ -841,8 +841,11 @@ def _save_halt_followup(
     ]
     for idx, issue in enumerate(unresolved, 1):
         dim = issue.get("dimension", "")
-        prefix = f"[{dim}] " if dim else ""
-        lines.append(f"{idx}. {prefix}{issue.get('message', '')}")
+        msg = issue.get("message", "")
+        # run 34 实录：确定性来源消息自带 [试跑]/[规范] 前缀，再叠维度
+        # 前缀会出 [试跑] [试跑] 双前缀——有前缀时不再叠加
+        prefix = f"[{dim}] " if dim and not msg.startswith("[") else ""
+        lines.append(f"{idx}. {prefix}{msg}")
     lines += [
         "",
         f"## 待人工确认事项（{len(confirmations)} 项，含 [oracle改判] 降级项）",

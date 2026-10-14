@@ -1226,3 +1226,33 @@ class TestHaltFollowupChecklist:
         saved, _ = self._run_halt(["- [Critical] 除法未判零 (line 42) — 加 nullif"])
         _, content = next((n, c) for n, c in saved if "人工跟进清单" in n)
         assert "待人工确认事项" in content
+
+    def test_checklist_no_double_prefix(self):
+        """run 34 实录：确定性消息自带 [试跑] 前缀，不得再叠维度双前缀。"""
+        from src.aqueduct.engine.nodes.review import _save_halt_followup
+
+        saved: list[tuple[str, str]] = []
+        state = {
+            "metadata": {"requirement_name": "test"},
+            "review_confirmations": [],
+            "errors": [],
+            "artifacts": [],
+        }
+        with patch(
+            "src.aqueduct.engine.nodes.review.save_artifact",
+            side_effect=lambda st, name, content: saved.append((name, content)) or "output/x.md",
+        ):
+            _save_halt_followup(
+                state,
+                "test",
+                [
+                    {
+                        "severity": "Critical",
+                        "dimension": "试跑",
+                        "message": "[试跑] SELECT #1 编译失败",
+                    }
+                ],
+                "[终止] 测试终止",
+            )
+        _, content = next((n, c) for n, c in saved if "人工跟进清单" in n)
+        assert "1. [试跑] SELECT #1 编译失败" in content, "不得出现 [试跑] [试跑] 双前缀"
