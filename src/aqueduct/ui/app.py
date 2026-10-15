@@ -91,7 +91,7 @@ def create_app(
                 progress_md: gr.update(value=session.render_progress()),
                 deliverables: gr.update(value=list(result.artifacts or [])),
                 btn_start: gr.update(interactive=True),
-                session_state: gr.update(value=None),
+                session_state: None,
             }
 
         def _read_upload(file_obj):
@@ -113,13 +113,13 @@ def create_app(
                 btn_start: gr.update(interactive=False),
                 qa_group: gr.update(visible=False),
                 deliverables: gr.update(value=None),
-                session_state: gr.update(value=session),
+                session_state: session,
             }
             yield running
 
             while True:
                 try:
-                    ev, payload = session.events.get(timeout=0.5)
+                    ev, *payload = session.events.get(timeout=0.5)
                 except queue.Empty:
                     continue
                 if ev == "progress":
@@ -127,13 +127,13 @@ def create_app(
                 elif ev == "confirm":
                     yield {
                         qa_group: gr.update(visible=True),
-                        qa_md: gr.update(value=_format_confirm_md(payload)),
+                        qa_md: gr.update(value=_format_confirm_md(payload[0])),
                         answers_tb: gr.update(value=""),
                     }
                 elif ev == "confirm_resolved":
                     yield {qa_group: gr.update(visible=False)}
                 elif ev == "done":
-                    yield _final_update(session, payload)
+                    yield _final_update(session, payload[0])
                     return
 
         def _confirm(text: str, session: UiSession | None):
@@ -150,7 +150,16 @@ def create_app(
         btn_start.click(
             _start,
             inputs=[req_text],
-            outputs=[progress_md, status_md, btn_start, qa_group, deliverables, session_state],
+            outputs=[
+                progress_md,
+                status_md,
+                btn_start,
+                qa_group,
+                deliverables,
+                session_state,
+                qa_md,
+                answers_tb,
+            ],
             concurrency_limit=1,
         )
         btn_confirm.click(_confirm, inputs=[answers_tb, session_state], outputs=[])
