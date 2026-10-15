@@ -106,6 +106,9 @@ aqueduct validate query.sql --strict
 
 # Debug logging
 aqueduct --verbose dev requirement.md
+
+# Web UI (minimal Gradio demo — requires `pip install "aqueduct[ui]"` first)
+aqueduct dev --ui
 ```
 
 ### Python API

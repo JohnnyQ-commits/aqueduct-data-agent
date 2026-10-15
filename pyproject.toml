@@ -45,6 +45,9 @@ files = [
 embeddings = [
     "sentence-transformers>=3.0",
 ]
+ui = [
+    "gradio>=4.0",
+]
 
 [project.scripts]
 aqueduct = "aqueduct.cli.main:main"

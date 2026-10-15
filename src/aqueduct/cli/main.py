@@ -19,7 +19,6 @@ from __future__ import annotations
 import argparse
 import io
 import logging
-import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -44,6 +43,7 @@ from ..core import Aqueduct, AqueductResult
 from ..engine.state import WorkflowState
 from ..exceptions import AqueductError
 from ..utils.platform_status import platform_execution_lines
+from ..utils.qa import append_qa_to_file, format_qa_section, parse_questions
 
 logger = logging.getLogger(__name__)
 
@@ -58,13 +58,8 @@ def _make_progress_callback() -> Callable:
 
 
 def _parse_questions(summary: str) -> list[str]:
-    """从需求理解摘要中提取待确认问题列表。"""
-    if "### 用户澄清" in summary:
-        return []
-    m = re.search(r"###\s*待确认问题\s*\n(.*?)(?=\n###|\Z)", summary, re.DOTALL)
-    if not m:
-        return []
-    return [q.strip() for q in re.findall(r"\d+\.\s*(.+)", m.group(1)) if q.strip()]
+    """从需求理解摘要中提取待确认问题列表（实现在 utils/qa.py，与 Gradio UI 共享）。"""
+    return parse_questions(summary)
 
 
 def _collect_qa(questions: list[str]) -> list[dict]:
@@ -82,29 +77,14 @@ def _collect_qa(questions: list[str]) -> list[dict]:
 
 
 def _format_qa_section(qa_pairs: list[dict]) -> str:
-    """将 Q&A 列表格式化为 '### 用户澄清记录' Markdown 段落。
-
-    文件写入和 state 更新共用此函数，确保格式一致。
-    """
-    lines = ["\n\n---\n\n### 用户澄清记录\n"]
-    for i, qa in enumerate(qa_pairs, 1):
-        lines.append(f"**Q{i}**: {qa['question']}")
-        lines.append(f"**A{i}**: {qa['answer']}\n")
-    return "\n".join(lines)
+    """将 Q&A 列表格式化为「### 用户澄清记录」段落（实现在 utils/qa.py，与 Gradio UI 共享）。"""
+    return format_qa_section(qa_pairs)
 
 
 def _append_qa_to_file(state: WorkflowState, qa_pairs: list[dict]) -> None:
-    """将 Q&A 记录追加到 Phase1-需求理解摘要.md。"""
-    from ..engine.nodes.helpers import get_output_dir
-
-    filepath = get_output_dir(state) / "Phase1-需求理解摘要.md"
-    if not filepath.exists():
-        return
-
-    with open(filepath, "a", encoding="utf-8") as f:
-        f.write(_format_qa_section(qa_pairs))
-
-    print(f"\n[OK] 已追加 {len(qa_pairs)} 条澄清记录到 Phase1-需求理解摘要.md", flush=True)
+    """将 Q&A 记录追加到 Phase1-需求理解摘要.md（实现在 utils/qa.py，CLI 版带打印反馈）。"""
+    if append_qa_to_file(state, qa_pairs):
+        print(f"\n[OK] 已追加 {len(qa_pairs)} 条澄清记录到 Phase1-需求理解摘要.md", flush=True)
 
 
 def _make_confirm_callback() -> Callable:
@@ -203,8 +183,37 @@ def _print_partial_result(result: AqueductResult) -> None:
             print(f"  - {e}", flush=True)
 
 
+def _dev_ui(args: argparse.Namespace) -> int:
+    """--ui 入口：检查 gradio → 读取可选需求文档预填 → 启动 Blocks。"""
+    import importlib.util
+
+    if importlib.util.find_spec("gradio") is None:
+        print("[ERROR] --ui 需要 Gradio。请安装: pip install 'aqueduct[ui]'", flush=True)
+        return 2
+
+    req_text = ""
+    if args.requirement:
+        req_path = Path(args.requirement)
+        if not req_path.exists():
+            print(f"[ERROR] Requirement file not found: {args.requirement}")
+            return 1
+        req_text = req_path.read_text(encoding="utf-8")
+
+    from ..ui.app import launch  # 惰性导入：非 --ui 路径永不触碰 gradio
+
+    launch(requirement_text=req_text, output_dir=args.output, resume=getattr(args, "resume", False))
+    return 0
+
+
 def _dev_mode(args: argparse.Namespace) -> int:
     """开发模式：从需求文档到完整交付。"""
+    if getattr(args, "ui", False):
+        return _dev_ui(args)
+
+    if args.requirement is None:
+        print("[ERROR] aqueduct dev 需要需求文档路径（或使用 --ui 打开网页界面）")
+        return 1
+
     req_path = Path(args.requirement)
     if not req_path.exists():
         print(f"[ERROR] Requirement file not found: {args.requirement}")
@@ -508,8 +517,18 @@ def create_parser() -> argparse.ArgumentParser:
         "dev",
         help="Development mode: from requirement to full delivery",
     )
-    dev_parser.add_argument("requirement", help="Requirement document path (.md file)")
+    dev_parser.add_argument(
+        "requirement",
+        nargs="?",
+        default=None,
+        help="Requirement document path (.md file); optional with --ui (pre-fills the UI)",
+    )
     dev_parser.add_argument("--output", "-o", help="Output directory")
+    dev_parser.add_argument(
+        "--ui",
+        action="store_true",
+        help="Launch the minimal Gradio web UI (requires 'pip install aqueduct[ui]')",
+    )
     dev_parser.add_argument(
         "--resume",
         action="store_true",

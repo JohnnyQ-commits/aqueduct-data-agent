@@ -1,0 +1,168 @@
+"""最小 Gradio Web UI — Aqueduct 数据开发助手。
+
+线程模型：worker 线程跑 Aqueduct().dev()（阻塞），经 UiSession 的
+events/answers 两个 queue 与 UI 握手（见 session.py 模块文档）。
+本模块是包内唯一 import gradio 的地方。
+
+已知限制（单会话演示定位）：
+- 关闭浏览器后 worker 线程（daemon）仍会跑完并落盘，但 UI 状态不保留；
+- 无用户系统、无历史任务、无并发运行（运行中开始按钮禁用）。
+
+用法::
+
+    from aqueduct.ui.app import launch
+    launch(requirement_text="...", output_dir="output/my_req")
+
+或 CLI：aqueduct dev --ui
+"""
+
+from __future__ import annotations
+
+import queue
+import threading
+
+import gradio as gr
+
+from .session import ConfirmRequest, UiSession
+
+
+def _format_confirm_md(req: ConfirmRequest) -> str:
+    """确认面板 Markdown：摘要 + 编号问题（回答框每行对应一题）。"""
+    lines = ["### Phase 1 需求理解摘要", "", req.summary.strip(), ""]
+    if req.questions:
+        lines.append(f"### 待确认问题（{len(req.questions)} 条，回答框内**每行对应一题**）")
+        lines.extend(f"{i}. {q}" for i, q in enumerate(req.questions, 1))
+    else:
+        lines.append("无待确认问题，直接点击「确认继续」。")
+    return "\n".join(lines)
+
+
+def create_app(
+    requirement_text: str = "",
+    output_dir: str | None = None,
+    resume: bool = False,
+) -> gr.Blocks:
+    """构建 Gradio Blocks 应用（不启动服务；服务由 launch() 负责）。"""
+    with gr.Blocks(title="Aqueduct 数据开发助手") as demo:
+        gr.Markdown(
+            "# Aqueduct 数据开发助手\n\n粘贴需求文档（或上传 .md），一键生成 15 个标准化交付物。"
+        )
+        session_state = gr.State(value=None)
+
+        with gr.Row():
+            with gr.Column():
+                req_text = gr.Textbox(
+                    label="需求文本",
+                    lines=12,
+                    value=requirement_text,
+                    placeholder="在此粘贴需求文档内容…",
+                )
+                req_file = gr.File(label="或上传需求文档 (.md)", file_types=[".md", ".txt"])
+                btn_start = gr.Button("开始运行", variant="primary")
+
+            with gr.Column():
+                progress_md = gr.Markdown("点击「开始运行」后此处显示 7 阶段进度。")
+                status_md = gr.Markdown("")
+
+        with gr.Group(visible=False) as qa_group:
+            qa_md = gr.Markdown("")
+            answers_tb = gr.Textbox(label="回答（每行对应一个问题，按顺序作答）", lines=4)
+            with gr.Row():
+                btn_confirm = gr.Button("确认继续", variant="primary")
+                btn_stop = gr.Button("停止")
+
+        deliverables = gr.File(label="交付物下载", interactive=False, file_count="multiple")
+
+        def _final_update(session: UiSession, result) -> dict:
+            """done 事件的终态组件更新：状态块 + 交付物 + 恢复开始按钮。"""
+            if result.success:
+                banner = f"✅ 管道完成，共 {len(result.artifacts)} 个交付物。"
+            elif result.halted:
+                banner = "⏹ 已停止（可在上方修改需求后重新开始）。"
+            else:
+                banner = "❌ 管道结束，存在错误。"
+            lines = [banner, ""]
+            if result.errors:
+                lines.append("**错误记录**")
+                lines.extend(f"{i}. {e}" for i, e in enumerate(result.errors, 1))
+                lines.append("")
+            return {
+                status_md: gr.update(value="\n".join(lines)),
+                progress_md: gr.update(value=session.render_progress()),
+                deliverables: gr.update(value=list(result.artifacts or [])),
+                btn_start: gr.update(interactive=True),
+                session_state: gr.update(value=None),
+            }
+
+        def _read_upload(file_obj):
+            """上传 .md → 预填需求文本框。"""
+            if file_obj is None:
+                return gr.update()
+            return gr.update(value=file_obj.read_text(encoding="utf-8"))
+
+        def _start(text: str):
+            """开始运行：起 worker 线程，生成器轮询事件流驱动组件更新。"""
+            session = UiSession()
+            threading.Thread(
+                target=session.run, args=(text, output_dir, resume), daemon=True
+            ).start()
+
+            running = {
+                progress_md: gr.update(value=session.render_progress()),
+                status_md: gr.update(value=""),
+                btn_start: gr.update(interactive=False),
+                qa_group: gr.update(visible=False),
+                deliverables: gr.update(value=None),
+                session_state: gr.update(value=session),
+            }
+            yield running
+
+            while True:
+                try:
+                    ev, payload = session.events.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+                if ev == "progress":
+                    yield {progress_md: gr.update(value=session.render_progress())}
+                elif ev == "confirm":
+                    yield {
+                        qa_group: gr.update(visible=True),
+                        qa_md: gr.update(value=_format_confirm_md(payload)),
+                        answers_tb: gr.update(value=""),
+                    }
+                elif ev == "confirm_resolved":
+                    yield {qa_group: gr.update(visible=False)}
+                elif ev == "done":
+                    yield _final_update(session, payload)
+                    return
+
+        def _confirm(text: str, session: UiSession | None):
+            if session is not None:
+                session.submit("continue", [line for line in text.splitlines() if line.strip()])
+            return gr.update()
+
+        def _stop(session: UiSession | None):
+            if session is not None:
+                session.submit("stop", [])
+            return gr.update()
+
+        req_file.upload(_read_upload, inputs=req_file, outputs=req_text)
+        btn_start.click(
+            _start,
+            inputs=[req_text],
+            outputs=[progress_md, status_md, btn_start, qa_group, deliverables, session_state],
+            concurrency_limit=1,
+        )
+        btn_confirm.click(_confirm, inputs=[answers_tb, session_state], outputs=[])
+        btn_stop.click(_stop, inputs=[session_state], outputs=[])
+
+    return demo
+
+
+def launch(
+    requirement_text: str = "",
+    output_dir: str | None = None,
+    resume: bool = False,
+) -> None:
+    """CLI --ui 入口：构建应用并启动本地服务（自动开浏览器）。"""
+    create_app(requirement_text, output_dir, resume).launch(inbrowser=True)
