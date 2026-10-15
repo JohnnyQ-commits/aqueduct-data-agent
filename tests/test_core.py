@@ -951,6 +951,12 @@ class TestReviewPipeline:
         """CLI 审查模式调用 Aqueduct.review_mode，不再 import workflow。"""
         import argparse
 
+        # 注意：用 importlib.import_module 持真模块对象 patch，而非 patch("src.aqueduct.cli.main.X")
+        # 字符串路径——cli/__init__.py 的 `from .main import main` 把函数名覆写在包属性上，
+        # getattr 语义（py3.10 mock._importer、`import ... as` 绑定）都会解析到函数而非子模块（CI 3.10 实录）。
+        import importlib
+
+        cli_main = importlib.import_module("src.aqueduct.cli.main")
         from src.aqueduct.cli.main import _review_mode
         from src.aqueduct.core import AqueductResult
 
@@ -962,8 +968,8 @@ class TestReviewPipeline:
 
         sentinel = AqueductResult({"errors": [], "artifacts": []})
         with (
-            patch("src.aqueduct.cli.main.Aqueduct") as mock_cls,
-            patch("src.aqueduct.cli.main.build_review_workflow", create=True) as mock_legacy,
+            patch.object(cli_main, "Aqueduct") as mock_cls,
+            patch.object(cli_main, "build_review_workflow", create=True) as mock_legacy,
         ):
             mock_cls.return_value.review_mode.return_value = sentinel
             rc = _review_mode(args)
@@ -976,6 +982,10 @@ class TestReviewPipeline:
         """review_mode 返回带 errors 的结果时 CLI 打 WARN 并返回 1。"""
         import argparse
 
+        # 同 test_cli_review_routes_to_core：importlib.import_module 持真模块，避开包属性函数覆写
+        import importlib
+
+        cli_main = importlib.import_module("src.aqueduct.cli.main")
         from src.aqueduct.cli.main import _review_mode
         from src.aqueduct.core import AqueductResult
 
@@ -987,8 +997,8 @@ class TestReviewPipeline:
 
         sentinel = AqueductResult({"errors": ["boom"], "artifacts": []})
         with (
-            patch("src.aqueduct.cli.main.Aqueduct") as mock_cls,
-            patch("src.aqueduct.cli.main.build_review_workflow", create=True) as mock_legacy,
+            patch.object(cli_main, "Aqueduct") as mock_cls,
+            patch.object(cli_main, "build_review_workflow", create=True) as mock_legacy,
         ):
             mock_cls.return_value.review_mode.return_value = sentinel
             rc = _review_mode(args)

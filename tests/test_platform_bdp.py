@@ -143,10 +143,22 @@ class TestLoaderBdpRouting:
         assert isinstance(adapter, BDPAdapter)
 
     def test_bdp_capability_set_matches_auto_when_probes_pass(self, monkeypatch):
-        """兼容锚：探针通过时 bdp 与 auto 声明同集（auto 语义不变）。"""
+        """兼容锚：探针通过时 bdp 与 auto 声明同集（auto 语义不变）。
+
+        探针通过必须确定性成立，不能依赖本地 .env（CI 无此文件，实录红过）：
+        DP 凭证注入环境变量（load_dp_env os.environ 优先），execution_enabled 显式 True。
+        """
         from src.aqueduct.platform import load_adapter
 
+        for key, value in (
+            ("DP_BASE_URL", "https://dp.example.com"),
+            ("DP_COOKIE", "BDPSESSION=tok=ci-fake"),
+            ("DP_USER_ID", "01234567"),
+        ):
+            monkeypatch.setenv(key, value)
+
         settings = get_settings()
+        monkeypatch.setattr(settings, "execution_enabled", True)
         monkeypatch.setattr(settings, "platform", "auto")
         monkeypatch.setattr("src.aqueduct.mcp.config.MCPConfig.is_configured", lambda self: True)
         auto = load_adapter(settings)
