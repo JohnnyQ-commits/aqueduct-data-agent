@@ -102,7 +102,7 @@ src/aqueduct/
 ## 测试方式
 
 ```bash
-# 单元测试 + 集成测试（373 tests）
+# 单元测试 + 集成测试（1028 tests）
 python -m pytest tests/ -v
 
 # 端到端验证（需要 LLM API key）

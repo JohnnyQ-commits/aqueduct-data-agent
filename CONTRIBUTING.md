@@ -129,7 +129,7 @@ Aqueduct uses a 7-layer architecture. When contributing, understand which layer 
 |-------|-----------|---------------|
 | MCP | `src/aqueduct/mcp/` | Standard MCP protocol, platform integration |
 | Memory | `src/aqueduct/memory/` | Ontology models, domain knowledge, Top-K recall |
-| Agent-DAG | `src/aqueduct/engine/` | StateGraph workflow, node orchestration |
+| Pipeline Engine | `src/aqueduct/engine/` | Linear pipeline, node orchestration |
 | Skills | `src/aqueduct/skills/` | Business logic, prompt templates (`.tpl.md`) |
 | Tools | `src/aqueduct/tools/` | Atomic tools, SQL parsing, template rendering |
 | LLM | `src/aqueduct/llm/` | LLM adapters, routing, context management |

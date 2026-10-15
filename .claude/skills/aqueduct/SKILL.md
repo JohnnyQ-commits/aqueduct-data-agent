@@ -29,7 +29,7 @@ version: "0.3.0"
 用于调用 `aqueduct` Python 框架，执行数据仓库开发全流程。
 
 本 Skill 是 Claude Code 与 aqueduct 框架的桥接层。
-所有实际工作（DAG 编排、校验引擎、模板生成、数据模型）由 aqueduct Python 代码完成。
+所有实际工作（线性管道编排、校验引擎、模板生成、数据模型）由 aqueduct Python 代码完成。
 Claude Code 提供：LLM 智能、MCP 工具（查表结构）、文件读写能力。
 
 ## 参考文档
@@ -69,7 +69,7 @@ aqueduct status
 | **LLM 层** | 多模型路由（Haiku/Sonnet/Opus 三档分工） | `src/aqueduct/llm/` |
 | **Tools 层** | 9 个原子工具（校验、血缘、成本、DQC 等） | `src/aqueduct/tools/` |
 | **Skills 层** | 7 大业务 Skill + Prompt 模板解耦 | `src/aqueduct/skills/` |
-| **Engine 层** | DAG 工作流（开发/审查双模式） | `src/aqueduct/engine/` |
+| **Engine 层** | 线性管道编排（开发/审查双模式 + 审查修复循环） | `src/aqueduct/engine/` |
 | **Memory 层** | 本体模型知识库 + 自动召回 | `src/aqueduct/memory/` |
 | **MCP 层** | 标准 MCP 接口（可对接任何数据平台） | `src/aqueduct/mcp/` |
 

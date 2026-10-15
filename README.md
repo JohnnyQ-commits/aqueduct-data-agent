@@ -31,7 +31,7 @@ Requirement (.md) --> Design (.md) --> DDL (.sql) --> SQL (.sql) --> Review --> 
 | **7-layer architecture** | Clean separation: MCP / LLM / Tools / Skills / Engine / Memory / Config |
 | **Platform agnostic** | Connects to any data platform via standard MCP protocol (`.mcp.json`) |
 | **Ontology knowledge** | Business domains modeled as typed JSON — entities, relationships, metrics, axioms |
-| **DAG orchestration** | StateGraph-based workflow with interactive checkpoints and error recovery |
+| **Linear pipeline** | 7-phase pipeline with interactive checkpoints, resume support, and error recovery |
 | **Review-fix loop** | Code review finds bugs → auto-fix SQL → re-review → production-ready quality |
 | **Full observability** | Per-task log files, phase timing, LLM call tracing, tool execution audit |
 | **Prompt-code decoupled** | Prompts as `.tpl.md` files — edit without touching code, i18n-ready |
@@ -229,7 +229,7 @@ Once configured, `aqueduct dev` automatically executes DQC test cases and popula
 │  Memory Layer                                            │
 │  Ontology models / Domain knowledge / Auto-recall (Top-K)│
 ├─────────────────────────────────────────────────────────┤
-│  Agent-DAG Layer (StateGraph)                            │
+│  Pipeline Layer (Linear)                                 │
 │  Dev: requirement --> design --> DDL --> SQL --> review --> DQC  │
 │  Review: requirement --> review --> DQC --> report              │
 ├─────────────────────────────────────────────────────────┤
@@ -252,7 +252,7 @@ Once configured, `aqueduct dev` automatically executes DQC test cases and popula
 | LLM | LLM abstraction, 3-tier routing, context management | `llm/` |
 | Tools | 10 atomic tools: SQL validation, lineage, DQC, cost estimation... | `tools/` |
 | Skills | 9 core skills with `.tpl.md` prompt templates | `skills/` |
-| Engine | DAG orchestration, state graph, error recovery | `engine/` |
+| Engine | Linear pipeline orchestration, checkpoints/resume, error recovery | `engine/` |
 | Memory | Ontology knowledge base, domain models, Top-K recall | `memory/` |
 | Config | Pydantic-settings based configuration | `config/` |
 
@@ -368,7 +368,7 @@ aqueduct/
 |   |-- tools/                 # 10 atomic tools + registry
 |   |-- skills/                # 9 core skills + prompt templates
 |   |   +-- prompt/            # .tpl.md prompt templates
-|   |-- engine/                # Agent-DAG layer
+|   |-- engine/                # Pipeline layer
 |   |   +-- nodes/             # 8 node modules
 |   |-- memory/                # Semantic memory + Top-K recall
 |   |-- config/                # Pydantic-settings configuration
@@ -422,8 +422,16 @@ make format
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AQUEDUCT_MAX_FIX_ITERATIONS` | `2` | Review-fix loop max iterations |
-| `AQUEDUCT_LLM_MAX_RETRIES` | `2` | LLM timeout retry count (exponential backoff) |
+| `AQUEDUCT_REVIEW_ENFORCE` | `true` | Set `false` to record review findings without triggering the fix loop or halt (fast evaluation baseline) |
+| `AQUEDUCT_REVIEW_PARSE_ORACLE` | `true` | Adjudicate LLM review syntax claims against a sqlglot parse — parse-clean Criticals downgrade to human confirmation instead of entering the fix loop |
+| `AQUEDUCT_SQL_SELF_FIX_ROUNDS` | `1` | Phase 4 generation self-check fix rounds (0 = off) |
+| `AQUEDUCT_AUTO_RESUME_ATTEMPTS` | `1` | Auto-resume attempts for environmentally-degraded runs (0 = off; `aqueduct dev --resume` for manual resume) |
+| `AQUEDUCT_LLM_BACKEND` | `auto` | `sdk` / `cli` / `auto` — LLM invocation backend |
+| `AQUEDUCT_LLM_CLI_EFFORT` | `""` | Append `--effort <tier>` to the CLI backend (`low`/`high`/`max`; the verified bounded-thinking channel for always-thinking models) |
+| `AQUEDUCT_LLM_THINKING_BUDGET_BY_TASK` | `{}` | JSON map of per-task thinking budgets, e.g. `'{"sql_gen": 20000}'` |
+| `AQUEDUCT_PLATFORM` | `auto` | Platform adapter declaration: `auto` (probe) / `none` (force offline) / `bdp` (manifest-driven) |
 | `AQUEDUCT_EXTERNAL_SQL_PATH` | `""` | External SQL file (skips LLM generation) |
+| `AQUEDUCT_LLM_MAX_RETRIES` | `2` | LLM timeout retry count (exponential backoff) |
 
 ---
 
@@ -433,7 +441,7 @@ make format
 |-----------|-------------|
 | **Code as Infrastructure** | The agent framework is a pip-installable Python package — versioned, tested, distributed like any software library |
 | **Ontology over Prompting** | Business knowledge is modeled as structured data (JSON), not buried in prompts. Prompts reference the model, not the other way around |
-| **DAG over Chat** | Data development is a directed acyclic graph, not a conversation. Each node has defined inputs, outputs, and validation rules |
+| **Pipeline over Chat** | Data development is a linear pipeline of validated phases, not a conversation. Each phase has defined inputs, outputs, and validation rules |
 | **Deliverables over Answers** | The output is not a chat response. It is a set of 15 standardized, production-ready files in a structured directory |
 | **Platform Agnostic** | MCP protocol abstraction means the framework works with any data platform — no vendor lock-in |
 | **Progressive Disclosure** | Simple CLI for beginners (`aqueduct dev req.md`). Full Python API for advanced users. Skills system for customization |

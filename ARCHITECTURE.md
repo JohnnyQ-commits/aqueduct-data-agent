@@ -14,7 +14,7 @@ Aqueduct is built on a strict 7-layer architecture with clear separation of conc
 ├────────────────────────────────────────────────────────────────────┤
 │  Layer 6  Memory       Ontology models / Domain knowledge / Top-K   │
 ├────────────────────────────────────────────────────────────────────┤
-│  Layer 5  Agent-DAG    StateGraph / 8-node DAG / Dual-mode workflow │
+│  Layer 5  Engine        Linear pipeline / 7 phases / Review-fix loop │
 ├────────────────────────────────────────────────────────────────────┤
 │  Layer 4  Skills       9 core skills / .tpl.md prompts / Extensible │
 ├────────────────────────────────────────────────────────────────────┤
@@ -167,19 +167,18 @@ if errors:
 
 ---
 
-## Layer 5: Agent-DAG Engine
+## Layer 5: Pipeline Engine
 
 **Directory**: `src/aqueduct/engine/`
 
-**Responsibility**: Workflow orchestration using LangGraph-compatible StateGraph.
+**Responsibility**: Linear pipeline orchestration (`core.py::_run_pipeline`) with per-node error recovery.
 
 **Key Components**:
 
 - `state.py` — `WorkflowState` TypedDict (workflow context)
-- `workflow.py` — StateGraph definition and compilation
 - `nodes/` — 8 node modules (state assembly only), with phase timing logs
 - `recovery.py` — Error recovery with exponential backoff
-- `core.py` — Linear pipeline executor with review-fix loop and per-task logging
+- `core.py` — Linear pipeline executor with review-fix loop, checkpoints/resume, and per-task logging
 
 **Workflow Modes**:
 
@@ -203,8 +202,8 @@ requirement → review → dqc → report
 
 - Nodes only assemble state and call Skills
 - No business logic in nodes
-- StateGraph API compatible with LangGraph
-- Dual-mode workflow (dev/review) shares same graph structure
+- Single orchestration surface: `_run_pipeline` runs dev, review, and change modes — one place for checkpoints, resume, and progress callbacks
+- The review-fix loop is a bounded back-jump, not a graph edge (a cycle would violate DAG semantics anyway)
 
 **State Flow**:
 
@@ -351,7 +350,7 @@ class WorkflowState(TypedDict):
 2. Create prompt template in `src/aqueduct/skills/prompt/`
 3. Register skill in `src/aqueduct/skills/__init__.py`
 4. Add node in `src/aqueduct/engine/nodes/`
-5. Update workflow graph in `src/aqueduct/engine/workflow.py`
+5. Wire the node into the phase list in `src/aqueduct/core.py` (`_PHASES`)
 
 ### Adding a New Tool
 
@@ -391,19 +390,16 @@ Prompts change frequently. By storing them in `.tpl.md` files:
 - Prompts are version-controlled separately
 - Easy A/B testing of prompt variants
 
-### Why StateGraph?
+### Why a linear pipeline?
 
-LangGraph's StateGraph provides:
-
-- Declarative workflow definition
-- Built-in state management
-- Conditional branching and loops
-- Compatibility with LangGraph ecosystem
+- Every defined graph was a straight line — a DAG engine added surface, not capability
+- The review-fix loop cannot be a graph edge (a cycle violates DAG semantics and was special-cased anyway)
+- One orchestration surface means checkpoints, resume, and degradation-freeze semantics live in exactly one place
+- The StateGraph engine (`workflow.py`) was retired in v0.7.0; the probation clause "未激活则删除" was executed
 
 ---
 
 ## References
 
-- [LangGraph Documentation](https://langchain-ai.github.io/langgraph/)
 - [Model Context Protocol](https://modelcontextprotocol.io/)
 - [Pydantic Settings](https://docs.pydantic.dev/latest/concepts/pydantic_settings/)

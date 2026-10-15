@@ -6,8 +6,8 @@
 ┌─────────────────────────────────────────────────────────┐
 │                      CLI (main.py)                       │
 ├─────────────────────────────────────────────────────────┤
-│                    Engine (DAG 编排)                      │
-│  StateGraph → CompiledWorkflow → Node Execution          │
+│                  Engine (线性管道编排)                     │
+│  core.py _run_pipeline → 7 Phase 顺序执行 + 审查修复循环    │
 ├──────────┬──────────┬──────────┬────────────────────────┤
 │  Skills  │  Tools   │   LLM    │       Memory           │
 │  7 Skills│  9 Tools │  Router  │  DomainModel + Recall  │
@@ -22,9 +22,9 @@
 
 ### Engine (`src/aqueduct/engine/`)
 - `state.py` — WorkflowState TypedDict
-- `workflow.py` — StateGraph + CompiledWorkflow
 - `recovery.py` — 错误恢复（指数退避 + jitter）
 - `nodes/` — 7 个节点模块 (requirement → report)
+- `core.py` — `_run_pipeline()` 线性管道执行器（dev/review/change 共用单一编排面）
 
 ### Skills (`src/aqueduct/skills/`)
 | Skill | Phase | 职责 |
