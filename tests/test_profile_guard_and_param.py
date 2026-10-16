@@ -165,3 +165,19 @@ class TestTrialParamSentinel:
         for s in captured:
             assert "${" not in s
             assert "__AQ_TRIAL_SENTINEL__" in s
+
+
+class TestTargetTableBackticks:
+    def test_target_with_backticks_excluded(self, monkeypatch):
+        """需求文档 markdown 内联代码使 target_table 带反引号——归一化后仍剔除。"""
+        ex = GuardedExecutor()
+        _patch_env(monkeypatch, ex)
+        state = {
+            "requirement": REQUIREMENT,
+            "table_schemas": {TABLE: SCHEMA_TEXT},
+            "target_table": "`dm_tc_waybillinfo.dws_dept_waybill_daily_di`",
+        }
+        profiles = _profile_source_tables(
+            state, [TABLE, "dm_tc_waybillinfo.dws_dept_waybill_daily_di"]
+        )
+        assert "dm_tc_waybillinfo.dws_dept_waybill_daily_di" not in profiles

@@ -454,10 +454,11 @@ def _profile_source_tables(state: WorkflowState, table_names: list[str]) -> dict
     executor = get_tool("executor")
     requirement = state.get("requirement", "")
     schemas = state.get("table_schemas", {})
-    # 目标表（还不存在）剔除——2026-10-16 实录：白探一条 Table not found
-    target = (state.get("target_table") or "").lower()
+    # 目标表（还不存在）剔除——2026-10-16 实录：白探一条 Table not found。
+    # target_table 可能带反引号（需求文档 markdown 内联代码原样提取），归一化再比
+    target = (state.get("target_table") or "").strip("`\"' ").lower()
     if target:
-        table_names = [t for t in table_names if t.lower() != target]
+        table_names = [t for t in table_names if t.strip("`\"' ").lower() != target]
 
     profiles: dict[str, str] = {}
     for table in table_names[:_PROFILE_TABLE_CAP]:
