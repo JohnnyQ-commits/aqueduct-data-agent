@@ -33,6 +33,45 @@ RE_PATCH_BLOCK = re.compile(
     re.DOTALL,
 )
 
+# 网络瞬时错误（2026-10-15 实录）：平台/网关不可达（WinError 10060 类）不是
+# 任务缺陷——call_llm 与试跑共用同一判据小步重试，重试仍不通才降级/抛出。
+# 血缘生成与 DQC 拆分生成等走 call_llm 的通道自动受益。
+RE_NETWORK_TRANSIENT = re.compile(
+    r"winerror\s*100\d{2}"
+    r"|connection(?:ed|refused|reset|\s*died)?"
+    r"|timed?\s*out"
+    r"|\bunreachable\b"
+    r"|getaddrinfo"
+    r"|\bnetwork\b",
+    re.IGNORECASE,
+)
+NETWORK_RETRY_DELAYS = (3.0, 6.0)  # 网络瞬时错误重试间隔（秒），首跑后最多 2 次
+
+
+def chat_with_network_retry(llm, messages, max_tokens: int, thinking_budget, log_ctx: str):
+    """带网络瞬时错误小步重试的单次 LLM 调用。
+
+    与试跑（sql.py _auto_trial_run）同款策略：错误串命中 RE_NETWORK_TRANSIENT
+    时按 NETWORK_RETRY_DELAYS 间隔重试最多 2 次；非瞬时错误或重试耗尽原样抛出。
+    """
+    for retry in range(len(NETWORK_RETRY_DELAYS) + 1):
+        try:
+            return llm.chat(messages, max_tokens=max_tokens, thinking_budget=thinking_budget)
+        except Exception as e:
+            if retry < len(NETWORK_RETRY_DELAYS) and RE_NETWORK_TRANSIENT.search(str(e)):
+                delay = NETWORK_RETRY_DELAYS[retry]
+                logger.warning(
+                    "%s 网络瞬时错误（%s），%.0f 秒后第 %d/%d 次重试",
+                    log_ctx,
+                    str(e)[:120],
+                    delay,
+                    retry + 1,
+                    len(NETWORK_RETRY_DELAYS),
+                )
+                time.sleep(delay)
+                continue
+            raise
+
 
 def apply_sql_patches(original: str, fix_response: str) -> str | None:
     """将修复响应中的补丁块应用到原文。
@@ -146,7 +185,13 @@ def call_llm(state: WorkflowState, task_type: str, prompt: str) -> str:
         start_time = time.time()
         try:
             messages = [LLMMessage(role="user", content=prompt)]
-            response = llm.chat(messages, max_tokens=32768, thinking_budget=thinking_budget)
+            response = chat_with_network_retry(
+                llm,
+                messages,
+                max_tokens=32768,
+                thinking_budget=thinking_budget,
+                log_ctx=f"[task={req_name}] LLM 调用:",
+            )
             elapsed = time.time() - start_time
             last_content = response.content
 

@@ -345,16 +345,9 @@ _RE_TABLE_NOT_FOUND = re.compile(r"table not found '([\w.]+)'", re.IGNORECASE)
 
 # 网络瞬时错误（2026-10-15 实录）：平台不可达（WinError 10060 类）不是 SQL
 # 缺陷——小步重试后仍不通的单列 env_errors，与 6b 超时/8a 承接表同构改判。
-_RE_NETWORK_TRANSIENT = re.compile(
-    r"winerror\s*100\d{2}"
-    r"|connection(?:ed|refused|reset|\s*died)?"
-    r"|timed?\s*out"
-    r"|\bunreachable\b"
-    r"|getaddrinfo"
-    r"|\bnetwork\b",
-    re.IGNORECASE,
-)
-_TRIAL_RETRY_DELAYS = (3.0, 6.0)  # 网络瞬时错误重试间隔（秒），首跑后最多 2 次
+# 判据与间隔收敛在 helpers（call_llm 同款），此处别名复用避免两处漂移。
+from .helpers import NETWORK_RETRY_DELAYS as _TRIAL_RETRY_DELAYS  # noqa: E402
+from .helpers import RE_NETWORK_TRANSIENT as _RE_NETWORK_TRANSIENT  # noqa: E402
 _RE_TABLE_REF = re.compile(r"\b(?:from|join)\s+([\w]+(?:\.[\w]+)?)", re.IGNORECASE)
 _RE_CTE_ALIAS = re.compile(r"(?:\bwith\b|,|\))\s*(\w+)\s+as\s*\(", re.IGNORECASE)
 _RE_CREATE_TARGET = re.compile(r"create\s+table\s+(?:if\s+not\s+exists\s+)?([\w.]+)", re.IGNORECASE)
