@@ -333,38 +333,65 @@ def _select_profile_columns(schema_text: str, requirement: str) -> tuple[list[st
     return enum_cols, profile_cols
 
 
-def _run_probe(executor: Any, sql: str) -> list[list[Any]] | None:
-    """执行单条探查 SQL。失败/异常返回 None（降级不抛）。
-
-    复用试跑同款通道：get_tool("executor").execute(action="execute", sql=...)。
-    """
-
+def _run_probe(executor: Any, sql: str) -> tuple[list[list[Any]] | None, str]:
+    """执行单条探查 SQL。返回 (rows, error)——失败 rows=None、error 非空
+    （降级不抛，错误串供分区护栏等分支判定）。"""
     try:
         result = executor.execute(action="execute", sql=sql)
         if not getattr(result, "success", False):
-            logger.warning("数据探查失败（%s）: %s", sql[:120], getattr(result, "error", ""))
-            return None
-        return (result.data or {}).get("rows") or []
+            err = str(getattr(result, "error", ""))
+            logger.warning("数据探查失败（%s）: %s", sql[:120], err[:300])
+            return None, err
+        return (result.data or {}).get("rows") or [], ""
     except Exception as e:
         logger.warning("数据探查异常（%s）: %s", sql[:120], e)
+        return None, str(e)
+
+
+# 平台分区护栏（2026-10-16 UI 实录）：无分区过滤的探查 SQL 被平台拒绝
+# （PartitionOverLimitException: can only query max 400 partition）——
+# 大表分区数 1390/1449/3205 全部超限，4 表探查全灭。回退走 show partitions
+# （metastore 列表，不触发分区扫描 hook）取最新分区再带过滤探查。
+_RE_PARTITION_LIMIT = re.compile(r"partitionoverlimit|max\s+400\s+partition", re.IGNORECASE)
+
+
+def _latest_partition_via_show(executor: Any, table: str) -> str | None:
+    """show partitions 取 inc_day 最新分区值（护栏命中时的回退路径）。"""
+    rows, _ = _run_probe(executor, f"show partitions {table}")
+    if not rows:
         return None
+    inc_vals: set[str] = set()
+    for row in rows:
+        for seg in str(row[0]).split("/"):
+            seg = seg.strip()
+            if seg.lower().startswith("inc_day="):
+                inc_vals.add(seg.split("=", 1)[1])
+    if not inc_vals:
+        # 非 inc_day 分区名兜底：取字典序最大整串
+        vals = [str(r[0]) for r in rows if r and r[0]]
+        return max(vals) if vals else None
+    return max(inc_vals)
 
 
 def _profile_one_table(executor: Any, table: str, schema_text: str, requirement: str) -> str:
     """对单张表跑画像探查，返回注入 prompt 的格式化文本。"""
     enum_cols, profile_cols = _select_profile_columns(schema_text, requirement)
 
-    # 探查① 最新分区
-    latest_rows = _run_probe(executor, f"select max(inc_day) as latest_partition from {table}")
-    if not latest_rows or latest_rows[0][0] is None:
+    # 探查① 最新分区（护栏命中回退 show partitions）
+    latest_rows, latest_err = _run_probe(
+        executor, f"select max(inc_day) as latest_partition from {table}"
+    )
+    latest = latest_rows[0][0] if latest_rows and latest_rows[0][0] is not None else None
+    if latest is None and _RE_PARTITION_LIMIT.search(latest_err):
+        latest = _latest_partition_via_show(executor, table)
+    if latest is None:
         return f"表: {table}\n数据探查: 无 inc_day 分区键或探查失败，跳过数据探查（仅静态分析）"
-    latest = latest_rows[0][0]
 
     lines = [f"表: {table}（探查分区 {latest}，以下为平台实测数据）"]
     where = f"where inc_day='{latest}'"
 
     # 探查② 分区行数
-    cnt_rows = _run_probe(executor, f"select count(*) from {table} {where}")
+    cnt_rows, _ = _run_probe(executor, f"select count(*) from {table} {where}")
     row_cnt = cnt_rows[0][0] if cnt_rows and cnt_rows[0][0] is not None else None
     if row_cnt is not None:
         lines.append(f"行数: {row_cnt}")
@@ -373,7 +400,7 @@ def _profile_one_table(executor: Any, table: str, schema_text: str, requirement:
 
     # 探查③ 需求提及 string 列的枚举分布（top 10）
     for col in enum_cols:
-        rows = _run_probe(
+        rows, _ = _run_probe(
             executor,
             f"select {col}, count(*) as cnt from {table} {where} "
             f"group by {col} order by cnt desc limit 10",
@@ -390,7 +417,7 @@ def _profile_one_table(executor: Any, table: str, schema_text: str, requirement:
         for col in profile_cols:
             parts.append(f"sum(case when {col} is null then 1 else 0 end) as {col}_null")
             parts.append(f"count(distinct {col}) as {col}_dist")
-        rows = _run_probe(executor, f"select {', '.join(parts)} from {table} {where}")
+        rows, _ = _run_probe(executor, f"select {', '.join(parts)} from {table} {where}")
         if rows and len(rows[0]) == 1 + 2 * len(profile_cols):
             row = rows[0]
             for i, col in enumerate(profile_cols):
@@ -427,6 +454,10 @@ def _profile_source_tables(state: WorkflowState, table_names: list[str]) -> dict
     executor = get_tool("executor")
     requirement = state.get("requirement", "")
     schemas = state.get("table_schemas", {})
+    # 目标表（还不存在）剔除——2026-10-16 实录：白探一条 Table not found
+    target = (state.get("target_table") or "").lower()
+    if target:
+        table_names = [t for t in table_names if t.lower() != target]
 
     profiles: dict[str, str] = {}
     for table in table_names[:_PROFILE_TABLE_CAP]:

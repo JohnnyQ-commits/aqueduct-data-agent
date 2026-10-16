@@ -349,6 +349,13 @@ _RE_TABLE_NOT_FOUND = re.compile(r"table not found '([\w.]+)'", re.IGNORECASE)
 from .helpers import NETWORK_RETRY_DELAYS as _TRIAL_RETRY_DELAYS  # noqa: E402
 from .helpers import RE_NETWORK_TRANSIENT as _RE_NETWORK_TRANSIENT  # noqa: E402
 
+# 调度参数哨兵（2026-10-16 UI 实录）：${param} 占位在试跑通道必然
+# ParseException（参数未绑定），该 Critical 修复环修不掉——试跑前替换为
+# 哨兵串让语法/字段验证照常进行；枚举回填属验收标准4 过渡态，
+# 由审查 Confirm 项跟踪，不再让试跑门禁死锁在参数占位上。
+_RE_SCHED_PARAM = re.compile(r"\$\{(\w+)\}")
+_TRIAL_PARAM_SENTINEL = "__AQ_TRIAL_SENTINEL__"
+
 _RE_TABLE_REF = re.compile(r"\b(?:from|join)\s+([\w]+(?:\.[\w]+)?)", re.IGNORECASE)
 _RE_CTE_ALIAS = re.compile(r"(?:\bwith\b|,|\))\s*(\w+)\s+as\s*\(", re.IGNORECASE)
 _RE_CREATE_TARGET = re.compile(r"create\s+table\s+(?:if\s+not\s+exists\s+)?([\w.]+)", re.IGNORECASE)
@@ -415,6 +422,10 @@ def _run_trial_selects(sql_content: str) -> dict:
     # 降级 Confirm 慢查询标注；表不存在/字段不对齐等硬失败仍进 errors。
     for i, stmt in enumerate(select_stmts[:3]):  # 最多试跑 3 条 SELECT
         limited_stmt = stmt.rstrip().rstrip(";")
+        # 调度参数占位替换为哨兵（否则 ${...} 必然 ParseException，修复环修不掉）
+        if "${" in limited_stmt:
+            limited_stmt = _RE_SCHED_PARAM.sub(f"'{_TRIAL_PARAM_SENTINEL}'", limited_stmt)
+            logger.info("试跑语句含调度参数占位，已替换为哨兵串 %s", _TRIAL_PARAM_SENTINEL)
         if not re.search(r"\blimit\b", limited_stmt, re.IGNORECASE):
             limited_stmt += "\nLIMIT 10"
 
