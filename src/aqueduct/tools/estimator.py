@@ -6,14 +6,47 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
 from ..tools.base import BaseTool, ToolResult
 from ..tools.registry import register_tool
-from ..utils.regex import RE_JOIN, RE_ON, RE_TABLE_NAME
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# 语义提取（2026-10-15 实录修复）：RE_TABLE_NAME 全局匹配把 alias.column
+# 配对当表名（真实 3 源表被报 30 张）。改为 from/join 锚定 + 注释/字符串
+# 剥离 + 大小写不敏感去重；JOIN/ON 笛卡尔积判据同样剥离噪声并感知
+# full/left outer join 变体，消除误报。
+# ---------------------------------------------------------------------------
+
+_RE_BLOCK_COMMENT = re.compile(r"/\*.*?\*/", re.DOTALL)
+_RE_LINE_COMMENT = re.compile(r"--[^\n]*")
+_RE_STRING = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"")
+
+# 只认 from/join 后跟 库.表 的引用——select 列表里的 alias.column 不再误配
+_RE_FROM_JOIN_TABLE = re.compile(
+    r"\b(?:from|join)\s+([a-zA-Z_]\w*)\.([\w.]+)", re.IGNORECASE
+)
+
+# JOIN 变体全谱（含 full outer join / left outer join——旧判据只认
+# full\s+join，outer 变体落进裸 join 分支导致计数错位）
+_RE_JOIN_VARIANTS = re.compile(
+    r"\b(?:cross\s+join|inner\s+join|left(?:\s+outer)?\s+join"
+    r"|right(?:\s+outer)?\s+join|full(?:\s+outer)?\s+join|join)\b",
+    re.IGNORECASE,
+)
+_RE_ON_OR_USING = re.compile(r"\bon\b|\busing\b", re.IGNORECASE)
+
+
+def _strip_noise(sql: str) -> str:
+    """剥离注释与字符串字面量——注释里的 join/on 示例不应参与统计。"""
+    sql = _RE_BLOCK_COMMENT.sub(" ", sql)
+    sql = _RE_STRING.sub("''", sql)
+    sql = _RE_LINE_COMMENT.sub(" ", sql)
+    return sql
 
 
 class CostEstimator:
@@ -37,14 +70,16 @@ class CostEstimator:
             self.sql_content = f.read()
 
     def extract_tables(self) -> None:
-        """从 SQL 中提取所有 库.表 格式的来源表。"""
-        matches = RE_TABLE_NAME.findall(self.sql_content)
+        """从 SQL 中提取来源表（from/join 锚定，大小写不敏感去重）。"""
+        sql = _strip_noise(self.sql_content)
         seen: set[str] = set()
-        for db, tbl in matches:
-            full = f"{db}.{tbl}"
-            if full not in seen:
-                self.tables.append(full)
-                seen.add(full)
+        for db, tbl in _RE_FROM_JOIN_TABLE.findall(sql):
+            full = f"{db}.{tbl}".rstrip(".")
+            key = full.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            self.tables.append(full)
 
     def check_risks(self) -> None:
         """执行三项风险扫描。"""
@@ -55,9 +90,11 @@ class CostEstimator:
         else:
             self.risks.append("极高风险: SQL 缺少 WHERE 子句，可能导致全表扫描。")
 
-        # 风险 2: 潜在笛卡尔积
-        join_count = len(RE_JOIN.findall(self.sql_content))
-        on_count = len(RE_ON.findall(self.sql_content))
+        # 风险 2: 潜在笛卡尔积——噪声剥离后 JOIN 变体全谱计数，
+        # on/using 与 join 一一对应时不误报（full outer join 链实录教训）
+        sql = _strip_noise(self.sql_content)
+        join_count = len(_RE_JOIN_VARIANTS.findall(sql))
+        on_count = len(_RE_ON_OR_USING.findall(sql))
         if join_count > on_count:
             self.risks.append("高风险: 检测到 JOIN 数量多于 ON 条件数量，疑似存在笛卡尔积。")
 
