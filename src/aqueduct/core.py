@@ -522,6 +522,18 @@ class AqueductResult:
         return self._state.get("errors", [])
 
     @property
+    def degradations(self) -> list[str]:
+        """降级清单（试跑环境失败/血缘生成失败/DQC 部分降级）。
+
+        与 errors 的区别：errors 含真实 SQL 缺陷（修复环职责）；
+        degradations 只含环境性未验证——success=True 也可能带降级，
+        UI/调用方据此提示"交付物完整性低于标准"。
+        """
+        from .engine.nodes.report import _collect_degradations
+
+        return _collect_degradations(self._state)
+
+    @property
     def success(self) -> bool:
         """是否执行成功（无致命错误且未中途终止）。"""
         return len(self.errors) == 0 and not self._halted

@@ -82,6 +82,15 @@ def create_app(
             else:
                 banner = "❌ 管道结束，存在错误。"
             lines = [banner, ""]
+            # 降级可见性：success=True 也可能带着未验证降级（试跑/血缘/DQC
+            # 环境性失败被静默吞掉的实录教训），必须显式提示。惰性导入避免
+            # UI 模块加载即拉起引擎依赖链
+            from ..engine.nodes.report import format_degradation_banner
+
+            degradation_banner = format_degradation_banner(result.degradations)
+            if degradation_banner:
+                lines.extend(degradation_banner.split("\n"))
+                lines.append("")
             if result.errors:
                 lines.append("**错误记录**")
                 lines.extend(f"{i}. {e}" for i, e in enumerate(result.errors, 1))

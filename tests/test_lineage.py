@@ -239,12 +239,13 @@ class TestWaitForLineageMermaid:
         assert "lineage_result" not in state
 
     def test_failed_future_leaves_result_untouched_and_cleans_up(self):
-        """后台血缘异常——不炸流程、不写 lineage_result、线程资源仍清理。"""
+        """后台血缘异常——不炸流程、写 error 降级标记（2026-10-15 静默
+        吞掉实录教训：报告/UI 需据此打降级横幅）、线程资源仍清理。"""
         future = Future()
         future.set_exception(RuntimeError("boom"))
         state = {"_lineage_future": future}
 
         wait_for_lineage(state)
 
-        assert "lineage_result" not in state
+        assert "error" in (state.get("lineage_result") or {})
         assert "_lineage_future" not in state

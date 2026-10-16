@@ -29,6 +29,49 @@ logger = logging.getLogger(__name__)
 _INSIGHT_FALLBACK_BG = "（需求背景生成失败，请人工补充）"
 _INSIGHT_FALLBACK_Q = "（待确认问题清单生成失败，请人工补充）"
 
+
+# ---------------------------------------------------------------------------
+# 降级可见性（2026-10-15 实录）：试跑/血缘/DQC 静默降级时 success=True +
+# 交付物齐全，用户无从知晓 SQL 从未上过平台。三处降级信号汇总为横幅，
+# 打在交付总报告头部与 UI 状态块。
+# ---------------------------------------------------------------------------
+
+
+def _collect_degradations(state: WorkflowState) -> list[str]:
+    """从工作流状态收集降级信号（确定性代码，不经 LLM）。
+
+    口径：环境性失败/未验证才算降级——试跑 env_errors（平台不可达）、
+    血缘生成异常（交付物缺血缘图）、DQC 部分类别降级。试跑 errors 是
+    真实 SQL 缺陷（修复环职责），不算降级。
+    """
+    degradations: list[str] = []
+
+    tr = state.get("trial_run_result") or {}
+    if isinstance(tr, dict) and tr.get("env_errors"):
+        degradations.append(
+            f"试跑环境失败 {len(tr['env_errors'])} 条，SQL 未在平台验证: "
+            + "; ".join(tr["env_errors"][:3])
+        )
+
+    lr = state.get("lineage_result") or {}
+    if isinstance(lr, dict) and lr.get("error"):
+        degradations.append(f"血缘图生成失败，交付物缺血缘图: {lr['error']}")
+
+    dqc_degraded = [e for e in state.get("errors", []) if "DQC 部分类别降级" in str(e)]
+    if dqc_degraded:
+        degradations.extend(dqc_degraded)
+
+    return degradations
+
+
+def format_degradation_banner(degradations: list[str]) -> str:
+    """把降级清单格式化为 Markdown 横幅；无降级返回空串。"""
+    if not degradations:
+        return ""
+    lines = [f"> ⚠️ **本次交付含 {len(degradations)} 项未验证降级** —— 以下环节失败，交付物完整性低于标准："]
+    lines.extend(f"> {i}. {d}" for i, d in enumerate(degradations, 1))
+    return "\n".join(lines)
+
 # ── 跨维 Confirm 分组去重（审查降噪）─────────────────────────────
 # PERF-11 拆 3 维度并行后，同一口径问题被不同维度各自提出（perf11-check2
 # 实录 20 条 Confirm 实际独立议题 ~10 条）。确定性锚点聚类：两条目共享
@@ -454,22 +497,29 @@ def _generate_delivery_report(state: WorkflowState) -> str:
         "> 执行模式：开发模式",
         f"> 输出目录：`output/{req_name}/`",
         "",
-        "---",
-        "",
-        "## 一、报告头",
-        "",
-        f"- **需求名称**：{req_name}",
-        f"- **生成日期**：{datetime.now().strftime('%Y-%m-%d')}",
-        "- **执行模式**：开发模式",
-        "",
-        "详细信息参见：",
-        "- 设计文档：[Phase6-Design.md](Phase6-Design.md)",
-        "",
-        "---",
-        "",
-        "## 二、核心 SQL 代码",
-        "",
     ]
+    banner = format_degradation_banner(_collect_degradations(state))
+    if banner:
+        lines.extend([banner, ""])
+    lines.extend(
+        [
+            "---",
+            "",
+            "## 一、报告头",
+            "",
+            f"- **需求名称**：{req_name}",
+            f"- **生成日期**：{datetime.now().strftime('%Y-%m-%d')}",
+            "- **执行模式**：开发模式",
+            "",
+            "详细信息参见：",
+            "- 设计文档：[Phase6-Design.md](Phase6-Design.md)",
+            "",
+            "---",
+            "",
+            "## 二、核心 SQL 代码",
+            "",
+        ]
+    )
 
     if state.get("sql_content"):
         sql = state["sql_content"]

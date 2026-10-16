@@ -968,8 +968,14 @@ def wait_for_lineage(state: WorkflowState) -> None:
                 "mermaid": mermaid,
             }
         logger.info("后台血缘生成已完成")
-    except Exception:
+    except Exception as e:
+        # 降级可见性：异常原本只进日志，交付总报告/UI无从得知缺血缘图。
+        # 写 error 标记，report._collect_degradations 据此打降级横幅。
         logger.warning("后台血缘生成异常，不阻塞流程", exc_info=True)
+        state["lineage_result"] = {
+            **(state.get("lineage_result") or {}),
+            "error": str(e)[:200] or type(e).__name__,
+        }
     finally:
         # 清理线程资源
         state.pop("_lineage_future", None)
