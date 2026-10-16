@@ -353,6 +353,10 @@ from .helpers import RE_NETWORK_TRANSIENT as _RE_NETWORK_TRANSIENT  # noqa: E402
 # ParseException（参数未绑定），该 Critical 修复环修不掉——试跑前替换为
 # 哨兵串让语法/字段验证照常进行；枚举回填属验收标准4 过渡态，
 # 由审查 Confirm 项跟踪，不再让试跑门禁死锁在参数占位上。
+# 两段式替换（run 2 实录 18:35 halt）：占位符在 SQL 中常已带引号
+# （'${bizdate}'），替换值再包引号会产出 ''...'' 非法字面量——
+# 先替换带引号形态，剩余裸占位（IN 列表等）再补引号。
+_RE_SCHED_PARAM_QUOTED = re.compile(r"'\$\{(\w+)\}'")
 _RE_SCHED_PARAM = re.compile(r"\$\{(\w+)\}")
 _TRIAL_PARAM_SENTINEL = "__AQ_TRIAL_SENTINEL__"
 
@@ -424,6 +428,7 @@ def _run_trial_selects(sql_content: str) -> dict:
         limited_stmt = stmt.rstrip().rstrip(";")
         # 调度参数占位替换为哨兵（否则 ${...} 必然 ParseException，修复环修不掉）
         if "${" in limited_stmt:
+            limited_stmt = _RE_SCHED_PARAM_QUOTED.sub(f"'{_TRIAL_PARAM_SENTINEL}'", limited_stmt)
             limited_stmt = _RE_SCHED_PARAM.sub(f"'{_TRIAL_PARAM_SENTINEL}'", limited_stmt)
             logger.info("试跑语句含调度参数占位，已替换为哨兵串 %s", _TRIAL_PARAM_SENTINEL)
         if not re.search(r"\blimit\b", limited_stmt, re.IGNORECASE):

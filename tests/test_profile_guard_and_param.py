@@ -167,6 +167,40 @@ class TestTrialParamSentinel:
             assert "${" not in s
             assert "__AQ_TRIAL_SENTINEL__" in s
 
+    def test_quoted_placeholder_not_double_quoted(self):
+        """实录 18:35 halt（run 2）：占位符在 SQL 中本已带引号（'${bizdate}'），
+        替换值再包引号 → ''__AQ_TRIAL_SENTINEL__'' 必然 ParseException。
+        带引号占位替换后必须仍是合法单引号字面量。"""
+        from src.aqueduct.engine.nodes import sql as sql_mod
+
+        sql_content = (
+            "insert overwrite table dm.t partition (inc_day = ${bizdate})\n"
+            "select dept_code, count(*) as cnt\n"
+            "from dm.a where inc_day = '${bizdate}' group by dept_code"
+        )
+        captured = []
+
+        class CapExecutor:
+            def execute(self, **kwargs):
+                captured.append(kwargs.get("sql", ""))
+                return SimpleNamespace(success=True, data={"rows": [[1]], "row_count": 1})
+
+        import src.aqueduct.tools.registry as registry_pkg
+
+        orig = registry_pkg.get_tool
+        registry_pkg.get_tool = lambda name: CapExecutor()
+        try:
+            trial = sql_mod._run_trial_selects(sql_content)
+        finally:
+            registry_pkg.get_tool = orig
+        assert trial["total"] == 1 and trial["passed"] == 1
+        # 带引号占位：'${bizdate}' → '__AQ_TRIAL_SENTINEL__'（不得出现双引号叠置）
+        where_sql = next(s for s in captured if "where" in s)
+        assert "= '__AQ_TRIAL_SENTINEL__'" in where_sql
+        assert "''" not in where_sql
+        # 裸占位（IN 列表等值位）也替换为合法字面量
+        assert "__AQ_TRIAL_SENTINEL__" in where_sql
+
 
 class TestTargetTableBackticks:
     def test_target_with_backticks_excluded(self, monkeypatch):
