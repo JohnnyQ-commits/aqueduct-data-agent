@@ -68,9 +68,12 @@ def format_degradation_banner(degradations: list[str]) -> str:
     """把降级清单格式化为 Markdown 横幅；无降级返回空串。"""
     if not degradations:
         return ""
-    lines = [f"> ⚠️ **本次交付含 {len(degradations)} 项未验证降级** —— 以下环节失败，交付物完整性低于标准："]
+    lines = [
+        f"> ⚠️ **本次交付含 {len(degradations)} 项未验证降级** —— 以下环节失败，交付物完整性低于标准："
+    ]
     lines.extend(f"> {i}. {d}" for i, d in enumerate(degradations, 1))
     return "\n".join(lines)
+
 
 # ── 跨维 Confirm 分组去重（审查降噪）─────────────────────────────
 # PERF-11 拆 3 维度并行后，同一口径问题被不同维度各自提出（perf11-check2

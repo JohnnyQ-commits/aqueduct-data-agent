@@ -31,8 +31,10 @@ def derive_requirement_name(text: str, fallback: str = "requirement") -> str:
     if not text or not text.strip():
         return fallback
     m = _RE_TITLE_HEADING.search(text)
-    name = m.group(1).strip() if m else next(
-        (ln.strip() for ln in text.splitlines() if ln.strip()), ""
+    name = (
+        m.group(1).strip()
+        if m
+        else next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
     )
     if not name:
         return fallback

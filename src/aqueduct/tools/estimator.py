@@ -27,9 +27,7 @@ _RE_LINE_COMMENT = re.compile(r"--[^\n]*")
 _RE_STRING = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"")
 
 # 只认 from/join 后跟 库.表 的引用——select 列表里的 alias.column 不再误配
-_RE_FROM_JOIN_TABLE = re.compile(
-    r"\b(?:from|join)\s+([a-zA-Z_]\w*)\.([\w.]+)", re.IGNORECASE
-)
+_RE_FROM_JOIN_TABLE = re.compile(r"\b(?:from|join)\s+([a-zA-Z_]\w*)\.([\w.]+)", re.IGNORECASE)
 
 # JOIN 变体全谱（含 full outer join / left outer join——旧判据只认
 # full\s+join，outer 变体落进裸 join 分支导致计数错位）

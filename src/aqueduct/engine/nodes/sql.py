@@ -348,6 +348,7 @@ _RE_TABLE_NOT_FOUND = re.compile(r"table not found '([\w.]+)'", re.IGNORECASE)
 # 判据与间隔收敛在 helpers（call_llm 同款），此处别名复用避免两处漂移。
 from .helpers import NETWORK_RETRY_DELAYS as _TRIAL_RETRY_DELAYS  # noqa: E402
 from .helpers import RE_NETWORK_TRANSIENT as _RE_NETWORK_TRANSIENT  # noqa: E402
+
 _RE_TABLE_REF = re.compile(r"\b(?:from|join)\s+([\w]+(?:\.[\w]+)?)", re.IGNORECASE)
 _RE_CTE_ALIAS = re.compile(r"(?:\bwith\b|,|\))\s*(\w+)\s+as\s*\(", re.IGNORECASE)
 _RE_CREATE_TARGET = re.compile(r"create\s+table\s+(?:if\s+not\s+exists\s+)?([\w.]+)", re.IGNORECASE)

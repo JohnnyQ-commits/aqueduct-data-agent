@@ -327,11 +327,9 @@ def _select_profile_columns(schema_text: str, requirement: str) -> tuple[list[st
     profile_cols = list(dict.fromkeys(mentioned + key_like))[:_PROFILE_COL_CAP]
     # 枚举探查只对 string 类型的需求提及列有意义（int 枚举无业务价值）
     type_by_name = dict(fields)
-    enum_cols = [
-        name
-        for name in mentioned
-        if type_by_name.get(name, "").lower() in _STRING_TYPES
-    ][:_ENUM_COL_CAP]
+    enum_cols = [name for name in mentioned if type_by_name.get(name, "").lower() in _STRING_TYPES][
+        :_ENUM_COL_CAP
+    ]
     return enum_cols, profile_cols
 
 
@@ -340,7 +338,6 @@ def _run_probe(executor: Any, sql: str) -> list[list[Any]] | None:
 
     复用试跑同款通道：get_tool("executor").execute(action="execute", sql=...)。
     """
-    from ...tools.registry import get_tool
 
     try:
         result = executor.execute(action="execute", sql=sql)
@@ -360,10 +357,7 @@ def _profile_one_table(executor: Any, table: str, schema_text: str, requirement:
     # 探查① 最新分区
     latest_rows = _run_probe(executor, f"select max(inc_day) as latest_partition from {table}")
     if not latest_rows or latest_rows[0][0] is None:
-        return (
-            f"表: {table}\n"
-            "数据探查: 无 inc_day 分区键或探查失败，跳过数据探查（仅静态分析）"
-        )
+        return f"表: {table}\n数据探查: 无 inc_day 分区键或探查失败，跳过数据探查（仅静态分析）"
     latest = latest_rows[0][0]
 
     lines = [f"表: {table}（探查分区 {latest}，以下为平台实测数据）"]
@@ -437,7 +431,12 @@ def _profile_source_tables(state: WorkflowState, table_names: list[str]) -> dict
     profiles: dict[str, str] = {}
     for table in table_names[:_PROFILE_TABLE_CAP]:
         if len(table_names) > _PROFILE_TABLE_CAP:
-            logger.warning("源表 %d 张超过探查上限 %d，仅探查前 %d 张", len(table_names), _PROFILE_TABLE_CAP, _PROFILE_TABLE_CAP)
+            logger.warning(
+                "源表 %d 张超过探查上限 %d，仅探查前 %d 张",
+                len(table_names),
+                _PROFILE_TABLE_CAP,
+                _PROFILE_TABLE_CAP,
+            )
         try:
             profiles[table] = _profile_one_table(
                 executor, table, schemas.get(table, ""), requirement
@@ -664,7 +663,9 @@ def node_requirement(state: WorkflowState) -> WorkflowState:
     # 确定性数据探查（失败不阻塞）：对源表最新分区跑画像探查，
     # 结果注入需求理解 prompt——guid 口径歧义、枚举占位符类陷阱靠它识破。
     # 表名与 _query_table_schemas 同源（需求文本提取），保证探的是查过结构的表
-    table_profiles = _profile_source_tables(state, _extract_table_names(state.get("requirement", "")))
+    table_profiles = _profile_source_tables(
+        state, _extract_table_names(state.get("requirement", ""))
+    )
     state["table_profiles"] = table_profiles
     if table_profiles:
         logger.info("数据探查覆盖 %d 张源表", len(table_profiles))

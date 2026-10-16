@@ -60,9 +60,7 @@ class FakeExecutor:
             return types.SimpleNamespace(success=False, error="编译失败", data={})
         import types
 
-        return types.SimpleNamespace(
-            success=True, data={"rows": rows, "row_count": len(rows)}
-        )
+        return types.SimpleNamespace(success=True, data={"rows": rows, "row_count": len(rows)})
 
     def _rows_for(self, sql):
         if "max(inc_day)" in sql:
@@ -112,14 +110,14 @@ def _patch_env(monkeypatch, adapter, executor):
 
 class TestSelectProfileColumns:
     def test_mentioned_string_columns_become_enum_cols(self):
-        enum_cols, profile_cols = _select_profile_columns(SCHEMA_TEXT, REQUIREMENT)
+        enum_cols, _profile_cols = _select_profile_columns(SCHEMA_TEXT, REQUIREMENT)
         # 需求提及 hl_scene_type（string）→ 枚举探查
         assert "hl_scene_type" in enum_cols
         # int 列即使提及也不做枚举探查（is_cancel 未提及，waybill_no 非 string）
         assert "is_cancel" not in enum_cols
 
     def test_mentioned_and_key_like_columns_in_profile(self):
-        enum_cols, profile_cols = _select_profile_columns(SCHEMA_TEXT, REQUIREMENT)
+        _enum_cols, profile_cols = _select_profile_columns(SCHEMA_TEXT, REQUIREMENT)
         # 需求提及 guid / hl_scene_type → 入画像
         assert "guid" in profile_cols
         assert "hl_scene_type" in profile_cols
@@ -131,12 +129,16 @@ class TestSelectProfileColumns:
 
     def test_profile_columns_capped_at_8(self):
         many = "\n".join(f"  - col_{i:02d}_id (bigint)" for i in range(20))
-        _, profile_cols = _select_profile_columns(f"表: db.t\n字段 (20 个):\n{many}", "统计 col_00_id")
+        _, profile_cols = _select_profile_columns(
+            f"表: db.t\n字段 (20 个):\n{many}", "统计 col_00_id"
+        )
         assert len(profile_cols) <= 8
 
     def test_enum_columns_capped_at_3(self):
         many = "\n".join(f"  - scene_{i} (string)" for i in range(6))
-        enum_cols, _ = _select_profile_columns(f"表: db.t\n字段 (6 个):\n{many}", " ".join(f"scene_{i}" for i in range(6)))
+        enum_cols, _ = _select_profile_columns(
+            f"表: db.t\n字段 (6 个):\n{many}", " ".join(f"scene_{i}" for i in range(6))
+        )
         assert len(enum_cols) <= 3
 
 
@@ -245,8 +247,8 @@ class _FakeAdapter:
 
 class TestSkillInjection:
     def test_skill_renders_table_profiles(self):
-        from src.aqueduct.skills.requirement_and_design import RequirementAndDesignSkill
         from src.aqueduct.skills.base import SkillContext
+        from src.aqueduct.skills.requirement_and_design import RequirementAndDesignSkill
 
         state = {"requirement": REQUIREMENT, "domain_context": "", "target_table": "db.t"}
         skill = RequirementAndDesignSkill()
@@ -264,8 +266,8 @@ class TestSkillInjection:
         assert "guid" in prompt and "存在重复" in prompt
 
     def test_skill_without_profiles_renders_placeholder(self):
-        from src.aqueduct.skills.requirement_and_design import RequirementAndDesignSkill
         from src.aqueduct.skills.base import SkillContext
+        from src.aqueduct.skills.requirement_and_design import RequirementAndDesignSkill
 
         state = {"requirement": REQUIREMENT, "domain_context": "", "target_table": "db.t"}
         skill = RequirementAndDesignSkill()

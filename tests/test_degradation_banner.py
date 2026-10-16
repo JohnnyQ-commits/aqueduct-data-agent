@@ -40,7 +40,9 @@ class TestCollectDegradations:
         assert len(ds) == 1 and "血缘" in ds[0]
 
     def test_dqc_degraded_error_collected(self):
-        state = {"errors": ["DQC 部分类别降级: -- [DQC降级] 类别「一致性」本轮生成失败，已跳过该类测试"]}
+        state = {
+            "errors": ["DQC 部分类别降级: -- [DQC降级] 类别「一致性」本轮生成失败，已跳过该类测试"]
+        }
         ds = _collect_degradations(state)
         assert len(ds) == 1 and "DQC" in ds[0]
 
@@ -48,7 +50,12 @@ class TestCollectDegradations:
         """试跑 errors 是真实 SQL 缺陷（修复环职责），不算降级。"""
         state = {
             "errors": [],
-            "trial_run_result": {"total": 3, "passed": 2, "errors": ["SELECT #2: 编译失败"], "env_errors": []},
+            "trial_run_result": {
+                "total": 3,
+                "passed": 2,
+                "errors": ["SELECT #2: 编译失败"],
+                "env_errors": [],
+            },
         }
         assert _collect_degradations(state) == []
 

@@ -9,8 +9,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
-
 from src.aqueduct.utils.file_parser import derive_requirement_name
 
 
@@ -56,7 +54,9 @@ class TestSessionPassthrough:
         class FakeAgent:
             def dev(self, req, **kwargs):
                 captured.update(kwargs)
-                return SimpleNamespace(state={}, artifacts=[], errors=[], halted=False, success=True)
+                return SimpleNamespace(
+                    state={}, artifacts=[], errors=[], halted=False, success=True
+                )
 
         monkeypatch.setattr(session_mod, "Aqueduct", FakeAgent)
         s = session_mod.UiSession()
