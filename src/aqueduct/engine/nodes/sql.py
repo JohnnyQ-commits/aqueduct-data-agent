@@ -342,6 +342,19 @@ def _auto_validate(state: WorkflowState, sql_path: str) -> None:
 
 # 第八刀 8a（run 10 实录）：平台 "Table not found 'X'" 中的表名
 _RE_TABLE_NOT_FOUND = re.compile(r"table not found '([\w.]+)'", re.IGNORECASE)
+
+# 网络瞬时错误（2026-10-15 实录）：平台不可达（WinError 10060 类）不是 SQL
+# 缺陷——小步重试后仍不通的单列 env_errors，与 6b 超时/8a 承接表同构改判。
+_RE_NETWORK_TRANSIENT = re.compile(
+    r"winerror\s*100\d{2}"
+    r"|connection(?:ed|refused|reset|\s*died)?"
+    r"|timed?\s*out"
+    r"|\bunreachable\b"
+    r"|getaddrinfo"
+    r"|\bnetwork\b",
+    re.IGNORECASE,
+)
+_TRIAL_RETRY_DELAYS = (3.0, 6.0)  # 网络瞬时错误重试间隔（秒），首跑后最多 2 次
 _RE_TABLE_REF = re.compile(r"\b(?:from|join)\s+([\w]+(?:\.[\w]+)?)", re.IGNORECASE)
 _RE_CTE_ALIAS = re.compile(r"(?:\bwith\b|,|\))\s*(\w+)\s+as\s*\(", re.IGNORECASE)
 _RE_CREATE_TARGET = re.compile(r"create\s+table\s+(?:if\s+not\s+exists\s+)?([\w.]+)", re.IGNORECASE)
@@ -374,18 +387,28 @@ def _run_trial_selects(sql_content: str) -> dict:
 
     Returns:
         {"total": 可试跑语句数, "tested": 实际试跑数, "passed": 通过数,
-         "errors": [硬失败], "timeouts": [超时], "blocked": [承接表依赖改判]}
+         "errors": [硬失败], "timeouts": [超时], "blocked": [承接表依赖改判],
+         "env_errors": [网络瞬时错误重试后仍不通——平台不可达，SQL 未被验证]}
     """
     from ...tools.registry import get_tool
 
     select_stmts = _extract_select_statements(sql_content)
     if not select_stmts:
-        return {"total": 0, "tested": 0, "passed": 0, "errors": [], "timeouts": [], "blocked": []}
+        return {
+            "total": 0,
+            "tested": 0,
+            "passed": 0,
+            "errors": [],
+            "timeouts": [],
+            "blocked": [],
+            "env_errors": [],
+        }
 
     executor = get_tool("executor")
     trial_results: list[dict] = []
     errors: list[str] = []
     timeouts: list[str] = []
+    env_errors: list[str] = []
     # 第八刀 8a（run 10 实录）：脚本自建承接表的 Table not found 单列 blocked——
     # 试跑只单句执行 SELECT，承接表由前置 CTAS 创建，单句试跑结构性验证不了；
     # 该 Critical 修复环修不掉（run 10 两轮空转 halt），与 6b 超时同构改判。
@@ -402,6 +425,19 @@ def _run_trial_selects(sql_content: str) -> dict:
             limited_stmt += "\nLIMIT 10"
 
         result = executor.execute(action="execute", sql=limited_stmt)
+        # 网络瞬时错误小步重试（2026-10-15 实录：真实需求跑遇 WinError 10060
+        # 单发直接落 errors 报 0/1，SQL 未被验证）——平台不可达不是 SQL 缺陷，
+        # 重试仍不通的单列 env_errors，与 6b 超时/8a 承接表同构改判。
+        retries = 0
+        while (
+            not result.success
+            and retries < len(_TRIAL_RETRY_DELAYS)
+            and _RE_NETWORK_TRANSIENT.search(str(result.error))
+        ):
+            time.sleep(_TRIAL_RETRY_DELAYS[retries])
+            retries += 1
+            result = executor.execute(action="execute", sql=limited_stmt)
+
         trial_results.append(
             {
                 "index": i,
@@ -413,6 +449,8 @@ def _run_trial_selects(sql_content: str) -> dict:
             msg = f"SELECT #{i + 1}: {result.error}"
             if "任务超时" in str(result.error):
                 timeouts.append(msg)
+            elif _RE_NETWORK_TRANSIENT.search(str(result.error)):
+                env_errors.append(msg)
             else:
                 m = _RE_TABLE_NOT_FOUND.search(str(result.error))
                 if m and m.group(1).lower() in created:
@@ -423,10 +461,11 @@ def _run_trial_selects(sql_content: str) -> dict:
     return {
         "total": len(select_stmts),
         "tested": len(trial_results),
-        "passed": len(trial_results) - len(errors),
+        "passed": len(trial_results) - len(errors) - len(env_errors),
         "errors": errors,
         "timeouts": timeouts,
         "blocked": blocked,
+        "env_errors": env_errors,
     }
 
 
@@ -497,11 +536,28 @@ def _auto_trial_run(state: WorkflowState, sql_path: str) -> None:
             report_lines.append(f"- **承接表依赖(改判待人工核验)**: {len(trial['blocked'])}")
             report_lines.extend(f"  - ⛔ {b[:100]}" for b in trial["blocked"])
             report_lines.append("")
+        if trial.get("env_errors"):
+            # 网络瞬时错误重试仍不通：平台不可达，SQL 未被验证（非 SQL 缺陷）
+            report_lines.append(f"- **环境失败(平台不可达,已重试)**: {len(trial['env_errors'])}")
+            report_lines.extend(f"  - ⚠️ {e[:100]}" for e in trial["env_errors"])
+            report_lines.append("")
+        # 逐语句状态按桶判定（索引取自 "SELECT #n" 前缀，不再依赖 passed 算术）
+        err_idx = {int(m.group(1)) for e in trial["errors"] if (m := re.match(r"SELECT #(\d+)", e))}
+        env_idx = {
+            int(m.group(1))
+            for e in trial.get("env_errors", [])
+            if (m := re.match(r"SELECT #(\d+)", e))
+        }
         for i in range(trial["tested"]):
-            status = "✅" if i < trial["passed"] else "❌"
-            line = f"- {status} SELECT #{i + 1}"
-            if i >= trial["passed"] and i < trial["passed"] + len(trial["errors"]):
-                line += f" — `{trial['errors'][i - trial['passed']][:100]}`"
+            n = i + 1
+            if n in err_idx:
+                detail = next(e for e in trial["errors"] if e.startswith(f"SELECT #{n}"))
+                line = f"- ❌ SELECT #{n} — `{detail[:100]}`"
+            elif n in env_idx:
+                detail = next(e for e in trial["env_errors"] if e.startswith(f"SELECT #{n}"))
+                line = f"- ⚠️ SELECT #{n} — `{detail[:100]}`"
+            else:
+                line = f"- ✅ SELECT #{n}"
             report_lines.append(line)
 
         save_artifact(state, "Phase4-试跑报告.md", "\n".join(report_lines))

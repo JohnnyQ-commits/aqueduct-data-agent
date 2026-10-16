@@ -458,6 +458,18 @@ def _trial_run_issues(state: WorkflowState) -> list[dict[str, str]]:
                 "dimension": "试跑",
             }
         )
+    # 网络瞬时错误（2026-10-15 实录）：平台不可达（WinError 10060 类）小步
+    # 重试仍不通——SQL 未被验证但非 SQL 缺陷，修复环修不动网络，与 6b/8a
+    # 同构改判 Confirm 人工复跑。
+    for env in trial.get("env_errors", []):
+        issues.append(
+            {
+                "severity": "Confirm",
+                "message": f"[试跑] {env}（环境改判：数据平台连接失败且重试无果，"
+                "非语法/字段错误——SQL 本次未被验证，网络恢复后人工复跑确认）",
+                "dimension": "试跑",
+            }
+        )
     return issues
 
 

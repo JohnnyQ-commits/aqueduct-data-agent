@@ -266,6 +266,100 @@ class TestTrialSelectsTimeoutClassification:
         assert trial["passed"] == trial["tested"], "超时语句计入通过（慢查询标注另行列出）"
 
 
+class TestTrialSelectsNetworkRetry:
+    """网络瞬时错误重试：WinError 10060 类平台不可达不是 SQL 缺陷。
+
+    2026-10-15 实录：真实需求跑（ui-run-dept-daily）试跑单发遇
+    WinError 10060 直接落 errors 报 0/1，SQL 本身未经验证——重试后
+    仍不通的进 env_errors 独立桶（与 6b 超时/8a 承接表同构改判，
+    不触发修复环 Critical）。
+    """
+
+    def test_transient_error_retries_then_passes(self):
+        from src.aqueduct.engine.nodes.sql import _run_trial_selects
+
+        with (
+            patch("src.aqueduct.platform.get_platform_adapter") as mock_adapter,
+            patch("src.aqueduct.tools.registry.get_tool") as mock_get_tool,
+            patch("src.aqueduct.engine.nodes.sql.time.sleep") as mock_sleep,
+        ):
+            mock_adapter.return_value.has_capability.return_value = True
+            fail = MagicMock(success=False, error="[WinError 10060] 连接尝试失败")
+            ok = MagicMock(success=True, error=None)
+            mock_get_tool.return_value.execute.side_effect = [fail, ok]
+            trial = _run_trial_selects("select city, count(1) from t group by city;")
+        assert trial["passed"] == 1 and trial["errors"] == []
+        assert trial["env_errors"] == [], "重试成功不落环境桶"
+        assert mock_get_tool.return_value.execute.call_count == 2
+        mock_sleep.assert_called_once()
+
+    def test_transient_error_exhausted_goes_to_env_bucket(self):
+        from src.aqueduct.engine.nodes.sql import _run_trial_selects
+
+        with (
+            patch("src.aqueduct.platform.get_platform_adapter") as mock_adapter,
+            patch("src.aqueduct.tools.registry.get_tool") as mock_get_tool,
+            patch("src.aqueduct.engine.nodes.sql.time.sleep"),
+        ):
+            mock_adapter.return_value.has_capability.return_value = True
+            fail = MagicMock(success=False, error="[WinError 10060] 连接尝试失败")
+            mock_get_tool.return_value.execute.return_value = fail
+            trial = _run_trial_selects("select city, count(1) from t group by city;")
+        assert trial["errors"] == [], "网络不通不是 SQL 硬失败（不触发修复环）"
+        assert len(trial["env_errors"]) == 1
+        assert "SELECT #1" in trial["env_errors"][0]
+        assert trial["passed"] == 0, "SQL 未被验证不计入通过"
+        assert mock_get_tool.return_value.execute.call_count == 3, "首跑 + 2 次重试"
+
+    def test_hard_error_no_retry(self):
+        from src.aqueduct.engine.nodes.sql import _run_trial_selects
+
+        with (
+            patch("src.aqueduct.platform.get_platform_adapter") as mock_adapter,
+            patch("src.aqueduct.tools.registry.get_tool") as mock_get_tool,
+            patch("src.aqueduct.engine.nodes.sql.time.sleep") as mock_sleep,
+        ):
+            mock_adapter.return_value.has_capability.return_value = True
+            fail = MagicMock(success=False, error="编译失败: 列 `sign_time` 不存在")
+            mock_get_tool.return_value.execute.return_value = fail
+            trial = _run_trial_selects("select sign_time from t;")
+        assert len(trial["errors"]) == 1, "硬失败仍进 errors"
+        assert trial["env_errors"] == []
+        assert mock_get_tool.return_value.execute.call_count == 1, "硬失败不重试"
+        mock_sleep.assert_not_called()
+
+
+class TestTrialGateEnvErrorConfirm:
+    """审查门禁：env_errors（平台不可达）改判 Confirm，不触发修复环。"""
+
+    def test_env_error_is_confirm_not_critical(self):
+        from src.aqueduct.engine.nodes.review import _trial_run_issues
+
+        state = _make_state() | {"sql_content": _SQL + " group by city having count(1) > 0"}
+        with (
+            patch("src.aqueduct.platform.get_platform_adapter") as mock_adapter,
+            patch("src.aqueduct.tools.registry.get_tool") as mock_tool,
+            patch(
+                "src.aqueduct.engine.nodes.sql._run_trial_selects",
+                return_value={
+                    "errors": [],
+                    "env_errors": ["SELECT #1: [WinError 10060] 连接尝试失败"],
+                    "timeouts": [],
+                    "blocked": [],
+                    "passed": 0,
+                    "tested": 1,
+                },
+            ),
+        ):
+            mock_adapter.return_value.has_capability.return_value = True
+            mock_tool.return_value.execute.return_value.success = True
+            issues = _trial_run_issues(state)
+        assert issues, "环境失败须落盘待确认标注，不得静默"
+        assert all(i["severity"] == "Confirm" for i in issues), "平台不可达不得触发修复环"
+        assert all(i["dimension"] == "试跑" for i in issues)
+        assert all("环境" in i["message"] for i in issues)
+
+
 # ── 维度 prompt（skill 层） ──────────────────────────────────────────────────
 
 
