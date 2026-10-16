@@ -277,3 +277,47 @@ class TestSkillInjection:
         )
         prompt = skill.execute(ctx).data["prompt"]
         assert "未探查" in prompt
+
+
+class TestTemplateFormatContract:
+    """Phase1 摘要格式契约：表格化骨架 + 每题建议方案（瀑布 bullet 墙改造）。
+
+    根因（2026-10-16 拍板）：模板骨架本身就是瀑布格式，模型忠实填空；
+    skill 模式格式好是 harness+人工反馈的产物。改造走"骨架模板为主"路线
+    （第十五刀先例：skeleton-fill 救格式失败，规则三轮救不动）。
+    """
+
+    def test_summary_section_is_table_skeleton(self):
+        from pathlib import Path
+
+        tpl = Path("src/aqueduct/skills/prompt/requirement_and_design.tpl.md").read_text(
+            encoding="utf-8"
+        )
+        assert "| 维度 |" in tpl  # 摘要主体表格化
+        assert "| 探查项 |" in tpl  # 探查发现表格化
+
+    def test_questions_require_recommended_option(self):
+        from pathlib import Path
+
+        tpl = Path("src/aqueduct/skills/prompt/requirement_and_design.tpl.md").read_text(
+            encoding="utf-8"
+        )
+        assert "建议 A（推荐）" in tpl  # 每题带推荐方案
+        assert "禁止用无选项的开放式问题" in tpl
+
+    def test_parse_questions_survives_ab_lines(self):
+        """新骨架下问题解析契约不破：编号行捕获、A/B 子行不污染。"""
+        from src.aqueduct.utils.qa import parse_questions
+
+        summary = (
+            "## 需求理解摘要\n\n| 维度 | 说明 |\n|------|------|\n| 目标表 | db.t |\n\n"
+            "### 数据探查发现\n\n| 探查项 | 实测结果 |\n|--------|--------|\n"
+            "### 待确认问题\n"
+            "1. **散单枚举**：hl_scene_type 枚举未指定\n"
+            "   - 建议 A（推荐）：按实测 集收/散收 执行，理由：平台实查\n"
+            "   - 建议 B：按需求占位 ('01','02')\n"
+        )
+        qs = parse_questions(summary)
+        assert len(qs) == 1
+        assert "散单枚举" in qs[0]
+        assert "建议" not in qs[0]
