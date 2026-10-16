@@ -114,6 +114,7 @@ class UiSession:
         requirement_text: str,
         output_dir: str | None = None,
         resume: bool = False,
+        requirement_name: str | None = None,
     ) -> None:
         """daemon 线程入口：跑完整 dev 管道，终态（或异常合成结果）必落 done 事件。"""
         try:
@@ -124,6 +125,7 @@ class UiSession:
                 on_confirm=self.on_confirm,
                 on_progress=self.on_progress,
                 resume=resume,
+                requirement_name=requirement_name,
             )
         except Exception as e:  # 生成器必须收到终态才能退出，任何异常都合成 done 结果
             result = AqueductResult(

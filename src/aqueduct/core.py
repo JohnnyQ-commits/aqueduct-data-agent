@@ -592,6 +592,7 @@ class Aqueduct:
         on_progress: ProgressCallback | None = None,
         external_sql_path: str | None = None,
         resume: bool = False,
+        requirement_name: str | None = None,
     ) -> AqueductResult:
         """开发模式：从需求文档到完整交付。
 
@@ -622,7 +623,13 @@ class Aqueduct:
             req_name = req_path.stem
         else:
             requirement_text = requirement
-            req_name = "requirement"
+            # 文本输入（UI 粘贴）：从标题/首行派生可读名，不再硬编码 "requirement"
+            from .utils.file_parser import derive_requirement_name
+
+            req_name = derive_requirement_name(requirement)
+        # 显式指定（CLI 文件名 / API 调用方）优先于派生
+        if requirement_name:
+            req_name = requirement_name
 
         from .config.settings import get_settings
         from .utils.table_cache import TableSchemaCache

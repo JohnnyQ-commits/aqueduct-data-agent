@@ -201,7 +201,13 @@ def _dev_ui(args: argparse.Namespace) -> int:
 
     from ..ui.app import launch  # 惰性导入：非 --ui 路径永不触碰 gradio
 
-    launch(requirement_text=req_text, output_dir=args.output, resume=getattr(args, "resume", False))
+    # 需求名透传：文件输入取文件名 stem，替换交付物里的 "requirement" 占位
+    launch(
+        requirement_text=req_text,
+        output_dir=args.output,
+        resume=getattr(args, "resume", False),
+        requirement_name=Path(args.requirement).stem if args.requirement else None,
+    )
     return 0
 
 

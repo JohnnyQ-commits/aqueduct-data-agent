@@ -41,6 +41,7 @@ def create_app(
     requirement_text: str = "",
     output_dir: str | None = None,
     resume: bool = False,
+    requirement_name: str | None = None,
 ) -> gr.Blocks:
     """构建 Gradio Blocks 应用（不启动服务；服务由 launch() 负责）。"""
     with gr.Blocks(title="Aqueduct 数据开发助手") as demo:
@@ -113,7 +114,9 @@ def create_app(
             """开始运行：起 worker 线程，生成器轮询事件流驱动组件更新。"""
             session = UiSession()
             threading.Thread(
-                target=session.run, args=(text, output_dir, resume), daemon=True
+                target=session.run,
+                args=(text, output_dir, resume, requirement_name),
+                daemon=True,
             ).start()
 
             running = {
@@ -181,6 +184,7 @@ def launch(
     requirement_text: str = "",
     output_dir: str | None = None,
     resume: bool = False,
+    requirement_name: str | None = None,
 ) -> None:
     """CLI --ui 入口：构建应用并启动本地服务（自动开浏览器）。"""
-    create_app(requirement_text, output_dir, resume).launch(inbrowser=True)
+    create_app(requirement_text, output_dir, resume, requirement_name).launch(inbrowser=True)

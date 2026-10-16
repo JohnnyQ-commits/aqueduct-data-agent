@@ -10,9 +10,34 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# 需求名派生（2026-10-15 实录）：UI 粘贴文本跑管道时交付物曾一律叫
+# Phase4-requirement.sql——文本输入路径硬编码占位名。改为从需求标题/首行
+# 派生，文件名与报告头连带可读。
+_RE_TITLE_HEADING = re.compile(r"^#\s+(.+)$", re.MULTILINE)
+_RE_UNSAFE_FILENAME = re.compile(r'[\\/:*?"<>|]')
+_REQUIREMENT_NAME_MAX = 30
+
+
+def derive_requirement_name(text: str, fallback: str = "requirement") -> str:
+    """从需求文本派生可读名称：优先一级标题，退回首行；≤30 字符。
+
+    文件名不安全字符（\\ / : * ? " < > |）替换为空；解析不出返回 fallback。
+    """
+    if not text or not text.strip():
+        return fallback
+    m = _RE_TITLE_HEADING.search(text)
+    name = m.group(1).strip() if m else next(
+        (ln.strip() for ln in text.splitlines() if ln.strip()), ""
+    )
+    if not name:
+        return fallback
+    name = _RE_UNSAFE_FILENAME.sub("", name).strip()
+    return name[:_REQUIREMENT_NAME_MAX] or fallback
 
 
 def parse_requirement_file(file_path: str | Path) -> str:
