@@ -125,6 +125,7 @@ class WorkflowState(TypedDict):
 
     # === 可选：中间结果（由自动校验等子任务写入） ===
     requirement_summary: NotRequired[str]
+    table_profiles: NotRequired[dict]  # Phase 1 确定性数据探查结果 {表名: 探查文本}
     validation_result: NotRequired[dict]
     lineage_result: NotRequired[dict]
     cost_result: NotRequired[dict]

@@ -50,11 +50,19 @@ class RequirementAndDesignSkill(BaseSkill):
         else:
             table_schemas_text = str(table_schemas) if table_schemas else "未获取"
 
+        # 数据探查结果（Phase 1 确定性实查，失败/无能力时为空）
+        table_profiles = inp.get("table_profiles") or context.state.get("table_profiles", {})
+        if isinstance(table_profiles, dict) and table_profiles:
+            table_profiles_text = "\n\n".join(table_profiles.values())
+        else:
+            table_profiles_text = "未探查（平台无 sql_execute 能力或探查失败）"
+
         # 加载合并 Prompt 模板
         prompt = self.load_prompt_template(
             requirement_doc=requirement_doc,
             domain_context=context.state.get("domain_context", ""),
             table_schemas=table_schemas_text,
+            table_profiles=table_profiles_text,
             target_table=target_table,
         )
 

@@ -6,6 +6,7 @@ import contextlib
 import logging
 import re
 import time
+from typing import Any
 
 from ...memory.recall import KnowledgeRecall
 from ...memory.store import MemoryStore
@@ -288,6 +289,167 @@ def _query_table_schemas(state: WorkflowState) -> dict[str, str]:
     return schemas
 
 
+# ---------------------------------------------------------------------------
+# 确定性数据探查（2026-10-16 受控对比定靶）
+#
+# CLI 的 MCP 通道只查表结构不跑数据，需求里埋的 guid/枚举两陷阱全踩；
+# skill 模式的杀手锏是行数/枚举/空值/唯一性实查。此处用确定性代码补上：
+# 对每个源表最新分区跑固定画像探查，纯代码执行（不经 LLM），结果注入
+# Phase 1 prompt。探查仅限单分区聚合（每表 ≤4 条），逐条 try/except 降级，
+# 平台无 sql_execute 能力时整体跳过（开源离线模式照跑）。
+# ---------------------------------------------------------------------------
+
+# 画像候选列：需求提及列 + 键形列（*_no/*_id/*_code/*_guid/*_key）
+_KEY_LIKE_SUFFIXES = ("_no", "_id", "_code", "_guid", "_key")
+_PROFILE_COL_CAP = 8
+_ENUM_COL_CAP = 3
+_PROFILE_TABLE_CAP = 8
+
+# 从 _query_table_schemas 的格式化文本解析字段：`  - name (type) — comment`
+_RE_SCHEMA_FIELD = re.compile(r"^\s*-\s+(\w+)\s*\(([^)]+)\)", re.MULTILINE)
+_STRING_TYPES = {"string", "varchar", "char"}
+
+
+def _select_profile_columns(schema_text: str, requirement: str) -> tuple[list[str], list[str]]:
+    """从表结构文本 + 需求文本选出探查列。
+
+    Returns:
+        (enum_cols, profile_cols) — enum_cols 限 string 类型且需求提及
+        （做 top-N 枚举分布，上限 3）；profile_cols = 需求提及 ∪ 键形列
+        （做空值率 + distinct 画像，上限 8）。
+    """
+    fields = _RE_SCHEMA_FIELD.findall(schema_text)
+    mentioned = [name for name, _ in fields if re.search(rf"\b{re.escape(name)}\b", requirement)]
+    key_like = [
+        name for name, _ in fields if name.endswith(_KEY_LIKE_SUFFIXES) and name not in mentioned
+    ]
+    # 需求提及优先，键形列兜底，截断到画像上限
+    profile_cols = list(dict.fromkeys(mentioned + key_like))[:_PROFILE_COL_CAP]
+    # 枚举探查只对 string 类型的需求提及列有意义（int 枚举无业务价值）
+    type_by_name = dict(fields)
+    enum_cols = [
+        name
+        for name in mentioned
+        if type_by_name.get(name, "").lower() in _STRING_TYPES
+    ][:_ENUM_COL_CAP]
+    return enum_cols, profile_cols
+
+
+def _run_probe(executor: Any, sql: str) -> list[list[Any]] | None:
+    """执行单条探查 SQL。失败/异常返回 None（降级不抛）。
+
+    复用试跑同款通道：get_tool("executor").execute(action="execute", sql=...)。
+    """
+    from ...tools.registry import get_tool
+
+    try:
+        result = executor.execute(action="execute", sql=sql)
+        if not getattr(result, "success", False):
+            logger.warning("数据探查失败（%s）: %s", sql[:120], getattr(result, "error", ""))
+            return None
+        return (result.data or {}).get("rows") or []
+    except Exception as e:
+        logger.warning("数据探查异常（%s）: %s", sql[:120], e)
+        return None
+
+
+def _profile_one_table(executor: Any, table: str, schema_text: str, requirement: str) -> str:
+    """对单张表跑画像探查，返回注入 prompt 的格式化文本。"""
+    enum_cols, profile_cols = _select_profile_columns(schema_text, requirement)
+
+    # 探查① 最新分区
+    latest_rows = _run_probe(executor, f"select max(inc_day) as latest_partition from {table}")
+    if not latest_rows or latest_rows[0][0] is None:
+        return (
+            f"表: {table}\n"
+            "数据探查: 无 inc_day 分区键或探查失败，跳过数据探查（仅静态分析）"
+        )
+    latest = latest_rows[0][0]
+
+    lines = [f"表: {table}（探查分区 {latest}，以下为平台实测数据）"]
+    where = f"where inc_day='{latest}'"
+
+    # 探查② 分区行数
+    cnt_rows = _run_probe(executor, f"select count(*) from {table} {where}")
+    row_cnt = cnt_rows[0][0] if cnt_rows and cnt_rows[0][0] is not None else None
+    if row_cnt is not None:
+        lines.append(f"行数: {row_cnt}")
+    else:
+        lines.append("行数: 探查失败")
+
+    # 探查③ 需求提及 string 列的枚举分布（top 10）
+    for col in enum_cols:
+        rows = _run_probe(
+            executor,
+            f"select {col}, count(*) as cnt from {table} {where} "
+            f"group by {col} order by cnt desc limit 10",
+        )
+        if rows:
+            tops = ", ".join(f"{r[0]}={r[1]}" for r in rows)
+            lines.append(f"{col} 枚举分布: {tops}")
+        else:
+            lines.append(f"{col} 枚举分布: 探查失败")
+
+    # 探查④ 画像：空值率 + distinct（一条 SQL 查全部画像列）
+    if profile_cols:
+        parts = ["count(*) as total"]
+        for col in profile_cols:
+            parts.append(f"sum(case when {col} is null then 1 else 0 end) as {col}_null")
+            parts.append(f"count(distinct {col}) as {col}_dist")
+        rows = _run_probe(executor, f"select {', '.join(parts)} from {table} {where}")
+        if rows and len(rows[0]) == 1 + 2 * len(profile_cols):
+            row = rows[0]
+            for i, col in enumerate(profile_cols):
+                null_cnt, dist = row[1 + 2 * i], row[2 + 2 * i]
+                note = "全唯一" if dist == row_cnt else "存在重复"
+                line = f"- {col}: 空值={null_cnt}, distinct={dist}"
+                if row_cnt is not None:
+                    line += f"（{note}）"
+                lines.append(line)
+        else:
+            lines.append("画像探查（空值/distinct）失败")
+
+    return "\n".join(lines)
+
+
+def _profile_source_tables(state: WorkflowState, table_names: list[str]) -> dict[str, str]:
+    """对源表跑确定性数据探查，返回 {表名: 探查文本}。
+
+    门禁：平台必须声明 SQL_EXECUTE 能力（NoneAdapter / execution_enabled=False
+    时优雅返回空 dict）。逐表 try/except，单表失败降级为探查失败标记。
+    上限 _PROFILE_TABLE_CAP 张表，防止需求误提大量表名时探查失控。
+    """
+    from ...platform import Capability, get_platform_adapter
+
+    adapter = get_platform_adapter()
+    if not adapter.has_capability(Capability.SQL_EXECUTE):
+        logger.info("平台 %s 未声明 sql_execute 能力，跳过 Phase 1 数据探查", adapter.name)
+        return {}
+    if not table_names:
+        return {}
+
+    from ...tools.registry import get_tool
+
+    executor = get_tool("executor")
+    requirement = state.get("requirement", "")
+    schemas = state.get("table_schemas", {})
+
+    profiles: dict[str, str] = {}
+    for table in table_names[:_PROFILE_TABLE_CAP]:
+        if len(table_names) > _PROFILE_TABLE_CAP:
+            logger.warning("源表 %d 张超过探查上限 %d，仅探查前 %d 张", len(table_names), _PROFILE_TABLE_CAP, _PROFILE_TABLE_CAP)
+        try:
+            profiles[table] = _profile_one_table(
+                executor, table, schemas.get(table, ""), requirement
+            )
+        except Exception as e:
+            logger.warning("数据探查失败: %s - %s", table, e)
+            profiles[table] = f"表: {table}\n数据探查失败: {e}"
+    if profiles:
+        logger.info("Phase 1 数据探查完成: %d/%d 张表", len(profiles), len(table_names))
+    return profiles
+
+
 def _extract_mapping_section(design_scheme: str) -> str:
     """定位「字段映射」章节原文（标题行到下一个同级/更高级标题之间）。
 
@@ -499,6 +661,14 @@ def node_requirement(state: WorkflowState) -> WorkflowState:
     else:
         state["table_schemas"] = {}
 
+    # 确定性数据探查（失败不阻塞）：对源表最新分区跑画像探查，
+    # 结果注入需求理解 prompt——guid 口径歧义、枚举占位符类陷阱靠它识破。
+    # 表名与 _query_table_schemas 同源（需求文本提取），保证探的是查过结构的表
+    table_profiles = _profile_source_tables(state, _extract_table_names(state.get("requirement", "")))
+    state["table_profiles"] = table_profiles
+    if table_profiles:
+        logger.info("数据探查覆盖 %d 张源表", len(table_profiles))
+
     try:
         # OPT-5: 二合一 Skill（需求分析+方案设计）；DDL 由 B 路径并行生成
         skill = get_skill("requirement_and_design")
@@ -507,6 +677,7 @@ def node_requirement(state: WorkflowState) -> WorkflowState:
                 "requirement_doc": state.get("requirement", ""),
                 "domain_context": state.get("domain_context", ""),
                 "table_schemas": table_schemas,
+                "table_profiles": table_profiles,
             },
             state=state,
         )
