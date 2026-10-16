@@ -321,3 +321,45 @@ class TestTemplateFormatContract:
         assert len(qs) == 1
         assert "散单枚举" in qs[0]
         assert "建议" not in qs[0]
+
+
+class TestEnumColumnPriority:
+    """枚举列选择启发式：*_type/*_scene 类字段优先，时间戳字段不白探（实录：
+    signin_tm 被探枚举而 hl_scene_type 被 cap 截掉）。"""
+
+    SCHEMA2 = (
+        "表: db.t\n"
+        "字段 (5 个):\n"
+        "  - signin_tm (string) — 签到时间\n"
+        "  - dept_type_code (string) — 部门类型\n"
+        "  - hl_scene_type (string) — 场景类型\n"
+        "  - pay_status (string) — 支付状态\n"
+        "  - inc_day (string) — 分区键"
+    )
+
+    def test_enumish_names_prioritized_over_timestamps(self):
+        req = "统计 signin_tm dept_type_code hl_scene_type pay_status 的分布"
+        enum_cols, _ = _select_profile_columns(self.SCHEMA2, req)
+        # signin_tm 是时间戳不该进枚举探查；3 个枚举形列全进
+        assert "signin_tm" not in enum_cols
+        assert set(enum_cols) == {"dept_type_code", "hl_scene_type", "pay_status"}
+
+    def test_plain_mentioned_string_still_eligible_when_no_enumish(self):
+        req = "统计 signin_tm 的取值"
+        enum_cols, _ = _select_profile_columns(self.SCHEMA2, req)
+        assert enum_cols == ["signin_tm"]
+
+
+class TestPhase1ContractAcceptsTable:
+    """结构契约校验器认新表格骨架（2026-10-16 实录：表格格式被误报缺目标表）。"""
+
+    def test_table_row_satisfies_target_rule(self):
+        from src.aqueduct.engine.contract import validate_structure
+
+        content = (
+            "## 需求理解摘要\n\n"
+            "| 维度 | 说明 |\n|------|------|\n"
+            "| 目标表 | db.t |\n\n"
+            "### 待确认问题\n1. x\n"
+        )
+        assert validate_structure("Phase1-需求理解摘要.md", content) == []

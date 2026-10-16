@@ -34,9 +34,11 @@ _H = r"^#{1,4}\s*[^\n]*"
 
 CONTRACTS: dict[str, tuple[SectionRule, ...]] = {
     # requirement_and_design.tpl.md「输出格式 · 第一部分」：
-    # 目标表等关键列表项 + ### 待确认问题
+    # 目标表（bullet 或表格行，2026-10 格式契约改造后为 | 目标表 | 行）+ ### 待确认问题
     "Phase1-需求理解摘要.md": (
-        SectionRule("目标表", re.compile(r"^[-*]\s*\**\s*目标表", re.MULTILINE)),
+        SectionRule(
+            "目标表", re.compile(r"^(?:[-*]\s*\**\s*目标表|\|\s*目标表\s*\|)", re.MULTILINE)
+        ),
         SectionRule("待确认问题", re.compile(_H + r"待确认问题", re.MULTILINE)),
     ),
     # 两条模板路径共用：OPT-5 三合一（### 取数逻辑 等 H3）/ OPT-4 二合一（## 取数逻辑 等 H2）

@@ -305,6 +305,11 @@ _PROFILE_COL_CAP = 8
 _ENUM_COL_CAP = 3
 _PROFILE_TABLE_CAP = 8
 
+# 枚举形字段名特征（2026-10-16 实录：cap 截断把 signin_tm 时间戳拿去白探
+# 枚举分布，真正的 hl_scene_type 反而被挤掉）——枚举形列优先，时间戳排除
+_ENUMISH_MARKERS = ("type", "status", "state", "scene", "flag", "level", "category", "grade")
+_TIMESTAMP_LIKE = ("_tm", "_time", "_date", "_dt", "timestamp")
+
 # 从 _query_table_schemas 的格式化文本解析字段：`  - name (type) — comment`
 _RE_SCHEMA_FIELD = re.compile(r"^\s*-\s+(\w+)\s*\(([^)]+)\)", re.MULTILINE)
 _STRING_TYPES = {"string", "varchar", "char"}
@@ -315,8 +320,8 @@ def _select_profile_columns(schema_text: str, requirement: str) -> tuple[list[st
 
     Returns:
         (enum_cols, profile_cols) — enum_cols 限 string 类型且需求提及
-        （做 top-N 枚举分布，上限 3）；profile_cols = 需求提及 ∪ 键形列
-        （做空值率 + distinct 画像，上限 8）。
+        （做 top-N 枚举分布，上限 3；枚举形字段名优先、时间戳字段排除）；
+        profile_cols = 需求提及 ∪ 键形列（做空值率 + distinct 画像，上限 8）。
     """
     fields = _RE_SCHEMA_FIELD.findall(schema_text)
     mentioned = [name for name, _ in fields if re.search(rf"\b{re.escape(name)}\b", requirement)]
@@ -327,9 +332,19 @@ def _select_profile_columns(schema_text: str, requirement: str) -> tuple[list[st
     profile_cols = list(dict.fromkeys(mentioned + key_like))[:_PROFILE_COL_CAP]
     # 枚举探查只对 string 类型的需求提及列有意义（int 枚举无业务价值）
     type_by_name = dict(fields)
-    enum_cols = [name for name in mentioned if type_by_name.get(name, "").lower() in _STRING_TYPES][
-        :_ENUM_COL_CAP
+    enum_candidates = [
+        name for name in mentioned if type_by_name.get(name, "").lower() in _STRING_TYPES
     ]
+
+    def _enum_rank(name: str) -> tuple[int, int]:
+        low = name.lower()
+        if any(m in low for m in _ENUMISH_MARKERS):
+            return (0, enum_candidates.index(name))  # 枚举形优先
+        if any(low.endswith(sfx) for sfx in _TIMESTAMP_LIKE):
+            return (2, enum_candidates.index(name))  # 时间戳最后（无枚举形候选时兜底）
+        return (1, enum_candidates.index(name))
+
+    enum_cols = sorted(enum_candidates, key=_enum_rank)[:_ENUM_COL_CAP]
     return enum_cols, profile_cols
 
 
@@ -355,22 +370,25 @@ def _run_probe(executor: Any, sql: str) -> tuple[list[list[Any]] | None, str]:
 _RE_PARTITION_LIMIT = re.compile(r"partitionoverlimit|max\s+400\s+partition", re.IGNORECASE)
 
 
-def _latest_partition_via_show(executor: Any, table: str) -> str | None:
-    """show partitions 取 inc_day 最新分区值（护栏命中时的回退路径）。"""
-    rows, _ = _run_probe(executor, f"show partitions {table}")
-    if not rows:
-        return None
-    inc_vals: set[str] = set()
-    for row in rows:
-        for seg in str(row[0]).split("/"):
-            seg = seg.strip()
-            if seg.lower().startswith("inc_day="):
-                inc_vals.add(seg.split("=", 1)[1])
-    if not inc_vals:
-        # 非 inc_day 分区名兜底：取字典序最大整串
-        vals = [str(r[0]) for r in rows if r and r[0]]
-        return max(vals) if vals else None
-    return max(inc_vals)
+def _latest_partition_fallback(executor: Any, table: str) -> str | None:
+    """护栏命中时的回退：年份窗口谓词探 max(inc_day)。
+
+    2026-10-16 UI 实录弃用 show partitions——返回被平台截断，max 只反映
+    截断子集（探到 20230104 陈旧分区）。年份窗口靠分区裁剪把扫描分区压到
+    ~365 < 400 不撞护栏，且拿到真实最新分区；当年无数据回退上一年再试。
+    """
+    from datetime import date
+
+    year = date.today().year
+    for y in (year, year - 1):
+        rows, _ = _run_probe(
+            executor,
+            f"select max(inc_day) as latest_partition from {table} "
+            f"where inc_day >= '{y}0101' and inc_day < '{y + 1}0101'",
+        )
+        if rows and rows[0][0] is not None:
+            return rows[0][0]
+    return None
 
 
 def _profile_one_table(executor: Any, table: str, schema_text: str, requirement: str) -> str:
@@ -383,7 +401,7 @@ def _profile_one_table(executor: Any, table: str, schema_text: str, requirement:
     )
     latest = latest_rows[0][0] if latest_rows and latest_rows[0][0] is not None else None
     if latest is None and _RE_PARTITION_LIMIT.search(latest_err):
-        latest = _latest_partition_via_show(executor, table)
+        latest = _latest_partition_fallback(executor, table)
     if latest is None:
         return f"表: {table}\n数据探查: 无 inc_day 分区键或探查失败，跳过数据探查（仅静态分析）"
 

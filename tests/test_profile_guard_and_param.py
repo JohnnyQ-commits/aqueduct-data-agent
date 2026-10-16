@@ -93,15 +93,16 @@ def _patch_env(monkeypatch, executor, adapter=None):
 
 
 class TestPartitionGuardFallback:
-    def test_over_limit_falls_back_to_show_partitions(self, monkeypatch):
+    def test_over_limit_falls_back_to_year_window(self, monkeypatch):
         ex = GuardedExecutor()
         _patch_env(monkeypatch, ex)
         state = {"requirement": REQUIREMENT, "table_schemas": {TABLE: SCHEMA_TEXT}}
         text = _profile_source_tables(state, [TABLE])[TABLE]
         assert "20261015" in text and "40482023" in text
         assert "集收" in text and "散收" in text
-        # 实际走了 show partitions 回退
-        assert any("show partitions" in s.lower() for s in ex.executed)
+        # 实际走了年份窗口回退（不发 show partitions）
+        assert not any("show partitions" in s.lower() for s in ex.executed)
+        assert any("max(inc_day)" in s and "20260101" in s for s in ex.executed)
         # 后续探查都带分区过滤
         assert any("where inc_day='20261015'" in s for s in ex.executed)
 
@@ -181,3 +182,35 @@ class TestTargetTableBackticks:
             state, [TABLE, "dm_tc_waybillinfo.dws_dept_waybill_daily_di"]
         )
         assert "dm_tc_waybillinfo.dws_dept_waybill_daily_di" not in profiles
+
+
+class TestLatestPartitionWindowed:
+    """show partitions 返回被平台截断 → max 是陈旧分区（20230104 实录）。
+    改用年份窗口谓词探 max(inc_day)：分区裁剪后扫描分区数 < 400 不撞护栏，
+    且拿到的是真实最新分区。"""
+
+    def test_year_window_returns_true_latest(self, monkeypatch):
+        ex = GuardedExecutor(latest="20261015")
+        _patch_env(monkeypatch, ex)
+        state = {"requirement": REQUIREMENT, "table_schemas": {TABLE: SCHEMA_TEXT}}
+        text = _profile_source_tables(state, [TABLE])[TABLE]
+        assert "20261015" in text
+        assert not any("show partitions" in s.lower() for s in ex.executed)
+
+    def test_current_year_empty_falls_back_previous_year(self, monkeypatch):
+        ex = GuardedExecutor(latest="20261015")
+        orig = ex._rows_for
+
+        def rows_for(sql):
+            # 只拦当年窗口（下界 20260101）；2025 窗口上界也是 '20260101'，
+            # 必须用 >= 锚定下界，否则两个年份都被误判为空
+            if "max(inc_day)" in sql and ">= '20260101'" in sql:
+                return [[None]]  # 当年无数据
+            return orig(sql)
+
+        ex._rows_for = rows_for
+        _patch_env(monkeypatch, ex)
+        state = {"requirement": REQUIREMENT, "table_schemas": {TABLE: SCHEMA_TEXT}}
+        text = _profile_source_tables(state, [TABLE])[TABLE]
+        assert "20261015" in text
+        assert any("20250101" in s for s in ex.executed)
