@@ -61,6 +61,9 @@ class TestConfirm:
         t.join(timeout=5)
         assert result_holder["ret"] is True
 
+        # 挂起确认已清空（刷新恢复依据：pending_confirm 非空 = 面板应重挂）
+        assert session.pending_confirm is None
+
         # state 更新（后续 phase 读 requirement_summary）
         assert "### 用户澄清记录" in state["requirement_summary"]
         assert "**A1**: 答案一" in state["requirement_summary"]
@@ -70,6 +73,25 @@ class TestConfirm:
         # confirm_resolved 事件
         ev, _payload = session.events.get(timeout=5)
         assert ev == "confirm_resolved"
+
+    def test_pending_confirm_visible_during_wait(self, tmp_path):
+        """等待作答期间 pending_confirm 持有请求——刷新恢复面板的数据源。"""
+        state = {
+            "requirement_summary": _summary_with_questions(1),
+            "metadata": {"output_dir": str(tmp_path)},
+        }
+        (tmp_path / "Phase1-需求理解摘要.md").write_text(
+            state["requirement_summary"], encoding="utf-8"
+        )
+        session = UiSession()
+        t = threading.Thread(target=lambda: session.on_confirm(state))
+        t.start()
+        session.events.get(timeout=5)  # 等确认请求
+        assert session.pending_confirm is not None
+        assert session.pending_confirm.questions == ["问题1"]
+        session.submit("continue", ["答案一"])
+        t.join(timeout=5)
+        assert session.pending_confirm is None
 
     def test_confirm_stop_returns_false(self, tmp_path):
         state = {
@@ -86,6 +108,7 @@ class TestConfirm:
         t.join(timeout=5)
 
         assert ret["val"] is False
+        assert session.pending_confirm is None
         assert "### 用户澄清记录" not in state["requirement_summary"]
 
     def test_confirm_no_summary_short_circuits(self):
@@ -132,6 +155,37 @@ class TestRun:
         assert any("LLM 未配置" in e for e in payload.errors)
         # Aqueduct 未被本测试真实调用（仅验证异常合成路径）
         assert Aqueduct is not None
+
+
+class TestLifecycle:
+    """worker 存活跟踪（2026-10-16 实录：QA 等待中重复点开始 → 双 worker
+    并发写同一输出目录 + 旧 worker 永久阻塞泄漏）。is_alive 是防重复
+    开始与刷新恢复的判定依据。"""
+
+    def test_start_worker_tracks_thread_liveness(self):
+        from src.aqueduct.ui import session as session_mod
+
+        release = threading.Event()
+        entered = threading.Event()
+
+        class _Blocking:
+            def dev(self, *args, **kwargs):
+                entered.set()
+                release.wait(timeout=5)
+
+        session = UiSession()
+        mp = pytest.MonkeyPatch()
+        mp.setattr(session_mod, "Aqueduct", _Blocking)
+        try:
+            assert session.is_alive() is False
+            session.start_worker("需求文本")
+            assert entered.wait(timeout=5)
+            assert session.is_alive() is True
+        finally:
+            release.set()
+            session._worker.join(timeout=5)
+            mp.undo()
+        assert session.is_alive() is False
 
 
 class TestRenderProgress:

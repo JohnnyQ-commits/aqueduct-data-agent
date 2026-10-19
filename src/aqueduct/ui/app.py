@@ -19,7 +19,6 @@ events/answers 两个 queue 与 UI 握手（见 session.py 模块文档）。
 from __future__ import annotations
 
 import queue
-import threading
 
 import gradio as gr
 
@@ -49,6 +48,13 @@ def create_app(
             "# Aqueduct 数据开发助手\n\n粘贴需求文档（或上传 .md），一键生成 15 个标准化交付物。"
         )
         session_state = gr.State(value=None)
+        # 应用级单例槽（非页面级）：worker 与 UI 生命周期解耦——
+        # 2026-10-16 实录：QA 等待中刷新页面 → SSE 断开、gr.State 丢失，
+        # worker 不知情继续跑/永久阻塞在 answers.get()；再次点开始 →
+        # 双 worker 并发写同一输出目录 + 任务日志双写。
+        # holder["session"] = 运行中会话；holder["last_result"] = 终态快照
+        holder: dict = {"session": None, "last_result": None}
+        demo._aq_session_holder = holder  # 测试与诊断入口
 
         with gr.Row():
             with gr.Column():
@@ -110,14 +116,30 @@ def create_app(
                 return gr.update()
             return gr.update(value=file_obj.read_text(encoding="utf-8"))
 
-        def _start(text: str):
-            """开始运行：起 worker 线程，生成器轮询事件流驱动组件更新。"""
+        def _start(text: str, _state_session):
+            """开始运行：起 worker 线程，生成器轮询事件流驱动组件更新。
+
+            防重复开始：应用级单例仍存活时拒绝新起 worker（双 worker
+            并发写同一输出目录实录教训），并把存活 session 重新挂回
+            gr.State 恢复作答通道。
+            """
+            existing = holder["session"]
+            if existing is not None and existing.is_alive():
+                yield {
+                    progress_md: gr.update(value=existing.render_progress()),
+                    status_md: gr.update(
+                        value="⚠️ 已有任务在运行中，请等待完成或在问答面板点「停止」。"
+                        "刷新页面可重新接上运行中的任务。"
+                    ),
+                    btn_start: gr.update(interactive=False),
+                    session_state: existing,
+                }
+                return
+
             session = UiSession()
-            threading.Thread(
-                target=session.run,
-                args=(text, output_dir, resume, requirement_name),
-                daemon=True,
-            ).start()
+            holder["session"] = session
+            holder["last_result"] = None
+            session.start_worker(text, output_dir, resume, requirement_name)
 
             running = {
                 progress_md: gr.update(value=session.render_progress()),
@@ -127,7 +149,36 @@ def create_app(
                 deliverables: gr.update(value=None),
                 session_state: session,
             }
-            yield running
+            yield from _consume(session, running)
+
+        def _restore():
+            """页面加载恢复：接回运行中的单例 session（修复刷新丢进度/QA 面板）。
+
+            恢复 = 重挂 session 到 gr.State + 继续消费事件流（生成器形态），
+            不是静态快照——done 后照常渲染终态。无运行中任务时若存在上一轮
+            终态快照则渲染之，否则不更新（首屏默认）。
+            """
+            session = holder["session"]
+            if session is not None and session.is_alive():
+                first = {
+                    progress_md: gr.update(value=session.render_progress()),
+                    status_md: gr.update(value="（已重新接上运行中的任务）"),
+                    btn_start: gr.update(interactive=False),
+                    session_state: session,
+                }
+                if session.pending_confirm is not None:
+                    first[qa_group] = gr.update(visible=True)
+                    first[qa_md] = gr.update(value=_format_confirm_md(session.pending_confirm))
+                    first[answers_tb] = gr.update(value="")
+                yield from _consume(session, first)
+                return
+            last = holder.get("last_result")
+            if last is not None and last[0] is session:
+                yield _final_update(session, last[1])
+
+        def _consume(session: UiSession, first_yield: dict):
+            """事件消费循环：_start 与 _restore 共用（恢复后事件不丢）。"""
+            yield first_yield
 
             while True:
                 try:
@@ -145,6 +196,7 @@ def create_app(
                 elif ev == "confirm_resolved":
                     yield {qa_group: gr.update(visible=False)}
                 elif ev == "done":
+                    holder["last_result"] = (session, payload[0])
                     yield _final_update(session, payload[0])
                     return
 
@@ -161,7 +213,7 @@ def create_app(
         req_file.upload(_read_upload, inputs=req_file, outputs=req_text)
         btn_start.click(
             _start,
-            inputs=[req_text],
+            inputs=[req_text, session_state],
             outputs=[
                 progress_md,
                 status_md,
@@ -176,6 +228,11 @@ def create_app(
         )
         btn_confirm.click(_confirm, inputs=[answers_tb, session_state], outputs=[])
         btn_stop.click(_stop, inputs=[session_state], outputs=[])
+        demo.load(
+            _restore,
+            inputs=None,
+            outputs=[progress_md, status_md, btn_start, qa_group, qa_md, answers_tb, session_state],
+        )
 
     return demo
 

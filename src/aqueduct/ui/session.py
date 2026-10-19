@@ -24,6 +24,7 @@
 from __future__ import annotations
 
 import queue
+import threading
 from dataclasses import dataclass, field
 
 from ..core import Aqueduct, AqueductResult
@@ -70,6 +71,33 @@ class UiSession:
         self.events: queue.Queue = queue.Queue()
         self.answers: queue.Queue = queue.Queue()
         self.current_idx: int = 0
+        # worker 线程引用（start_worker 创建）——is_alive 供 UI 防重复开始
+        # 与刷新恢复判定（2026-10-16 实录：QA 等待中重复点开始 → 双 worker
+        # 并发写同一输出目录 + 旧 worker 永久阻塞泄漏）
+        self._worker: threading.Thread | None = None
+        # 待作答的确认请求：非空 = worker 正阻塞等待 UI 作答，
+        # 页面刷新后据此重挂问答面板（否则 worker 永远等不到答案）
+        self.pending_confirm: ConfirmRequest | None = None
+
+    def is_alive(self) -> bool:
+        """worker 线程是否仍在运行（未收到 done / 未异常退出）。"""
+        return self._worker is not None and self._worker.is_alive()
+
+    def start_worker(
+        self,
+        requirement_text: str,
+        output_dir: str | None = None,
+        resume: bool = False,
+        requirement_name: str | None = None,
+    ) -> threading.Thread:
+        """创建并启动 worker daemon 线程（run 的线程化入口）。"""
+        self._worker = threading.Thread(
+            target=self.run,
+            args=(requirement_text, output_dir, resume, requirement_name),
+            daemon=True,
+        )
+        self._worker.start()
+        return self._worker
 
     # ---- worker 侧回调（传给 Aqueduct.dev）----
 
@@ -90,8 +118,11 @@ class UiSession:
             return True
 
         questions = parse_questions(summary)
-        self.events.put(("confirm", ConfirmRequest(summary=summary, questions=questions)))
+        request = ConfirmRequest(summary=summary, questions=questions)
+        self.pending_confirm = request
+        self.events.put(("confirm", request))
         resp = self.answers.get()  # 阻塞管道线程直至 UI 作答
+        self.pending_confirm = None
         if resp.get("action") != "continue":
             return False
 
