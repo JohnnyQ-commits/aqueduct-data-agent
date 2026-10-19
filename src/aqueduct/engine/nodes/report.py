@@ -61,6 +61,19 @@ def _collect_degradations(state: WorkflowState) -> list[str]:
     if dqc_degraded:
         degradations.extend(dqc_degraded)
 
+    # 探查超时（run 3 实录）：探查超时曾与普通失败混在一起被静默吞掉，
+    # 枚举占位上线风险无人知晓——显式降级
+    profiles = state.get("table_profiles") or {}
+    if isinstance(profiles, dict):
+        timed_out = sorted(
+            t for t, txt in profiles.items() if isinstance(txt, str) and "探查超时" in txt
+        )
+        if timed_out:
+            degradations.append(
+                f"数据探查超时 {len(timed_out)} 张表（{', '.join(timed_out[:3])}），"
+                "枚举/画像值未实测，相关占位符未经实证"
+            )
+
     return degradations
 
 

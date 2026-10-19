@@ -46,6 +46,19 @@ class TestCollectDegradations:
         ds = _collect_degradations(state)
         assert len(ds) == 1 and "DQC" in ds[0]
 
+    def test_probe_timeout_profiles_collected(self):
+        """探查超时进降级横幅（run 3 实录）：探查被静默吞掉导致枚举占位上线风险。"""
+        state = {
+            "errors": [],
+            "table_profiles": {
+                "db.dwd_detail": "表: db.dwd_detail\n数据探查: 探查超时（10 分钟未返回）——超时未探查，枚举/画像值未实测",
+                "db.dim_site": "表: db.dim_site（探查分区 20251231，以下为平台实测数据）",
+            },
+        }
+        ds = _collect_degradations(state)
+        assert len(ds) == 1
+        assert "探查超时" in ds[0] and "db.dwd_detail" in ds[0]
+
     def test_regular_sql_errors_not_degradations(self):
         """试跑 errors 是真实 SQL 缺陷（修复环职责），不算降级。"""
         state = {

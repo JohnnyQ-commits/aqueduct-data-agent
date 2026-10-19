@@ -44,16 +44,23 @@ TABLE = "dm_tc_waybillinfo.dwd_pickup_waybill_info_dtl_di"
 class FakeExecutor:
     """按 SQL 特征分发的假 executor（模拟 executor 工具契约）。"""
 
-    def __init__(self, latest="20261014", row_cnt=40482023, fail_sqls=()):
+    def __init__(self, latest="20261014", row_cnt=40482023, fail_sqls=(), error_map=None):
         self.latest = latest
         self.row_cnt = row_cnt
         self.fail_sqls = list(fail_sqls)
+        self.error_map = dict(error_map or {})
         self.executed: list[str] = []
+        self.call_kwargs: list[dict] = []
 
     def execute(self, **kwargs):
         sql = kwargs.get("sql", "")
         self.executed.append(sql)
+        self.call_kwargs.append(kwargs)
         rows = self._rows_for(sql)
+        if sql in self.error_map:
+            import types
+
+            return types.SimpleNamespace(success=False, error=self.error_map[sql], data={})
         if sql in self.fail_sqls or rows is None:
             import types
 
@@ -363,3 +370,74 @@ class TestPhase1ContractAcceptsTable:
             "### 待确认问题\n1. x\n"
         )
         assert validate_structure("Phase1-需求理解摘要.md", content) == []
+
+
+# ---------------------------------------------------------------------------
+# 探查超时适配（run 3 实录 2026-10-19）
+#
+# _hive_wait 硬编码 5 分钟，MR 慢队列下明细表探查全灭 → 枚举目标 ③ 落空。
+# 三件套：探查专用 10 分钟超时 / 当日结果缓存 / 超时未探查显式标注。
+# ---------------------------------------------------------------------------
+
+
+class TestProbeTimeoutAndCache:
+    def test_probes_use_extended_wait_attempts(self, _state, monkeypatch):
+        """探查通道用 120 次轮询（10 分钟），不是默认 60（5 分钟）。"""
+        ex = FakeExecutor()
+        _patch_env(monkeypatch, _FakeAdapter(), ex)
+
+        _profile_source_tables(_state, [TABLE])
+
+        assert ex.call_kwargs, "探查未执行"
+        assert all(kw.get("wait_attempts") == 120 for kw in ex.call_kwargs)
+
+    def test_timeout_probe_gets_explicit_annotation(self, _state, monkeypatch):
+        """探查超时：显式标注「探查超时/超时未探查」，不冒充「无 inc_day 分区键」。"""
+        ex = FakeExecutor(
+            error_map={"select max(inc_day) as latest_partition from " + TABLE: "任务超时 (10 min)"}
+        )
+        _patch_env(monkeypatch, _FakeAdapter(), ex)
+
+        profiles = _profile_source_tables(_state, [TABLE])
+
+        text = profiles[TABLE]
+        assert "探查超时" in text
+        assert "超时未探查" in text
+        assert "无 inc_day 分区键" not in text
+
+    def test_successful_probe_cached_no_reexecute(self, _state, monkeypatch):
+        """同日缓存：第二次跑同一探查 SQL 直接命中缓存，不再执行。"""
+        ex = FakeExecutor()
+        # 缓存只收成功结果（设计如此）——让全部探查成功，保证跑满 5 条 SQL
+        orig = ex._rows_for
+
+        def rows_for(sql):
+            if "group by" in sql:
+                return [["散收", 19982943]]
+            return orig(sql)
+
+        ex._rows_for = rows_for
+        _patch_env(monkeypatch, _FakeAdapter(), ex)
+
+        _profile_source_tables(_state, [TABLE])
+        first_count = len(ex.executed)
+        assert first_count > 0
+
+        _profile_source_tables(_state, [TABLE])
+        assert len(ex.executed) == first_count, "缓存命中后不应重新执行探查 SQL"
+
+    def test_timeout_result_not_cached(self, _state, monkeypatch):
+        """超时结果不入缓存——重跑（如修复环恢复）允许用更长超时重试。"""
+        timeout_sql = "select max(inc_day) as latest_partition from " + TABLE
+        ex = FakeExecutor(error_map={timeout_sql: "任务超时 (10 min)"})
+        _patch_env(monkeypatch, _FakeAdapter(), ex)
+
+        _profile_source_tables(_state, [TABLE])
+        assert len(ex.executed) == 1  # 分区探查超时即止，后续探查不发
+
+        # 恢复执行能力后重跑：分区探查应重试（而非读到缓存的超时结果）
+        ex.error_map.clear()
+        _profile_source_tables(_state, [TABLE])
+        assert ex.executed.count(timeout_sql) == 2
+        profiles = _profile_source_tables(_state, [TABLE])  # 第三跑全走缓存
+        assert "探查分区" in profiles[TABLE]

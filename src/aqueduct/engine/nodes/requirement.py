@@ -310,6 +310,14 @@ _PROFILE_TABLE_CAP = 8
 _ENUMISH_MARKERS = ("type", "status", "state", "scene", "flag", "level", "category", "grade")
 _TIMESTAMP_LIKE = ("_tm", "_time", "_date", "_dt", "timestamp")
 
+# 探查专用轮询上限（run 3 实录 2026-10-19）：默认 60 次 × 5s = 5 分钟在 MR
+# 慢队列下不够，明细表探查全灭 → 枚举目标落空。120 次 = 10 分钟。
+_PROBE_WAIT_ATTEMPTS = 120
+
+# 当日探查结果缓存 {(sql, 日期): (rows, err)}：同日分区数据不变，halt 重跑 /
+# 修复环复跑直接命中；只缓存成功结果（超时/失败可重试）
+_PROBE_CACHE: dict[tuple[str, str], tuple[list[list[Any]] | None, str]] = {}
+
 # 从 _query_table_schemas 的格式化文本解析字段：`  - name (type) — comment`
 _RE_SCHEMA_FIELD = re.compile(r"^\s*-\s+(\w+)\s*\(([^)]+)\)", re.MULTILINE)
 _STRING_TYPES = {"string", "varchar", "char"}
@@ -350,17 +358,34 @@ def _select_profile_columns(schema_text: str, requirement: str) -> tuple[list[st
 
 def _run_probe(executor: Any, sql: str) -> tuple[list[list[Any]] | None, str]:
     """执行单条探查 SQL。返回 (rows, error)——失败 rows=None、error 非空
-    （降级不抛，错误串供分区护栏等分支判定）。"""
+    （降级不抛，错误串供分区护栏等分支判定）。
+
+    探查通道专用 10 分钟轮询（run 3 实录：_hive_wait 默认 5 分钟，MR 慢队列
+    下明细表聚合探查全灭）；成功结果按 (sql, 当日) 缓存——halt 后重跑不再
+    白等一轮，超时/失败不入缓存（恢复后可用更长耐心重试）。
+    """
+    from datetime import date
+
+    cache_key = (sql, date.today().isoformat())
+    if cache_key in _PROBE_CACHE:
+        return _PROBE_CACHE[cache_key]
     try:
-        result = executor.execute(action="execute", sql=sql)
+        result = executor.execute(action="execute", sql=sql, wait_attempts=_PROBE_WAIT_ATTEMPTS)
         if not getattr(result, "success", False):
             err = str(getattr(result, "error", ""))
             logger.warning("数据探查失败（%s）: %s", sql[:120], err[:300])
             return None, err
-        return (result.data or {}).get("rows") or [], ""
+        rows = (result.data or {}).get("rows") or []
+        _PROBE_CACHE[cache_key] = (rows, "")
+        return rows, ""
     except Exception as e:
         logger.warning("数据探查异常（%s）: %s", sql[:120], e)
         return None, str(e)
+
+
+def _is_probe_timeout(err: str) -> bool:
+    """探查错误是否为超时（超时未探查必须显式标注，不能冒充普通失败）。"""
+    return bool(re.search(r"任务超时|timeout", err or "", re.IGNORECASE))
 
 
 # 平台分区护栏（2026-10-16 UI 实录）：无分区过滤的探查 SQL 被平台拒绝
@@ -395,11 +420,17 @@ def _profile_one_table(executor: Any, table: str, schema_text: str, requirement:
     """对单张表跑画像探查，返回注入 prompt 的格式化文本。"""
     enum_cols, profile_cols = _select_profile_columns(schema_text, requirement)
 
-    # 探查① 最新分区（护栏命中回退 show partitions）
+    # 探查① 最新分区（护栏命中回退年份窗口）
     latest_rows, latest_err = _run_probe(
         executor, f"select max(inc_day) as latest_partition from {table}"
     )
     latest = latest_rows[0][0] if latest_rows and latest_rows[0][0] is not None else None
+    if latest is None and _is_probe_timeout(latest_err):
+        # run 3 实录：探查超时被静默吞掉，枚举占位上线风险无人知晓——显式标注
+        return (
+            f"表: {table}\n数据探查: 探查超时（10 分钟未返回，MR 慢队列）"
+            "——超时未探查，枚举/画像值未实测，禁止作为已验证口径"
+        )
     if latest is None and _RE_PARTITION_LIMIT.search(latest_err):
         latest = _latest_partition_fallback(executor, table)
     if latest is None:
@@ -409,16 +440,18 @@ def _profile_one_table(executor: Any, table: str, schema_text: str, requirement:
     where = f"where inc_day='{latest}'"
 
     # 探查② 分区行数
-    cnt_rows, _ = _run_probe(executor, f"select count(*) from {table} {where}")
+    cnt_rows, cnt_err = _run_probe(executor, f"select count(*) from {table} {where}")
     row_cnt = cnt_rows[0][0] if cnt_rows and cnt_rows[0][0] is not None else None
     if row_cnt is not None:
         lines.append(f"行数: {row_cnt}")
+    elif _is_probe_timeout(cnt_err):
+        lines.append("行数: 探查超时，超时未探查")
     else:
         lines.append("行数: 探查失败")
 
     # 探查③ 需求提及 string 列的枚举分布（top 10）
     for col in enum_cols:
-        rows, _ = _run_probe(
+        rows, err = _run_probe(
             executor,
             f"select {col}, count(*) as cnt from {table} {where} "
             f"group by {col} order by cnt desc limit 10",
@@ -426,6 +459,8 @@ def _profile_one_table(executor: Any, table: str, schema_text: str, requirement:
         if rows:
             tops = ", ".join(f"{r[0]}={r[1]}" for r in rows)
             lines.append(f"{col} 枚举分布: {tops}")
+        elif _is_probe_timeout(err):
+            lines.append(f"{col} 枚举分布: 探查超时，超时未探查（枚举值未实测，占位符禁止上线）")
         else:
             lines.append(f"{col} 枚举分布: 探查失败")
 
@@ -435,7 +470,7 @@ def _profile_one_table(executor: Any, table: str, schema_text: str, requirement:
         for col in profile_cols:
             parts.append(f"sum(case when {col} is null then 1 else 0 end) as {col}_null")
             parts.append(f"count(distinct {col}) as {col}_dist")
-        rows, _ = _run_probe(executor, f"select {', '.join(parts)} from {table} {where}")
+        rows, profile_err = _run_probe(executor, f"select {', '.join(parts)} from {table} {where}")
         if rows and len(rows[0]) == 1 + 2 * len(profile_cols):
             row = rows[0]
             for i, col in enumerate(profile_cols):
@@ -445,6 +480,8 @@ def _profile_one_table(executor: Any, table: str, schema_text: str, requirement:
                 if row_cnt is not None:
                     line += f"（{note}）"
                 lines.append(line)
+        elif _is_probe_timeout(profile_err):
+            lines.append("画像探查（空值/distinct）: 探查超时，超时未探查")
         else:
             lines.append("画像探查（空值/distinct）失败")
 

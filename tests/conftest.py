@@ -94,6 +94,20 @@ def _isolate_settings_from_env_file():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _clear_probe_cache():
+    """Phase 1 探查缓存是模块全局——每个测试前后清空，防跨文件测试污染。
+
+    实录（2026-10-19）：test_profile_guard_and_param 的年窗回退断言被
+    test_requirement_profile 缓存的同年窗口探查短路，2025 回退查询不再发出。
+    """
+    from src.aqueduct.engine.nodes import requirement as req_mod
+
+    req_mod._PROBE_CACHE.clear()
+    yield
+    req_mod._PROBE_CACHE.clear()
+
+
 def pytest_configure(config):
     """在测试开始前导入所有工具和 Skill 模块，触发注册装饰器。"""
     # 导入所有 Tool 模块（触发 @register_tool）

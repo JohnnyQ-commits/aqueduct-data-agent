@@ -234,3 +234,72 @@ class TestExecuteHiveQueryFullChain:
 
         assert result == {"status": "success", "data": [], "row_count": 0}
         assert [c[0] for c in adapter.client.calls] == ["POST", "GET"]
+
+
+class TestHiveWaitAttempts:
+    """探查超时适配（run 3 实录 2026-10-19）：_hive_wait 硬编码 60 次 × 5s
+    = 5 分钟，MR 慢队列下探查 SQL 全灭。wait_attempts 可调，探查通道用 120（10 分钟）。"""
+
+    def test_hive_wait_respects_attempts_override(self, monkeypatch):
+        """attempts 参数生效：轮询次数上限随参数走。"""
+        from src.aqueduct.mcp.adapters import dp_client as dp_mod
+
+        adapter = _make_adapter(monkeypatch)
+        sleeps: list[float] = []
+        monkeypatch.setattr(dp_mod.time, "sleep", sleeps.append)
+        adapter.client = _FakeClient(
+            [
+                {"ok": True, "data": {"isFinish": False, "log": []}},
+                {"ok": True, "data": {"isFinish": False, "log": []}},
+                {
+                    "ok": True,
+                    "data": {
+                        "isFinish": True,
+                        "isSuccess": True,
+                        "resultId": "ee1971e5-299f-4e07-82a2-150b9e39dc8e",
+                        "log": [],
+                    },
+                },
+            ]
+        )
+
+        result_id = adapter._hive_wait(58008694, "win", attempts=120)
+
+        assert result_id == "ee1971e5-299f-4e07-82a2-150b9e39dc8e"
+        assert len(adapter.client.calls) == 3  # 2 次未完成 + 1 次完成
+        assert len(sleeps) == 3
+
+    def test_hive_wait_timeout_message_reflects_attempts(self, monkeypatch):
+        """超时消息携带实际分钟数：120 次 = 10 min（run 3 探查通道）。"""
+        from src.aqueduct.mcp.adapters import dp_client as dp_mod
+
+        adapter = _make_adapter(monkeypatch)
+        monkeypatch.setattr(dp_mod.time, "sleep", lambda _s: None)
+        # 120 次轮询全部未完成（FakeClient 按序弹出，需备足 120 个响应）
+        unfinished = {"ok": True, "data": {"isFinish": False, "log": []}}
+        adapter.client = _FakeClient([unfinished for _ in range(120)])
+
+        with pytest.raises(TimeoutError, match=r"任务超时 \(10 min\)"):
+            adapter._hive_wait(58008694, "win", attempts=120)
+
+    def test_execute_hive_query_forwards_wait_attempts(self, monkeypatch):
+        """execute_hive_query 把 wait_attempts 透传给 _hive_wait。"""
+        adapter = _make_adapter(monkeypatch)
+        captured: dict[str, Any] = {}
+
+        def fake_wait(exec_id: int, window_id: str, attempts: int = 60) -> str:
+            captured["attempts"] = attempts
+            return "ee1971e5-299f-4e07-82a2-150b9e39dc8e"
+
+        monkeypatch.setattr(adapter, "_hive_wait", fake_wait)
+        # 响应序列：submit（executionId）+ fetch（空结果）
+        adapter.client = _FakeClient(
+            [
+                {"ok": True, "data": 58001942, "message": None},
+                {"ok": True, "data": [], "message": None},
+            ]
+        )
+
+        adapter.execute_hive_query("select 1", wait_attempts=120)
+
+        assert captured["attempts"] == 120

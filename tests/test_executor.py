@@ -167,3 +167,30 @@ class TestDQCNodeIntegration:
         # 不应抛出异常
         _auto_execute_dqc(state, "SELECT 'DQC-001' AS rule_name, 0 AS cnt;")
         assert state.get("dqc_execution_skipped") is True
+
+
+class TestWaitAttemptsPassthrough:
+    """探查超时适配（run 3 实录）：wait_attempts 从 executor 工具一路透传到
+    dp_client.execute_hive_query——探查通道用 120 次（10 分钟）避开 MR 慢队列。"""
+
+    def test_execute_forwards_wait_attempts(self):
+        from unittest.mock import MagicMock
+
+        tool = get_tool("executor")
+        _ = tool._tool  # 触发延迟初始化
+        mock_adapter = MagicMock()
+        mock_adapter.execute_hive_query.return_value = {
+            "status": "success",
+            "data": [{"cnt": 1}],
+            "row_count": 1,
+        }
+        tool._hive_tool.adapter = mock_adapter
+        tool._hive_tool._init_error = None
+        try:
+            result = tool.execute(sql="select 1", wait_attempts=120)
+        finally:
+            tool._hive_tool.adapter = None
+
+        assert result.success is True
+        _, kwargs = mock_adapter.execute_hive_query.call_args
+        assert kwargs.get("wait_attempts") == 120
