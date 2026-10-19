@@ -539,12 +539,13 @@ class TestCheckTmpDatabase:
 class TestCheckDivisionCalibration:
     """检查 4 校准：分母白名单 + 字符串剥离 + 级别升 ERROR。"""
 
-    def test_nullif_protected_ok(self):
-        """nullif 显式白名单（此前靠子串 if 碰巧通过）。"""
+    def test_nullif_protected_now_warns(self):
+        """nullif 已从分母白名单移除（run 3 实录：平台不支持该函数，
+        SemanticException 10011），nullif 分母回到除法检查视野。"""
         v = Validator("")
         v.lines = ["select round(a / nullif(b, 0), 4) as ratio from t;"]
         v.check_division()
-        assert len(v.results) == 0
+        assert any("除法" in r["message"] for r in v.results)
 
     def test_count_denominator_ok(self):
         """金样本 CR-001 模式：sum / count(distinct inc_day) 周日均分母，合法。"""
@@ -774,7 +775,8 @@ class TestContentMode:
         assert "error" not in report
 
     def test_golden_style_clean(self):
-        """金样本风格合成 SQL（脱敏）：tmp_demo 库 + nullif + count(distinct inc_day)
+        """金样本风格合成 SQL（脱敏）：tmp_demo 库 + case-when 除法保护（nullif
+        已被检查 12 封禁，run 3 实录平台不支持）+ count(distinct inc_day)
         分母 + 周范围过滤，全规则零 ERROR——linter 上线的零误报基准。"""
         sql = "\n".join(
             [
@@ -788,7 +790,7 @@ class TestContentMode:
                 "select",
                 "    dept_code,",
                 "    sum(order_cnt)                                            as order_cnt,",
-                "    round(sum(order_amount) / nullif(sum(order_cnt), 0), 4)   as avg_amount,",
+                "    round(sum(order_amount) / case when sum(order_cnt) = 0 then null else sum(order_cnt) end, 4)   as avg_amount,",
                 "    round(sum(pickup_cnt) / count(distinct inc_day), 2)       as daily_avg",
                 "from (",
                 "    select",
@@ -914,3 +916,39 @@ class TestCheckCteMultiline:
         report = Validator("", content=sql).run()
         msgs = [i["message"] for i in report["issues"] if i["level"] == "ERROR"]
         assert any("CTE" in m for m in msgs), "原有同行形态回归保护"
+
+
+class TestCheckUnsupportedFunctions:
+    """检查 12: 平台方言不支持函数黑名单（ERROR）。
+
+    run 3 实录（2026-10-19）：修复环按上轮审查建议加 nullif 除法保护，
+    平台 Hive 方言直接拒绝——SemanticException [Error 10011]: Invalid
+    function nullif，2 轮修复未绕出 → halt。此类错误应被 Phase 4 静态
+    校验确定性拦住（给出可执行的替代写法），而不是等试跑炸。
+    """
+
+    def test_nullif_flagged_with_replacement_hint(self):
+        v = Validator("")
+        v.lines = [
+            "select round(t.san_pickup_cnt / nullif(t.pickup_cnt, 0), 4)",
+            "  as loose_pickup_ratio",
+            "from t;",
+        ]
+        v.check_unsupported_functions()
+        errs = [r for r in v.results if r["level"] == "ERROR"]
+        assert len(errs) == 1
+        assert "nullif" in errs[0]["message"]
+        assert "case when" in errs[0]["message"].lower(), "必须给出替代写法"
+
+    def test_commented_nullif_ignored(self):
+        v = Validator("")
+        v.lines = ["-- 参考写法：nullif(a, 0) 在部分平台不可用", "select 1 as x from t;"]
+        v.check_unsupported_functions()
+        assert v.results == []
+
+    def test_nullif_no_longer_counts_as_safe_denominator(self):
+        """nullif 从除法安全分母白名单移除——平台不支持，不能再视为已保护。"""
+        v = Validator("")
+        v.lines = ["select a / nullif(b, 0) as ratio from t;"]
+        v.check_division()
+        assert any("除法" in r["message"] for r in v.results)

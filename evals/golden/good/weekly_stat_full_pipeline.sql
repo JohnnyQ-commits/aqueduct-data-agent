@@ -1,7 +1,7 @@
 -- ============================================================================
 -- golden good 样本 1：全管道风格（TMP 中间表 + ADS 落表），金样本校准后的零误报基准
 -- 形态来源：test_validator.py::test_golden_style_clean（脱敏自电商网点效能周表）
--- 要点：nullif 分母 / count(distinct inc_day) 分母 / 宏字面量 / inc_day 分区过滤
+-- 要点：case-when 分母（nullif 平台不支持）/ count(distinct inc_day) 分母 / 宏字面量 / inc_day 分区过滤
 -- ============================================================================
 drop table if exists tmp_demo.tmp_demo_weekly_$[time(yyyyMMdd,-1d)];
 create table tmp_demo.tmp_demo_weekly_$[time(yyyyMMdd,-1d)]
@@ -9,7 +9,7 @@ stored as parquet as
 select
     dept_code,
     sum(order_cnt)                                            as order_cnt,
-    round(sum(order_amount) / nullif(sum(order_cnt), 0), 4)   as avg_amount,
+    round(sum(order_amount) / case when sum(order_cnt) = 0 then null else sum(order_cnt) end, 4)   as avg_amount,
     round(sum(pickup_cnt) / count(distinct inc_day), 2)       as daily_avg
 from (
     select

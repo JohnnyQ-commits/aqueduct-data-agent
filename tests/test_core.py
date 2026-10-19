@@ -417,7 +417,7 @@ class TestFixFeedbackHardening:
     ):
         """ERROR 数净改善（2→1，部分修复）→ 接受，交回审查复检。"""
         fixed = (
-            "select order_id, total / nullif(cnt, 0) as ratio from dwd.dwd_order_detail_di "
+            "select order_id, total / case when cnt = 0 then null else cnt end as ratio from dwd.dwd_order_detail_di "
             "where inc_day = '20260101';\n"
             "select * from dwd.dwd_order_detail_di where inc_day = '20260101';"
         )

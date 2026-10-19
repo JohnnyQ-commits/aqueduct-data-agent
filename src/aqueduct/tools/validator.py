@@ -49,9 +49,18 @@ _RE_CREATE_TABLE_DB = re.compile(
 )
 _RE_DROP_TABLE_DB = re.compile(r"\bdrop\s+table\s+if\s+exists\s+(\w+)\.", re.IGNORECASE)
 
+# 平台方言不支持函数黑名单（run 3 实录 2026-10-19）：修复环按审查建议加
+# nullif 除法保护，平台 Hive 直接拒绝——SemanticException [Error 10011]:
+# Invalid function nullif，2 轮修复未绕出 → halt。此错误必须在 Phase 4
+# 静态校验确定性拦住并给出替代写法，不能依赖试跑炸出来。
+# 替代写法：nullif(x, 0) → case when x = 0 then null else y end / case when x is null ...
+_UNSUPPORTED_FUNCS: dict[str, str] = {"nullif": "case when {denom} = 0 then null else ... end"}
+_RE_UNSUPPORTED_FUNC = re.compile(r"\b(" + "|".join(_UNSUPPORTED_FUNCS) + r")\s*\(", re.IGNORECASE)
+
 # 除法分母白名单：这些函数做分母时语义上已非零/有保护
-# （nullif/nvl/coalesce/if/case 显式保护；count 聚合分组内 >=1，金样本 CR-001 周日均模式）
-_DIV_DENOM_SAFE = {"nullif", "nvl", "coalesce", "if", "case", "count"}
+# （nvl/coalesce/if/case 显式保护；count 聚合分组内 >=1，金样本 CR-001 周日均模式）
+# nullif 已移除——平台不支持该函数（run 3 实录），不能再视为已保护
+_DIV_DENOM_SAFE = {"nvl", "coalesce", "if", "case", "count"}
 _RE_LINE_COMMENT = re.compile(r"--.*$")
 
 
@@ -365,6 +374,28 @@ class Validator:
                         i,
                     )
 
+    def check_unsupported_functions(self) -> None:
+        """检查 12: 平台方言不支持函数（run 3 实录，ERROR）。
+
+        nullif 等函数平台 Hive 直接拒绝（Invalid function），修复环 2 轮
+        绕不出——试跑炸出来太晚，Phase 4 静态校验确定性拦住并内嵌替代
+        写法（构造性锚点先例：给具体形态优于给抽象禁令）。
+        """
+        for i, line in enumerate(self.lines, 1):
+            if RE_COMMENT.match(line):
+                continue
+            clean = _strip_literals_and_comments(line)
+            m = _RE_UNSUPPORTED_FUNC.search(clean)
+            if m:
+                fn = m.group(1).lower()
+                hint = _UNSUPPORTED_FUNCS[fn]
+                self._log(
+                    "ERROR",
+                    f"平台 Hive 不支持函数 {fn}（试跑必报 Invalid function），"
+                    f"替代写法：{hint}（§方言限制）",
+                    i,
+                )
+
     def run(self) -> dict[str, Any]:
         """执行全部校验，返回结构化报告。
 
@@ -390,6 +421,7 @@ class Validator:
         self.check_forbidden_partition_cols()
         self.check_cross_join()
         self.check_tmp_database()
+        self.check_unsupported_functions()
 
         return {
             "filename": self.filepath.name if self._content is None else "<content>",

@@ -93,7 +93,12 @@ class TestDevUi:
         from src.aqueduct.cli.main import _dev_ui
 
         assert _dev_ui(_ns(ui=True, requirement=None)) == 0
-        assert captured == {"requirement_text": "", "output_dir": None, "resume": False}
+        assert captured == {
+            "requirement_text": "",
+            "output_dir": None,
+            "resume": False,
+            "requirement_name": None,
+        }
 
 
 if __name__ == "__main__":

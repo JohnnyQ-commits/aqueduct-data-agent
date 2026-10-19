@@ -40,7 +40,7 @@ def _seal_trial_gate(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("src.aqueduct.evals._trial_enabled", lambda: False)
 
 
-# linter 干净的 Phase4 SQL：小写关键字 / 无 CTE / 分区过滤 / nullif 除法保护
+# linter 干净的 Phase4 SQL：小写关键字 / 无 CTE / 分区过滤 / case-when 除法保护（nullif 平台不支持，检查 12）
 GOOD_SQL = """\
 -- 需求: demo 订单日统计
 insert overwrite table dw_demo.dws_order_daily_stat
@@ -48,7 +48,7 @@ partition (inc_day = '$[time(yyyyMMdd,-1d)]')
 select
     city,
     count(distinct order_id) as order_count,
-    sum(pay_amount) / nullif(count(distinct customer_id), 0) as avg_amount
+    sum(pay_amount) / case when count(distinct customer_id) = 0 then null else count(distinct customer_id) end as avg_amount
 from dw_demo.dwd_order_info_di
 where inc_day = '$[time(yyyyMMdd,-1d)]'
 group by city
