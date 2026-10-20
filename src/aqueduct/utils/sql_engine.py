@@ -18,6 +18,10 @@ from collections.abc import Iterator
 # 引擎尝试顺序：presto（16s 级）→ spark → hive（MR 慢队列兜底）
 ENGINE_CHAIN = ("presto", "spark", "hive")
 
+# 试跑引擎链（2026-10-20 用户拍板）：生产常态 spark，大数据量才 hive——
+# 试跑跟生产引擎走 spark→hive；presto 不进试跑链（生产不用它跑 ETL）
+TRIAL_CHAIN = ("spark", "hive")
+
 # hive 方言 → sqlglot 目标方言名
 _ENGINE_DIALECT = {"presto": "presto", "spark": "spark", "hive": "hive"}
 
@@ -44,11 +48,14 @@ def convert_sql_dialect(sql: str, engine: str) -> str:
         return sql
 
 
-def iter_engine_attempts(sql: str) -> Iterator[tuple[str, str]]:
+def iter_engine_attempts(
+    sql: str, chain: tuple[str, ...] = ENGINE_CHAIN
+) -> Iterator[tuple[str, str]]:
     """产出 (engine, sql) 尝试序列：每引擎先原句、转换有实质差异再转换句；
     hive 引擎只试原句。大小写归一后相同视为无差异（sqlglot 会把关键字
-    转大写，纯大小写差异不值得多一次平台往返）。"""
-    for engine in ENGINE_CHAIN:
+    转大写，纯大小写差异不值得多一次平台往返）。chain 可换（试跑用
+    TRIAL_CHAIN = spark→hive）。"""
+    for engine in chain:
         yield engine, sql
         if engine != "hive":
             converted = convert_sql_dialect(sql, engine)

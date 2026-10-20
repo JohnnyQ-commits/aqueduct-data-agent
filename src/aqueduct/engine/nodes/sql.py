@@ -7,6 +7,7 @@ import re
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
 
 from ...skills.base import SkillContext
 from ...skills.registry import get_skill
@@ -383,6 +384,23 @@ def _script_created_tables(sql_masked: str) -> set[str]:
     return names
 
 
+def _execute_trial_stmt(executor: Any, stmt: str) -> Any:
+    """试跑引擎链 spark→hive（2026-10-20 用户拍板：生产常态 spark，大数据量
+    才 hive——试跑跟生产引擎走；presto 不进试跑链）。
+
+    spark 被拒先转换重试（hive→spark 方言，见 utils/sql_engine）再降 hive；
+    超时立即中止整条链——hive 只会更慢。链尾（hive）错误作为最终结论。
+    """
+    from ...utils.sql_engine import TRIAL_CHAIN, is_timeout_error, iter_engine_attempts
+
+    result = None
+    for engine, attempt_sql in iter_engine_attempts(stmt, chain=TRIAL_CHAIN):
+        result = executor.execute(action="execute", sql=attempt_sql, engine=engine)
+        if getattr(result, "success", False) or is_timeout_error(str(getattr(result, "error", ""))):
+            return result
+    return result
+
+
 def _run_trial_selects(sql_content: str) -> dict:
     """对 SQL 中的 SELECT 查询体执行 LIMIT 10 试跑（P1-2 门禁核心）。
 
@@ -434,7 +452,7 @@ def _run_trial_selects(sql_content: str) -> dict:
         if not re.search(r"\blimit\b", limited_stmt, re.IGNORECASE):
             limited_stmt += "\nLIMIT 10"
 
-        result = executor.execute(action="execute", sql=limited_stmt)
+        result = _execute_trial_stmt(executor, limited_stmt)
         # 网络瞬时错误小步重试（2026-10-15 实录：真实需求跑遇 WinError 10060
         # 单发直接落 errors 报 0/1，SQL 未被验证）——平台不可达不是 SQL 缺陷，
         # 重试仍不通的单列 env_errors，与 6b 超时/8a 承接表同构改判。
@@ -446,7 +464,7 @@ def _run_trial_selects(sql_content: str) -> dict:
         ):
             time.sleep(_TRIAL_RETRY_DELAYS[retries])
             retries += 1
-            result = executor.execute(action="execute", sql=limited_stmt)
+            result = _execute_trial_stmt(executor, limited_stmt)
 
         trial_results.append(
             {

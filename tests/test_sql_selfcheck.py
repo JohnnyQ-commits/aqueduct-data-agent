@@ -23,6 +23,16 @@ from src.aqueduct.config.settings import get_settings
 from src.aqueduct.engine.nodes.sql import _self_check_fix, node_sql
 
 
+@pytest.fixture(autouse=True)
+def _hive_only_trial_chain(monkeypatch):
+    """试跑引擎链 spark→hive 会让按调用次数出牌的假 executor 计数错位；
+    本文件测修复环/重试/门禁逻辑，与引擎管道正交（引擎链有专属测试
+    TestTrialEngineChain）——钉住 hive 单引擎保持原语义。"""
+    import src.aqueduct.utils.sql_engine as _se
+
+    monkeypatch.setattr(_se, "TRIAL_CHAIN", ("hive",))
+
+
 @pytest.fixture
 def fresh_settings():
     """每个测试前后清空 settings 缓存，确保环境变量修改生效。"""

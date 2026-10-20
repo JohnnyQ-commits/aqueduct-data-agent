@@ -76,3 +76,18 @@ class TestIsTimeoutError:
         assert not is_timeout_error("Invalid function 10011: nullif")
         assert not is_timeout_error("")
         assert not is_timeout_error(None)
+
+
+class TestTrialChain:
+    """试跑引擎链（2026-10-20 用户拍板）：生产常态 spark，大数据量才 hive——
+    试跑跟生产走 spark→hive，presto 不进试跑链（生产不用它跑 ETL）。"""
+
+    def test_trial_chain_is_spark_then_hive(self):
+        from src.aqueduct.utils.sql_engine import TRIAL_CHAIN
+
+        assert TRIAL_CHAIN == ("spark", "hive")
+
+    def test_iter_engine_attempts_respects_custom_chain(self):
+        seq = list(iter_engine_attempts("select 1", chain=("spark", "hive")))
+        assert [e for e, _ in seq] == ["spark", "hive"]
+        assert all(s == "select 1" for _, s in seq)

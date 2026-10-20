@@ -248,3 +248,66 @@ class TestLatestPartitionWindowed:
         text = _profile_source_tables(state, [TABLE])[TABLE]
         assert "20261015" in text
         assert any("20250101" in s for s in ex.executed)
+
+
+class TestTrialEngineChain:
+    """试跑跟生产引擎走（2026-10-20 用户拍板）：生产常态 spark、大数据量才
+    hive——试跑链 spark→hive，spark 被拒先转换重试再降 hive；超时立即中止。
+    presto 不进试跑链（生产不用它跑 ETL）。"""
+
+    SQL_CONTENT = (
+        "insert overwrite table dm.t partition (inc_day='${bizdate}')\n"
+        "select dept_code, count(*) as cnt\n"
+        "from dm.a where inc_day='${bizdate}' group by dept_code"
+    )
+
+    def _run(self, execute_fn):
+        import src.aqueduct.tools.registry as registry_pkg
+        from src.aqueduct.engine.nodes import sql as sql_mod
+
+        orig = registry_pkg.get_tool
+        registry_pkg.get_tool = lambda name: type("Ex", (), {"execute": staticmethod(execute_fn)})()
+        try:
+            return sql_mod._run_trial_selects(self.SQL_CONTENT)
+        finally:
+            registry_pkg.get_tool = orig
+
+    def test_trial_executes_on_spark_first(self):
+        captured = []
+
+        def execute(**kwargs):
+            captured.append(kwargs)
+            return SimpleNamespace(success=True, data={"rows": [[1]], "row_count": 1})
+
+        trial = self._run(execute)
+        assert trial["passed"] == 1
+        assert captured and all(kw.get("engine") == "spark" for kw in captured)
+
+    def test_spark_rejection_falls_to_hive(self):
+        from itertools import groupby
+
+        calls = []
+
+        def execute(**kwargs):
+            calls.append(kwargs)
+            if kwargs.get("engine") == "spark":
+                return SimpleNamespace(success=False, error="spark 语法拒绝", data={})
+            return SimpleNamespace(success=True, data={"rows": [[1]], "row_count": 1})
+
+        trial = self._run(execute)
+        assert trial["passed"] == 1
+        engines = [kw.get("engine") for kw in calls]
+        blocks = [k for k, _ in groupby(engines)]
+        assert blocks == ["spark", "hive"]
+        assert engines[-1] == "hive"
+
+    def test_spark_timeout_aborts_chain_counts_as_timeout(self):
+        calls = []
+
+        def execute(**kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(success=False, error="任务超时 (5 min)", data={})
+
+        trial = self._run(execute)
+        assert len(trial["timeouts"]) == 1  # 超时计入 passed（6b 语义不变）
+        assert all(kw.get("engine") == "spark" for kw in calls)  # 不再白等 hive

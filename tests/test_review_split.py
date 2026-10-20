@@ -21,6 +21,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from src.aqueduct.engine.nodes.review import (
     _REVIEW_DIMENSIONS,
     _parse_review_issues,
@@ -29,6 +31,17 @@ from src.aqueduct.engine.nodes.review import (
 )
 from src.aqueduct.skills.base import SkillContext
 from src.aqueduct.skills.code_review import CodeReviewDimensionSkill
+
+
+@pytest.fixture(autouse=True)
+def _hive_only_trial_chain(monkeypatch):
+    """试跑引擎链 spark→hive 会让按调用次数出牌的假 executor 计数错位；
+    本文件测修复环/重试/门禁逻辑，与引擎管道正交（引擎链有专属测试
+    TestTrialEngineChain）——钉住 hive 单引擎保持原语义。"""
+    import src.aqueduct.utils.sql_engine as _se
+
+    monkeypatch.setattr(_se, "TRIAL_CHAIN", ("hive",))
+
 
 _DESIGN = "## 取数逻辑\n订单主表按城市聚合，zz_design_marker 仅统计有效订单"
 _DDL = "CREATE TABLE zz_ddl_marker (id bigint, city string) PARTITIONED BY (inc_day string)"
