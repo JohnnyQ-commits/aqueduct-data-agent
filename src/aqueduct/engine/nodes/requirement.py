@@ -314,6 +314,11 @@ _TIMESTAMP_LIKE = ("_tm", "_time", "_date", "_dt", "timestamp")
 # 慢队列下不够，明细表探查全灭 → 枚举目标落空。120 次 = 10 分钟。
 _PROBE_WAIT_ATTEMPTS = 120
 
+# 探查快车道引擎（run 4 实录 2026-10-19）：presto 16s vs MR 10 分钟超时；
+# presto 拒绝不兼容语法时原 SQL 回落 hive（引擎级回退，不改写语法）。
+_PROBE_ENGINE = "presto"
+_PROBE_FALLBACK_ENGINE = "hive"
+
 # 当日探查结果缓存 {(sql, 日期): (rows, err)}：同日分区数据不变，halt 重跑 /
 # 修复环复跑直接命中；只缓存成功结果（超时/失败可重试）
 _PROBE_CACHE: dict[tuple[str, str], tuple[list[list[Any]] | None, str]] = {}
@@ -356,31 +361,43 @@ def _select_profile_columns(schema_text: str, requirement: str) -> tuple[list[st
     return enum_cols, profile_cols
 
 
+def _probe_once(executor: Any, sql: str, engine: str) -> tuple[list[list[Any]] | None, str]:
+    """用指定引擎执行单条探查 SQL。返回 (rows, error)。"""
+    try:
+        result = executor.execute(
+            action="execute", sql=sql, wait_attempts=_PROBE_WAIT_ATTEMPTS, engine=engine
+        )
+        if not getattr(result, "success", False):
+            err = str(getattr(result, "error", ""))
+            logger.warning("数据探查失败（%s，engine=%s）: %s", sql[:120], engine, err[:300])
+            return None, err
+        return (result.data or {}).get("rows") or [], ""
+    except Exception as e:
+        logger.warning("数据探查异常（%s，engine=%s）: %s", sql[:120], engine, e)
+        return None, str(e)
+
+
 def _run_probe(executor: Any, sql: str) -> tuple[list[list[Any]] | None, str]:
     """执行单条探查 SQL。返回 (rows, error)——失败 rows=None、error 非空
     （降级不抛，错误串供分区护栏等分支判定）。
 
-    探查通道专用 10 分钟轮询（run 3 实录：_hive_wait 默认 5 分钟，MR 慢队列
-    下明细表聚合探查全灭）；成功结果按 (sql, 当日) 缓存——halt 后重跑不再
-    白等一轮，超时/失败不入缓存（恢复后可用更长耐心重试）。
+    探查快车道默认 presto（run 4 实录：同一探查 SQL MR 10 分钟超时 ×4 全灭，
+    presto 16s 返回）。presto 拒绝（不兼容 UDF/语法等非超时错误）时**原 SQL
+    回落 hive 引擎重试**——不改写语法，引擎级回退永远语义正确；超时不回落
+    （hive 只会更慢，白等一轮）。成功结果按 (sql, 当日) 缓存——halt 后重跑
+    不再白等一轮，失败不入缓存（恢复后可重试）。
     """
     from datetime import date
 
     cache_key = (sql, date.today().isoformat())
     if cache_key in _PROBE_CACHE:
         return _PROBE_CACHE[cache_key]
-    try:
-        result = executor.execute(action="execute", sql=sql, wait_attempts=_PROBE_WAIT_ATTEMPTS)
-        if not getattr(result, "success", False):
-            err = str(getattr(result, "error", ""))
-            logger.warning("数据探查失败（%s）: %s", sql[:120], err[:300])
-            return None, err
-        rows = (result.data or {}).get("rows") or []
+    rows, err = _probe_once(executor, sql, _PROBE_ENGINE)
+    if rows is None and err and not _is_probe_timeout(err):
+        rows, err = _probe_once(executor, sql, _PROBE_FALLBACK_ENGINE)
+    if rows is not None:
         _PROBE_CACHE[cache_key] = (rows, "")
-        return rows, ""
-    except Exception as e:
-        logger.warning("数据探查异常（%s）: %s", sql[:120], e)
-        return None, str(e)
+    return rows, err
 
 
 def _is_probe_timeout(err: str) -> bool:
@@ -395,25 +412,32 @@ def _is_probe_timeout(err: str) -> bool:
 _RE_PARTITION_LIMIT = re.compile(r"partitionoverlimit|max\s+400\s+partition", re.IGNORECASE)
 
 
-def _latest_partition_fallback(executor: Any, table: str) -> str | None:
+def _latest_partition_fallback(executor: Any, table: str) -> tuple[str | None, str]:
     """护栏命中时的回退：年份窗口谓词探 max(inc_day)。
 
     2026-10-16 UI 实录弃用 show partitions——返回被平台截断，max 只反映
     截断子集（探到 20230104 陈旧分区）。年份窗口靠分区裁剪把扫描分区压到
     ~365 < 400 不撞护栏，且拿到真实最新分区；当年无数据回退上一年再试。
+
+    Returns:
+        (latest_partition, last_err)——失败时把最后一次错误带出来供超时
+        判定（run 4 实录：回退超时错误被吞，探查超时冒充「无 inc_day
+        分区键」，标注与降级横幅全哑火）。
     """
     from datetime import date
 
     year = date.today().year
+    last_err = ""
     for y in (year, year - 1):
-        rows, _ = _run_probe(
+        rows, err = _run_probe(
             executor,
             f"select max(inc_day) as latest_partition from {table} "
             f"where inc_day >= '{y}0101' and inc_day < '{y + 1}0101'",
         )
         if rows and rows[0][0] is not None:
-            return rows[0][0]
-    return None
+            return rows[0][0], ""
+        last_err = err or last_err
+    return None, last_err
 
 
 def _profile_one_table(executor: Any, table: str, schema_text: str, requirement: str) -> str:
@@ -432,7 +456,14 @@ def _profile_one_table(executor: Any, table: str, schema_text: str, requirement:
             "——超时未探查，枚举/画像值未实测，禁止作为已验证口径"
         )
     if latest is None and _RE_PARTITION_LIMIT.search(latest_err):
-        latest = _latest_partition_fallback(executor, table)
+        latest, fallback_err = _latest_partition_fallback(executor, table)
+        if latest is None and _is_probe_timeout(fallback_err):
+            # run 4 实录：回退年窗超时的错误曾被吞掉，超时冒充「无 inc_day
+            # 分区键」——标注与降级横幅全哑火。回退路径超时同样显式标注
+            return (
+                f"表: {table}\n数据探查: 探查超时（10 分钟未返回，MR 慢队列）"
+                "——超时未探查，枚举/画像值未实测，禁止作为已验证口径"
+            )
     if latest is None:
         return f"表: {table}\n数据探查: 无 inc_day 分区键或探查失败，跳过数据探查（仅静态分析）"
 

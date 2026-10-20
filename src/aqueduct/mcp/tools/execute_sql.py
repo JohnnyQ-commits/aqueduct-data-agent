@@ -39,7 +39,9 @@ class HiveExecuteTool:
         except Exception as e:
             return {"status": "unavailable", "message": f"连接失败: {e}"}
 
-    def execute(self, sql: str, limit: int = 100, wait_attempts: int = 60) -> QueryResult:
+    def execute(
+        self, sql: str, limit: int = 100, wait_attempts: int = 60, engine: str = "hive"
+    ) -> QueryResult:
         """执行 SQL 查询并返回结果。
 
         Args:
@@ -47,6 +49,8 @@ class HiveExecuteTool:
             limit: 返回行数限制。
             wait_attempts: 轮询上限（每次 5s），透传 dp_client——探查通道传
                 120（10 分钟）避开 MR 慢队列（run 3 实录）。
+            engine: hive（默认）| presto（探查快车道，run 4 实录 16s vs MR
+                10 分钟超时），透传 dp_client 换控制器路径。
 
         Returns:
             QueryResult 对象。
@@ -61,7 +65,9 @@ class HiveExecuteTool:
             )
 
         try:
-            result = self.adapter.execute_hive_query(sql, wait_attempts=wait_attempts)
+            result = self.adapter.execute_hive_query(
+                sql, wait_attempts=wait_attempts, engine=engine
+            )
 
             if result["data"]:
                 columns = list(result["data"][0].keys())

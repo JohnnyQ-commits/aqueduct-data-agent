@@ -61,7 +61,11 @@ class SQLExecutorTool(BaseTool):
             sql = kwargs.get("sql", "")
             if not sql:
                 return ToolResult(success=False, error="缺少必填参数 sql")
-            return self._execute_sql(sql, wait_attempts=kwargs.get("wait_attempts", 60))
+            return self._execute_sql(
+                sql,
+                wait_attempts=kwargs.get("wait_attempts", 60),
+                engine=kwargs.get("engine", "hive"),
+            )
 
     def health_check(self) -> ToolResult:
         """检查数据平台连接是否可用。"""
@@ -141,8 +145,9 @@ class SQLExecutorTool(BaseTool):
             },
         )
 
-    def _execute_sql(self, sql: str, wait_attempts: int = 60) -> ToolResult:
-        """执行单条 SQL。wait_attempts 透传 dp_client（探查通道 120 = 10 分钟）。"""
+    def _execute_sql(self, sql: str, wait_attempts: int = 60, engine: str = "hive") -> ToolResult:
+        """执行单条 SQL。wait_attempts 透传 dp_client（探查通道 120 = 10 分钟）；
+        engine 透传换控制器路径（探查快车道 presto，run 4 实录）。"""
         settings = get_settings()
         if not settings.execution_enabled:
             return ToolResult(
@@ -151,7 +156,9 @@ class SQLExecutorTool(BaseTool):
             )
 
         start = time.time()
-        qr = self._tool.execute(sql, limit=settings.execution_max_rows, wait_attempts=wait_attempts)
+        qr = self._tool.execute(
+            sql, limit=settings.execution_max_rows, wait_attempts=wait_attempts, engine=engine
+        )
         elapsed_ms = int((time.time() - start) * 1000)
 
         if not qr.success:

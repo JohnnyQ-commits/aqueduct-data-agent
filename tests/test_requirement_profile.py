@@ -74,8 +74,12 @@ class FakeExecutor:
             return [[self.latest]]
         if "count(*)" in sql and "group by" not in sql and "count(distinct" not in sql:
             return [[self.row_cnt]]
-        if "group by" in sql and "hl_scene_type" in sql:
-            return [["集收", 20499080], ["散收", 19982943]]
+        if "group by" in sql:
+            if "hl_scene_type" in sql:
+                return [["集收", 20499080], ["散收", 19982943]]
+            # 其他 group by（如 guid 候选键探查）：回 1 行，避免 fixture 缺口
+            # 触发 presto→hive 回落干扰引擎断言
+            return [["散收", 19982943]]
         if "count(distinct" in sql:
             # 画像查询：total + 每列 (null, dist) 一一对应。
             # waybill_no 全唯一；guid distinct 远小于行数；其余 2 值
@@ -441,3 +445,97 @@ class TestProbeTimeoutAndCache:
         assert ex.executed.count(timeout_sql) == 2
         profiles = _profile_source_tables(_state, [TABLE])  # 第三跑全走缓存
         assert "探查分区" in profiles[TABLE]
+
+    def test_timeout_via_guard_fallback_gets_annotation(self, _state, monkeypatch):
+        """run4 实录：护栏拒→年窗回退后超时，超时信息被回退函数吞掉，
+        冒充「无 inc_day 分区键」。回退路径的超时同样必须显式标注。"""
+        import types
+
+        ex = FakeExecutor()
+
+        def execute(**kwargs):
+            sql = kwargs.get("sql", "")
+            ex.executed.append(sql)
+            ex.call_kwargs.append(kwargs)
+            if "where" not in sql:
+                return types.SimpleNamespace(
+                    success=False,
+                    error="任务执行失败: FAILED: Hive Internal Error: "
+                    "PartitionOverLimitException(can only query max 400 partition)",
+                    data={},
+                )
+            return types.SimpleNamespace(success=False, error="任务超时 (10 min)", data={})
+
+        ex.execute = execute
+        _patch_env(monkeypatch, _FakeAdapter(), ex)
+
+        profiles = _profile_source_tables(_state, [TABLE])
+        text = profiles[TABLE]
+        assert "探查超时" in text, f"回退路径超时必须显式标注，实际：{text[:120]}"
+        assert "超时未探查" in text
+
+
+class TestPrestoProbeFastLane:
+    """探查快车道（run 4 实录）：MR 探查 10 分钟×4 全灭，Presto 同 SQL 16 秒。
+    探查通道默认走 presto；presto 拒绝（不兼容语法/引擎错误）时原 SQL 回落
+    hive 重试——不改写语法，引擎级回退永远语义正确。试跑通道不动（保真）。"""
+
+    def test_probes_default_to_presto_engine(self, _state, monkeypatch):
+        ex = FakeExecutor()
+        _patch_env(monkeypatch, _FakeAdapter(), ex)
+
+        _profile_source_tables(_state, [TABLE])
+
+        assert ex.call_kwargs, "探查未执行"
+        assert all(kw.get("engine") == "presto" for kw in ex.call_kwargs)
+
+    def test_presto_rejection_falls_back_to_hive_same_sql(self, _state, monkeypatch):
+        """presto 报错（不兼容语法）→ 同一 SQL 用 hive 引擎重试一次。"""
+        ex = FakeExecutor()
+        orig = ex.execute
+
+        calls: list[dict] = []
+
+        def execute(**kwargs):
+            calls.append(kwargs)
+            if kwargs.get("engine") == "presto":
+                import types
+
+                return types.SimpleNamespace(
+                    success=False, error="Invalid function 10011: nullif", data={}
+                )
+            return orig(**kwargs)
+
+        ex.execute = execute
+        _patch_env(monkeypatch, _FakeAdapter(), ex)
+
+        profiles = _profile_source_tables(_state, [TABLE])
+
+        text = profiles[TABLE]
+        # hive 回落成功：分区/行数照常注入
+        assert "20261014" in text and "40482023" in text
+        # 同一 SQL 先 presto 后 hive
+        for sql in ex.executed:
+            engine_seq = [c.get("engine") for c in calls if c.get("sql") == sql]
+            assert engine_seq == ["presto", "hive"], f"{sql[:60]} 引擎序列={engine_seq}"
+
+    def test_hive_fallback_failure_reported_once_not_doubled(self, _state, monkeypatch):
+        """presto 和 hive 都失败：只报一次错（hive 的错误为准），不双写。"""
+        timeout_sql = "select max(inc_day) as latest_partition from " + TABLE
+        ex = FakeExecutor(error_map={timeout_sql: "任务超时 (10 min)"})
+        _patch_env(monkeypatch, _FakeAdapter(), ex)
+
+        profiles = _profile_source_tables(_state, [TABLE])
+
+        text = profiles[TABLE]
+        assert "探查超时" in text
+        assert text.count("任务超时") <= 1
+
+    def test_presto_success_not_rerun_on_hive(self, _state, monkeypatch):
+        """presto 成功即用，不回落 hive（每条 SQL 只执行一次）。"""
+        ex = FakeExecutor()
+        _patch_env(monkeypatch, _FakeAdapter(), ex)
+
+        _profile_source_tables(_state, [TABLE])
+
+        assert len(ex.executed) == len(set(ex.executed))

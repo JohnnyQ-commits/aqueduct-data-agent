@@ -183,23 +183,30 @@ class DataPlatformAdapter:
             return res_data["ok"] is True
         return res_data.get("code") == 200
 
-    def execute_hive_query(self, sql: str, *, wait_attempts: int = 60) -> dict[str, Any]:
-        """执行 Hive SQL 查询（提交 -> 轮询 -> 取结果）。
+    def execute_hive_query(
+        self, sql: str, *, wait_attempts: int = 60, engine: str = "hive"
+    ) -> dict[str, Any]:
+        """执行 SQL 查询（提交 -> 轮询 -> 取结果）。
 
         wait_attempts: 轮询上限（每次间隔 5s），默认 60 = 5 分钟。
         探查通道传 120（10 分钟）——MR 慢队列下明细表聚合超 5 分钟（run 3 实录）。
+
+        engine: hive（默认，零行为变化）| presto（探查快车道，run 4 实录
+        MR 10 分钟超时 vs presto 16s）。三引擎控制器协议同构（payload 一字
+        不差，bdp-cli ENGINE_ENDPOINTS 实录），只换路径
+        /bdp-fc-ide-external-controller/{engine}/execute|getLog|getResult。
         """
         sql_clean = sql.rstrip().rstrip(";").rstrip()
         window_id = self._generate_window_id()
 
         # 1. Submit
-        logger.info(f"【步骤1】提交 Hive 任务... SQL: {sql_clean[:50]}...")
-        exec_id = self._hive_submit(sql_clean, window_id)
+        logger.info(f"【步骤1】提交 {engine} 任务... SQL: {sql_clean[:50]}...")
+        exec_id = self._hive_submit(sql_clean, window_id, engine=engine)
         logger.info(f"【步骤1】任务已提交，executionId: {exec_id}")
 
         # 2. Wait
         logger.info("【步骤2】轮询任务状态...")
-        result_id = self._hive_wait(exec_id, window_id, attempts=wait_attempts)
+        result_id = self._hive_wait(exec_id, window_id, attempts=wait_attempts, engine=engine)
         logger.info(f"【步骤2】任务完成，resultId: {result_id}")
 
         # 3. Fetch
@@ -212,7 +219,7 @@ class DataPlatformAdapter:
             return {"status": "success", "data": [], "row_count": 0}
 
         logger.info("【步骤3】获取结果...")
-        data = self._hive_fetch(result_id, window_id)
+        data = self._hive_fetch(result_id, window_id, engine=engine)
         logger.info(f"【步骤3】成功获取 {len(data)} 行数据")
 
         return {
@@ -221,8 +228,8 @@ class DataPlatformAdapter:
             "row_count": len(data) if data else 0,
         }
 
-    def _hive_submit(self, sql: str, window_id: str) -> int:
-        endpoint = "/bdp-fc-ide-external-controller/hive/execute"
+    def _hive_submit(self, sql: str, window_id: str, engine: str = "hive") -> int:
+        endpoint = f"/bdp-fc-ide-external-controller/{engine}/execute"
         payload = {
             "applicationId": 624,
             "async": True,
@@ -243,16 +250,18 @@ class DataPlatformAdapter:
             return int(data["executionId"])
         return int(data)
 
-    def _hive_wait(self, execution_id: int, window_id: str, attempts: int = 60) -> str:
+    def _hive_wait(
+        self, execution_id: int, window_id: str, attempts: int = 60, engine: str = "hive"
+    ) -> str:
         """轮询 getLog 直到完成，返回 resultId（UUID 字符串）。
 
         2026-09-14 全链路实测修正：文档写的 POST /hive/executionStatus 404，
-        真实轮询端点是 GET /hive/getLog（isFinish/isSuccess/resultId），
+        真实轮询端点是 GET /{engine}/getLog（isFinish/isSuccess/resultId），
         resultId 为 UUID 而非 int。attempts 可调（探查通道 120 = 10 分钟）。
         """
         for _attempt in range(attempts):
             time.sleep(5)
-            endpoint = "/bdp-fc-ide-external-controller/hive/getLog"
+            endpoint = f"/bdp-fc-ide-external-controller/{engine}/getLog"
             resp = self.client.get(
                 endpoint,
                 params={
@@ -271,13 +280,15 @@ class DataPlatformAdapter:
 
         raise TimeoutError(f"任务超时 ({max(attempts * 5 // 60, 1)} min)")
 
-    def _hive_fetch(self, result_id: str, window_id: str) -> list[dict[str, Any]]:
+    def _hive_fetch(
+        self, result_id: str, window_id: str, engine: str = "hive"
+    ) -> list[dict[str, Any]]:
         """按 resultId 取结果行。
 
-        真实端点 GET /hive/getResult，参数 resultId+windowId+clusterId——
+        真实端点 GET /{engine}/getResult，参数 resultId+windowId+clusterId——
         **不能带 userId**（live 实测：带则 500）。
         """
-        endpoint = "/bdp-fc-ide-external-controller/hive/getResult"
+        endpoint = f"/bdp-fc-ide-external-controller/{engine}/getResult"
         resp = self.client.get(
             endpoint,
             params={"resultId": result_id, "windowId": window_id, "clusterId": 1},

@@ -194,3 +194,25 @@ class TestWaitAttemptsPassthrough:
         assert result.success is True
         _, kwargs = mock_adapter.execute_hive_query.call_args
         assert kwargs.get("wait_attempts") == 120
+
+    def test_execute_forwards_engine(self):
+        from unittest.mock import MagicMock
+
+        tool = get_tool("executor")
+        _ = tool._tool
+        mock_adapter = MagicMock()
+        mock_adapter.execute_hive_query.return_value = {
+            "status": "success",
+            "data": [{"cnt": 1}],
+            "row_count": 1,
+        }
+        tool._hive_tool.adapter = mock_adapter
+        tool._hive_tool._init_error = None
+        try:
+            result = tool.execute(sql="select 1", engine="presto")
+        finally:
+            tool._hive_tool.adapter = None
+
+        assert result.success is True
+        _, kwargs = mock_adapter.execute_hive_query.call_args
+        assert kwargs.get("engine") == "presto"

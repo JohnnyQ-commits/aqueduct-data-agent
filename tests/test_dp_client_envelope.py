@@ -287,7 +287,7 @@ class TestHiveWaitAttempts:
         adapter = _make_adapter(monkeypatch)
         captured: dict[str, Any] = {}
 
-        def fake_wait(exec_id: int, window_id: str, attempts: int = 60) -> str:
+        def fake_wait(exec_id: int, window_id: str, attempts: int = 60, **kwargs) -> str:
             captured["attempts"] = attempts
             return "ee1971e5-299f-4e07-82a2-150b9e39dc8e"
 
@@ -303,3 +303,88 @@ class TestHiveWaitAttempts:
         adapter.execute_hive_query("select 1", wait_attempts=120)
 
         assert captured["attempts"] == 120
+
+
+class TestPrestoEngineRouting:
+    """探查快车道（run 4 实录）：明细表 MR 探查 10 分钟×4 全灭，Presto 同
+    SQL 16 秒返回。协议同构（payload 一字不差），只换控制器路径
+    /hive/* → /presto/*；默认仍走 hive（零行为变化）。"""
+
+    def test_submit_routes_to_presto_endpoint(self, monkeypatch):
+        from src.aqueduct.mcp.adapters import dp_client as dp_mod
+
+        adapter = _make_adapter(monkeypatch)
+        monkeypatch.setattr(dp_mod.time, "sleep", lambda _s: None)
+        adapter.client = _FakeClient(
+            [
+                {"ok": True, "data": 58917415, "message": None},  # submit
+                {
+                    "ok": True,
+                    "data": {
+                        "isFinish": True,
+                        "isSuccess": True,
+                        "resultId": "ee1971e5-299f-4e07-82a2-150b9e39dc8e",
+                    },
+                },  # getLog
+                {"ok": True, "data": [], "message": None},  # getResult
+            ]
+        )
+
+        adapter.execute_hive_query("select 1", engine="presto")
+
+        submit_calls = [c for c in adapter.client.calls if c[0] == "POST"]
+        assert submit_calls[0][1] == "/bdp-fc-ide-external-controller/presto/execute"
+
+    def test_poll_and_fetch_route_to_presto(self, monkeypatch):
+        """presto 的轮询/取结果同样走 /presto/* 路径。"""
+        from src.aqueduct.mcp.adapters import dp_client as dp_mod
+
+        adapter = _make_adapter(monkeypatch)
+        monkeypatch.setattr(dp_mod.time, "sleep", lambda _s: None)
+        adapter.client = _FakeClient(
+            [
+                {"ok": True, "data": 58917415, "message": None},  # submit
+                {
+                    "ok": True,
+                    "data": {
+                        "isFinish": True,
+                        "isSuccess": True,
+                        "resultId": "ee1971e5-299f-4e07-82a2-150b9e39dc8e",
+                    },
+                },  # getLog
+                {"ok": True, "data": [{"x": 1}], "message": None},  # getResult
+            ]
+        )
+
+        result = adapter.execute_hive_query("select 1", engine="presto")
+
+        gets = [c for c in adapter.client.calls if c[0] == "GET"]
+        assert any("/presto/getLog" in c[1] for c in gets)
+        assert any("/presto/getResult" in c[1] for c in gets)
+        assert result["status"] == "success" and result["data"] == [{"x": 1}]
+
+    def test_default_engine_still_hive(self, monkeypatch):
+        """不传 engine 时行为零变化（/hive/* 路径）。"""
+        from src.aqueduct.mcp.adapters import dp_client as dp_mod
+
+        adapter = _make_adapter(monkeypatch)
+        monkeypatch.setattr(dp_mod.time, "sleep", lambda _s: None)
+        adapter.client = _FakeClient(
+            [
+                {"ok": True, "data": 58001942, "message": None},  # submit
+                {
+                    "ok": True,
+                    "data": {
+                        "isFinish": True,
+                        "isSuccess": True,
+                        "resultId": "ee1971e5-299f-4e07-82a2-150b9e39dc8e",
+                    },
+                },  # getLog
+                {"ok": True, "data": [], "message": None},  # getResult
+            ]
+        )
+
+        adapter.execute_hive_query("select 1")
+
+        submit_calls = [c for c in adapter.client.calls if c[0] == "POST"]
+        assert submit_calls[0][1] == "/bdp-fc-ide-external-controller/hive/execute"
