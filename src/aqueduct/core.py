@@ -217,6 +217,20 @@ def _run_fix_loop(state: WorkflowState) -> WorkflowState:
         state["_needs_fix_loop"] = False
         return state
 
+    # run 5 实录：fix2 与修复前 SQL 逐字节相同（diff 为空）——零改动修复
+    # 曾被照单接受，白烧一轮 LLM 修复 + 一轮完整复审。拒绝并标记
+    # _fix_no_progress，管道据此跳过无意义重审直接终止转人工
+    # （用户拍板 2026-10-20）。第九刀 9b 语义：被拒尝试同样消耗预算。
+    if fixed_sql.strip() == sql_content.strip():
+        logger.warning(
+            "[task=%s] 修复循环: 零改动（修复输出与修复前 SQL 相同），拒绝本次修复",
+            req_name,
+        )
+        state["fix_iterations"] = state.get("fix_iterations", 0) + 1
+        state["_needs_fix_loop"] = False
+        state["_fix_no_progress"] = True
+        return state
+
     # 刀②（run 5 复盘）：本地 re-lint 门禁——修复环曾越修越多
     # （7→10 个 Critical 振荡实录）。ERROR 数回退 = 本次修复在引入新问题，
     # 拒绝并保留原 SQL；有净改善（含部分修复）则接受，交回审查复检。
@@ -429,6 +443,20 @@ def _run_pipeline(
             else:
                 logger.info("[task=%s] 审查→修复回环：回到审查阶段重新审查", req_name)
                 state = _run_fix_loop(state)
+                # run 5 实录：零改动修复（输出与修复前 SQL 相同）——重审
+                # 同一份 SQL 只会得到同一批发现，跳过无意义重审直接终止，
+                # 与审查门禁 halt 同样落人工跟进清单
+                if state.get("_fix_no_progress"):
+                    state["_fix_no_progress"] = False
+                    msg = "[终止] 修复循环零改动（修复输出与修复前 SQL 相同），重审无意义，管道终止"
+                    state.setdefault("errors", []).append(f"review: {msg}")
+                    logger.error("[task=%s] %s", req_name, msg)
+
+                    from .engine.nodes.review import _save_halt_followup
+
+                    _save_halt_followup(state, req_name, state.get("_review_issues") or [], msg)
+                    halted = True
+                    break
                 # 回到 review 节点重新审查（修复后的 SQL 已在 state 中）
                 review_idx = next(
                     (j for j, (name, _) in enumerate(phases) if name == "review"),

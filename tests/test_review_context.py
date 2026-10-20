@@ -108,3 +108,86 @@ class TestReviewNodeDesignContext:
             assert "zz_design_marker" in prompt, f"维度 {dim['key']} 应含设计方案"
             assert "zz_ddl_marker" in prompt, f"维度 {dim['key']} 应含目标表 DDL"
             assert dim["name"] in prompt
+
+
+_TWO_STMT_SQL = (
+    "-- 文件头注释\n"
+    "insert overwrite table dm.target partition (inc_day = '${bizdate}')\n"
+    "select dept_code, count(*) as cnt from dm.src\n"
+    "where inc_day = '${bizdate}' group by dept_code;\n"
+    "\n"
+    "-- 中间注释\n"
+    "insert overwrite table dm.tmp_stage partition (inc_day = '${bizdate}')\n"
+    "select dept_code, sum(cnt) as total from dm.mid\n"
+    "where inc_day = '${bizdate}' group by dept_code;\n"
+)
+
+
+class TestChunkPromptScriptSkeleton:
+    """run 5 实录：分块审查看不到其他块，把「写入语句在另一块」猜成
+    「整脚本缺少 INSERT OVERWRITE」报 Critical（审查者自己都标注「需确认
+    是否位于第 2 块」）——假阳性 Critical 终止了管道。修法：每块审查
+    prompt 注入完整脚本骨架（各块起始行 + 首条语句），跨块缺失/不一致
+    类发现先对照骨架再报。"""
+
+    def test_skeleton_lists_all_blocks_with_first_statement(self):
+        """骨架逐块列出起始行号与首条有效语句——跨块 INSERT 可见。"""
+        from src.aqueduct.engine.nodes.review import (
+            _script_skeleton,
+            _split_sql_blocks_with_offsets,
+        )
+
+        blocks = _split_sql_blocks_with_offsets(_TWO_STMT_SQL)
+        skeleton = _script_skeleton(_TWO_STMT_SQL, blocks, current_index=1)
+        assert "dm.target" in skeleton, "块 1 的写入表应在骨架中"
+        assert "dm.tmp_stage" in skeleton, "块 2 的写入表应可见（跨块引用的关键）"
+        assert "共 2 个语句块" in skeleton
+
+    def test_skeleton_marks_current_block(self):
+        """当前块标注 [本块]，其余块不标——审查者知道自己在第几块。"""
+        from src.aqueduct.engine.nodes.review import (
+            _script_skeleton,
+            _split_sql_blocks_with_offsets,
+        )
+
+        blocks = _split_sql_blocks_with_offsets(_TWO_STMT_SQL)
+        skeleton = _script_skeleton(_TWO_STMT_SQL, blocks, current_index=1)
+        assert skeleton.count("[本块]") == 1
+        # 标注落在块 1 的行上（块 1 首条语句是 dm.target）
+        own_line = next(ln for ln in skeleton.splitlines() if "dm.target" in ln)
+        assert "[本块]" in own_line
+
+    def test_skeleton_skips_comment_lines_for_first_statement(self):
+        """首条有效语句跳过注释行——文件头注释不冒充语句。"""
+        from src.aqueduct.engine.nodes.review import (
+            _script_skeleton,
+            _split_sql_blocks_with_offsets,
+        )
+
+        blocks = _split_sql_blocks_with_offsets(_TWO_STMT_SQL)
+        skeleton = _script_skeleton(_TWO_STMT_SQL, blocks, current_index=1)
+        assert "文件头注释" not in skeleton, "注释行不应作为块的语句摘要"
+
+    def test_chunk_prompt_includes_skeleton(self):
+        """分块 prompt 注入骨架：审查块 1 时也能看到块 2 的写入语句。"""
+        from src.aqueduct.engine.nodes.review import (
+            _script_skeleton,
+            _split_sql_blocks_with_offsets,
+        )
+
+        state = _make_state()
+        blocks = _split_sql_blocks_with_offsets(_TWO_STMT_SQL)
+        prompt = _build_chunk_prompt(
+            state,
+            blocks[0][0],
+            chunk_index=1,
+            total_chunks=2,
+            start_line=blocks[0][1],
+            skeleton=_script_skeleton(_TWO_STMT_SQL, blocks, current_index=1),
+        )
+        assert "dm.tmp_stage" in prompt, "块 1 的审查 prompt 应含块 2 的骨架信息"
+
+    def test_single_chunk_prompt_has_no_skeleton(self):
+        """单块审查（total_chunks=1）不注入骨架——无跨块引用场景。"""
+        prompt = _build_chunk_prompt(_make_state(), _SQL, chunk_index=1, total_chunks=1)
+        assert "完整脚本骨架" not in prompt

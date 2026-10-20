@@ -298,6 +298,104 @@ class TestRunFixLoop:
         assert any("修复循环" in err for err in result["errors"])
 
 
+class TestFixLoopZeroChange:
+    """run 5 实录：fix2 输出与修复前 SQL 逐字节相同（diff 为空）——零改动
+    修复被照单接受，白烧一轮 LLM 修复 + 一轮完整复审，最终仍 halt。修法：
+    零改动时拒绝本次修复并标记 _fix_no_progress，管道据此跳过无意义重审、
+    直接终止并落人工跟进清单（用户拍板 2026-10-20）。"""
+
+    @staticmethod
+    def _make_state() -> dict:
+        return {
+            "requirement": "test",
+            "mode": "dev",
+            "metadata": {"requirement_name": "test_req"},
+            "errors": [],
+            "artifacts": [],
+            "sql_content": "SELECT 1 FROM dual",
+            "_review_issues": [
+                {"severity": "Critical", "message": "假阳性跨块 Critical"},
+            ],
+            "_needs_fix_loop": True,
+            "fix_iterations": 0,
+        }
+
+    @patch(
+        "src.aqueduct.engine.nodes.helpers.save_artifact", side_effect=lambda s, n, c: f"output/{n}"
+    )
+    @patch("src.aqueduct.engine.nodes.helpers.is_valid_sql", return_value=True)
+    @patch("src.aqueduct.engine.nodes.helpers.extract_sql_block", side_effect=lambda x: x)
+    @patch("src.aqueduct.engine.nodes.helpers.call_llm", return_value="SELECT 1 FROM dual")
+    def test_zero_change_rejected_and_flagged(
+        self, _mock_llm, _mock_extract, _mock_valid, mock_save
+    ):
+        """修复输出与原 SQL 相同：拒绝（不落 _fixN/不回写），消耗预算（9b
+        语义），标记 _fix_no_progress 供管道终止。"""
+        state = self._make_state()
+
+        with patch("src.aqueduct.config.settings.get_settings") as mock_settings:
+            mock_settings.return_value.max_fix_iterations = 2
+            result = _run_fix_loop(state)
+
+        assert result["sql_content"] == "SELECT 1 FROM dual"
+        assert result["fix_iterations"] == 1
+        assert result["_needs_fix_loop"] is False
+        assert result["_fix_no_progress"] is True
+        mock_save.assert_not_called()  # 零改动不落 _fixN 审计副本
+
+    @patch(
+        "src.aqueduct.engine.nodes.helpers.save_artifact", side_effect=lambda s, n, c: f"output/{n}"
+    )
+    @patch("src.aqueduct.engine.nodes.helpers.is_valid_sql", return_value=True)
+    @patch("src.aqueduct.engine.nodes.helpers.extract_sql_block", side_effect=lambda x: x)
+    @patch(
+        "src.aqueduct.engine.nodes.helpers.call_llm", return_value="SELECT 1 FROM dual WHERE 1=1"
+    )
+    def test_changed_fix_not_flagged(self, _mock_llm, _mock_extract, _mock_valid, _mock_save):
+        """有实际改动的修复不受影响：不标 _fix_no_progress，正常走复审。"""
+        state = self._make_state()
+
+        with patch("src.aqueduct.config.settings.get_settings") as mock_settings:
+            mock_settings.return_value.max_fix_iterations = 2
+            result = _run_fix_loop(state)
+
+        assert result["sql_content"] == "SELECT 1 FROM dual WHERE 1=1"
+        assert not result.get("_fix_no_progress")
+
+    def test_pipeline_halts_on_zero_change(self, tmp_path):
+        """管道层：零改动修复 → 跳过重审直接终止 + 落人工跟进清单。
+
+        用户拍板（2026-10-20）：SQL 一字未改，重审只会得到同一批发现——
+        与其再烧一轮 LLM 审查，不如立即终止转人工。
+        """
+        state = self._make_state()
+        state["metadata"]["output_dir"] = str(tmp_path)
+
+        def fake_review(state):
+            state["_needs_fix_loop"] = True
+            return state
+
+        def fake_zero_change_fix(state):
+            state["_needs_fix_loop"] = False
+            state["_fix_no_progress"] = True
+            state["fix_iterations"] = state.get("fix_iterations", 0) + 1
+            return state
+
+        with (
+            patch("src.aqueduct.core._run_fix_loop", side_effect=fake_zero_change_fix),
+            patch("src.aqueduct.engine.nodes.review._save_halt_followup") as mock_followup,
+            patch("src.aqueduct.config.settings.get_settings") as mock_settings,
+        ):
+            mock_settings.return_value.max_fix_iterations = 2
+            mock_settings.return_value.review_enforce = True
+            mock_settings.return_value.platform = "none"  # 平台横幅需合法枚举值
+            result = _run_pipeline(state, [("review", fake_review)])
+
+        assert result.halted is True
+        assert any("零改动" in err for err in result.state.get("errors", []))
+        mock_followup.assert_called_once()
+
+
 class TestFixFeedbackHardening:
     """刀② 修复反馈保真度（run 5 复盘，2026-09-18）。
 

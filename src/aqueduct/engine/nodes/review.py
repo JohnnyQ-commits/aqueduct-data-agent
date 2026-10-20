@@ -212,12 +212,38 @@ def _block_validation_result(sql_block: str) -> dict:
     }
 
 
+def _script_skeleton(sql: str, blocks: list[tuple[str, int]], current_index: int) -> str:
+    """完整脚本骨架：逐块列起始行号 + 首条有效语句（跳过注释/空行）。
+
+    run 5 实录：分块审查看不到其他块，把「写入语句在另一块」猜成「整脚本
+    缺少 INSERT OVERWRITE」报 Critical（审查者自己都标注「需确认是否位于
+    第 2 块」）——假阳性 Critical 终止了管道。骨架让跨块缺失/不一致类发现
+    先对照骨架再报，块间引用不再瞎猜。current_index 标注 [本块]。
+    """
+    lines = [
+        f"完整脚本骨架（共 {len(blocks)} 个语句块；跨块引用以此为准，骨架中已存在的内容勿报缺失/不一致）："
+    ]
+    for idx, (block, start_line) in enumerate(blocks, 1):
+        first = ""
+        for line in block.splitlines():
+            s = line.strip()
+            if s and not s.startswith("--"):
+                first = s
+                break
+        if len(first) > 100:
+            first = first[:100] + "..."
+        mark = " [本块]" if idx == current_index else ""
+        lines.append(f"- 第 {start_line} 行起{mark}: {first or '（仅注释/空行）'}")
+    return "\n".join(lines)
+
+
 def _build_chunk_prompt(
     state: WorkflowState,
     sql_block: str,
     chunk_index: int,
     total_chunks: int,
     start_line: int | None = None,
+    skeleton: str | None = None,
 ) -> str:
     """为单个 SQL 块构建审查 prompt（复用 code_review 模板）。
 
@@ -226,6 +252,7 @@ def _build_chunk_prompt(
       曾被判「语句不完整」（run 5 审查原话，假阳性 Critical）
     - validation_result 按块重算，整脚本校验发现不再进块 prompt
     - 头部标注本块对应完整脚本的起始行 + 行号口径声明
+    - 完整脚本骨架（skeleton）：跨块缺失/不一致类发现先对照骨架再报
     """
     skill = get_skill("code_review")
     validation_result = state.get("validation_result", {})
@@ -250,6 +277,8 @@ def _build_chunk_prompt(
         if start_line is not None:
             header += f"，对应完整脚本第 {start_line} 行起；校验结果行号为块内行号"
         header += "]\n\n"
+        if skeleton:
+            header += skeleton + "\n\n"
     return header + result.data.get("prompt", "")
 
 
@@ -1079,10 +1108,14 @@ def _parallel_review(state: WorkflowState, sql_content: str, req_name: str) -> s
         sql_content.count("\n") + 1,
     )
 
-    # 为每个块构建 prompt（块附带完整脚本起始行——刀① 行号对齐）
+    # 为每个块构建 prompt（块附带完整脚本起始行——刀① 行号对齐；
+    # 骨架注入——run 5 实录跨块假阳性 Critical 治理）
     prompts: list[tuple[int, str]] = []
     for idx, (block, start_line) in enumerate(blocks_with_offsets, 1):
-        prompt = _build_chunk_prompt(state, block, idx, total, start_line=start_line)
+        skeleton = _script_skeleton(sql_content, blocks_with_offsets, current_index=idx)
+        prompt = _build_chunk_prompt(
+            state, block, idx, total, start_line=start_line, skeleton=skeleton
+        )
         prompts.append((idx, prompt))
 
     # 并行执行 LLM 审查
