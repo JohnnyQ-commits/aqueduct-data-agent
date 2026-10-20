@@ -12,6 +12,7 @@ from ...memory.recall import KnowledgeRecall
 from ...memory.store import MemoryStore
 from ...skills.base import SkillContext
 from ...skills.registry import get_skill
+from ...utils.sql_engine import is_timeout_error, iter_engine_attempts
 from ..contract import gate_response
 from ..state import WorkflowState
 from .helpers import call_llm, extract_sql_block, save_artifact
@@ -314,11 +315,6 @@ _TIMESTAMP_LIKE = ("_tm", "_time", "_date", "_dt", "timestamp")
 # 慢队列下不够，明细表探查全灭 → 枚举目标落空。120 次 = 10 分钟。
 _PROBE_WAIT_ATTEMPTS = 120
 
-# 探查快车道引擎（run 4 实录 2026-10-19）：presto 16s vs MR 10 分钟超时；
-# presto 拒绝不兼容语法时原 SQL 回落 hive（引擎级回退，不改写语法）。
-_PROBE_ENGINE = "presto"
-_PROBE_FALLBACK_ENGINE = "hive"
-
 # 当日探查结果缓存 {(sql, 日期): (rows, err)}：同日分区数据不变，halt 重跑 /
 # 修复环复跑直接命中；只缓存成功结果（超时/失败可重试）
 _PROBE_CACHE: dict[tuple[str, str], tuple[list[list[Any]] | None, str]] = {}
@@ -381,20 +377,21 @@ def _run_probe(executor: Any, sql: str) -> tuple[list[list[Any]] | None, str]:
     """执行单条探查 SQL。返回 (rows, error)——失败 rows=None、error 非空
     （降级不抛，错误串供分区护栏等分支判定）。
 
-    探查快车道默认 presto（run 4 实录：同一探查 SQL MR 10 分钟超时 ×4 全灭，
-    presto 16s 返回）。presto 拒绝（不兼容 UDF/语法等非超时错误）时**原 SQL
-    回落 hive 引擎重试**——不改写语法，引擎级回退永远语义正确；超时不回落
-    （hive 只会更慢，白等一轮）。成功结果按 (sql, 当日) 缓存——halt 后重跑
-    不再白等一轮，失败不入缓存（恢复后可重试）。
+    探查快车道引擎链 presto→spark→hive（run 4 实录：同一探查 SQL MR 10 分钟
+    超时 ×4 全灭，presto 16s 返回；引擎链与转换语义见 utils/sql_engine）。
+    不兼容语法优先转换重试，超时立即中止整条链。成功结果按 (sql, 当日) 缓存
+    ——halt 后重跑不再白等一轮，失败不入缓存（恢复后可重试）。
     """
     from datetime import date
 
     cache_key = (sql, date.today().isoformat())
     if cache_key in _PROBE_CACHE:
         return _PROBE_CACHE[cache_key]
-    rows, err = _probe_once(executor, sql, _PROBE_ENGINE)
-    if rows is None and err and not _is_probe_timeout(err):
-        rows, err = _probe_once(executor, sql, _PROBE_FALLBACK_ENGINE)
+    rows, err = None, ""
+    for engine, attempt_sql in iter_engine_attempts(sql):
+        rows, err = _probe_once(executor, attempt_sql, engine)
+        if rows is not None or _is_probe_timeout(err):
+            break
     if rows is not None:
         _PROBE_CACHE[cache_key] = (rows, "")
     return rows, err
@@ -402,7 +399,7 @@ def _run_probe(executor: Any, sql: str) -> tuple[list[list[Any]] | None, str]:
 
 def _is_probe_timeout(err: str) -> bool:
     """探查错误是否为超时（超时未探查必须显式标注，不能冒充普通失败）。"""
-    return bool(re.search(r"任务超时|timeout", err or "", re.IGNORECASE))
+    return is_timeout_error(err)
 
 
 # 平台分区护栏（2026-10-16 UI 实录）：无分区过滤的探查 SQL 被平台拒绝

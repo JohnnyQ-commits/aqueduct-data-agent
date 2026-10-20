@@ -107,7 +107,7 @@ class SQLExecutorTool(BaseTool):
 
         for idx, sql in enumerate(sqls):
             start = time.time()
-            qr = self._tool.execute(sql)
+            qr = self._execute_with_engine_chain(sql)
             elapsed_ms = int((time.time() - start) * 1000)
 
             if qr.success:
@@ -144,6 +144,19 @@ class SQLExecutorTool(BaseTool):
                 "total_time_ms": total_time_ms,
             },
         )
+
+    def _execute_with_engine_chain(self, sql: str) -> Any:
+        """快车道执行单条 SQL（DQC 批量通道，2026-10-20 用户拍板）：引擎链
+        presto→spark→hive，不兼容先转换语法同引擎重试再降级；超时立即中止
+        整条链——后续引擎只会更慢。链序/转换见 utils/sql_engine。"""
+        from ..utils.sql_engine import is_timeout_error, iter_engine_attempts
+
+        last_qr = None
+        for engine, attempt_sql in iter_engine_attempts(sql):
+            last_qr = self._tool.execute(attempt_sql, engine=engine)
+            if last_qr.success or is_timeout_error(last_qr.error):
+                return last_qr
+        return last_qr
 
     def _execute_sql(self, sql: str, wait_attempts: int = 60, engine: str = "hive") -> ToolResult:
         """执行单条 SQL。wait_attempts 透传 dp_client（探查通道 120 = 10 分钟）；

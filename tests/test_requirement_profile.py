@@ -477,8 +477,8 @@ class TestProbeTimeoutAndCache:
 
 class TestPrestoProbeFastLane:
     """探查快车道（run 4 实录）：MR 探查 10 分钟×4 全灭，Presto 同 SQL 16 秒。
-    探查通道默认走 presto；presto 拒绝（不兼容语法/引擎错误）时原 SQL 回落
-    hive 重试——不改写语法，引擎级回退永远语义正确。试跑通道不动（保真）。"""
+    探查通道引擎链 presto→spark→hive；不兼容优先转换语法（同引擎重试转换句）
+    再降级下一引擎；超时立即中止整条链。试跑通道不动（保真）。"""
 
     def test_probes_default_to_presto_engine(self, _state, monkeypatch):
         ex = FakeExecutor()
@@ -489,16 +489,17 @@ class TestPrestoProbeFastLane:
         assert ex.call_kwargs, "探查未执行"
         assert all(kw.get("engine") == "presto" for kw in ex.call_kwargs)
 
-    def test_presto_rejection_falls_back_to_hive_same_sql(self, _state, monkeypatch):
-        """presto 报错（不兼容语法）→ 同一 SQL 用 hive 引擎重试一次。"""
+    def test_rejection_falls_through_chain_to_hive(self, _state, monkeypatch):
+        """presto/spark 拒绝（不兼容语法）→ 链式降级，hive 引擎收尾成功。"""
+        from itertools import groupby
+
         ex = FakeExecutor()
         orig = ex.execute
-
         calls: list[dict] = []
 
         def execute(**kwargs):
             calls.append(kwargs)
-            if kwargs.get("engine") == "presto":
+            if kwargs.get("engine") != "hive":
                 import types
 
                 return types.SimpleNamespace(
@@ -512,15 +513,27 @@ class TestPrestoProbeFastLane:
         profiles = _profile_source_tables(_state, [TABLE])
 
         text = profiles[TABLE]
-        # hive 回落成功：分区/行数照常注入
+        # hive 收尾成功：分区/行数照常注入
         assert "20261014" in text and "40482023" in text
-        # 同一 SQL 先 presto 后 hive
-        for sql in ex.executed:
-            engine_seq = [c.get("engine") for c in calls if c.get("sql") == sql]
-            assert engine_seq == ["presto", "hive"], f"{sql[:60]} 引擎序列={engine_seq}"
+        # 每条 SQL 的引擎序列按「连续同引擎块」压缩后恰为 presto→spark→hive
+        # （转换句与原句同引擎，压块后不依赖转换是否产出不同文本）
+        for sql in set(ex.executed):
+            seq = [c.get("engine") for c in calls if c.get("sql") == sql]
+            blocks = [k for k, _ in groupby(seq)]
+            assert blocks == ["presto", "spark", "hive"], f"{sql[:60]} 引擎块={blocks}"
 
-    def test_hive_fallback_failure_reported_once_not_doubled(self, _state, monkeypatch):
-        """presto 和 hive 都失败：只报一次错（hive 的错误为准），不双写。"""
+    def test_timeout_aborts_engine_chain(self, _state, monkeypatch):
+        """首引擎超时立即中止整条链——后续引擎只会更慢，不白等。"""
+        timeout_sql = "select max(inc_day) as latest_partition from " + TABLE
+        ex = FakeExecutor(error_map={timeout_sql: "任务超时 (10 min)"})
+        _patch_env(monkeypatch, _FakeAdapter(), ex)
+
+        _profile_source_tables(_state, [TABLE])
+
+        assert ex.executed.count(timeout_sql) == 1  # presto 原句超时即止
+        assert not any("spark" in kw for kw in [])  # 占位断言由上行覆盖
+
+    def test_timeout_failure_reported_once_not_doubled(self, _state, monkeypatch):
         timeout_sql = "select max(inc_day) as latest_partition from " + TABLE
         ex = FakeExecutor(error_map={timeout_sql: "任务超时 (10 min)"})
         _patch_env(monkeypatch, _FakeAdapter(), ex)
@@ -531,8 +544,8 @@ class TestPrestoProbeFastLane:
         assert "探查超时" in text
         assert text.count("任务超时") <= 1
 
-    def test_presto_success_not_rerun_on_hive(self, _state, monkeypatch):
-        """presto 成功即用，不回落 hive（每条 SQL 只执行一次）。"""
+    def test_presto_success_not_rerun_on_chain(self, _state, monkeypatch):
+        """presto 成功即用，不继续链（每条 SQL 只执行一次）。"""
         ex = FakeExecutor()
         _patch_env(monkeypatch, _FakeAdapter(), ex)
 

@@ -127,11 +127,14 @@ class TestExecutorBatch:
         tool = get_tool("executor")
         _ = tool._tool  # 触发延迟初始化
         mock_adapter = MagicMock()
-        mock_adapter.execute_hive_query.side_effect = [
-            {"status": "success", "data": [{"dup": 0}], "row_count": 1},
-            RuntimeError("Table not found"),
-            {"status": "success", "data": [{"cnt": 100}], "row_count": 1},
-        ]
+
+        def side_effect(sql, wait_attempts=60, engine="hive"):
+            if "nonexistent" in sql.lower():
+                # 引擎链下三引擎全拒，最终以 hive 错误为准记录失败
+                raise RuntimeError("Table not found")
+            return {"status": "success", "data": [{"cnt": 100}], "row_count": 1}
+
+        mock_adapter.execute_hive_query.side_effect = side_effect
         tool._hive_tool.adapter = mock_adapter
         tool._hive_tool._init_error = None
 
@@ -216,3 +219,60 @@ class TestWaitAttemptsPassthrough:
         assert result.success is True
         _, kwargs = mock_adapter.execute_hive_query.call_args
         assert kwargs.get("engine") == "presto"
+
+
+class TestBatchEngineChain:
+    """DQC 批量执行快车道（2026-10-20 用户拍板）：批量通道与探查同引擎链
+    presto→spark→hive，不兼容先转换后降级；超时立即中止整条链。"""
+
+    def _install_adapter(self, tool, side_effect):
+        from unittest.mock import MagicMock
+
+        mock_adapter = MagicMock()
+        mock_adapter.execute_hive_query.side_effect = side_effect
+        tool._hive_tool.adapter = mock_adapter
+        tool._hive_tool._init_error = None
+        return mock_adapter
+
+    def test_rejection_falls_through_engine_chain(self):
+        """presto/spark 拒绝 → 链式降级，hive 收尾成功；引擎块序 presto→spark→hive。"""
+        from itertools import groupby
+
+        tool = get_tool("executor")
+        _ = tool._tool
+        engines: list[str] = []
+
+        def side_effect(sql, wait_attempts=60, engine="hive"):
+            engines.append(engine)
+            if engine != "hive":
+                raise RuntimeError("Invalid function: X")
+            return {"status": "success", "data": [{"cnt": 1}], "row_count": 1}
+
+        self._install_adapter(tool, side_effect)
+        try:
+            result = tool.execute_batch(sqls=["select count(distinct a) from t"])
+        finally:
+            tool._hive_tool.adapter = None
+
+        assert result.data["passed"] == 1 and result.data["failed"] == 0
+        blocks = [k for k, _ in groupby(engines)]
+        assert blocks == ["presto", "spark", "hive"]
+
+    def test_timeout_aborts_chain(self):
+        """首引擎超时立即中止，不再白等后续引擎。"""
+        tool = get_tool("executor")
+        _ = tool._tool
+        engines: list[str] = []
+
+        def side_effect(sql, wait_attempts=60, engine="hive"):
+            engines.append(engine)
+            raise RuntimeError("任务超时 (5 min)")
+
+        self._install_adapter(tool, side_effect)
+        try:
+            result = tool.execute_batch(sqls=["select 1"])
+        finally:
+            tool._hive_tool.adapter = None
+
+        assert result.data["failed"] == 1
+        assert len(engines) == 1
