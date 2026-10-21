@@ -338,7 +338,9 @@ def _run_pipeline(
     if not out_dir.is_absolute():
         out_dir = settings.project_root / "output" / out_dir
     log_file_path = out_dir / f"task.{datetime.now():%Y-%m-%d}.log"
-    task_handler = setup_task_logging(req_name, log_file_path)
+    task_handler = setup_task_logging(
+        req_name, log_file_path, logger_name=__name__.split(".", 1)[0]
+    )
 
     logger.info("[task=%s] 管道启动: phases=%d", req_name, total)
 

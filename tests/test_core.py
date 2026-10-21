@@ -1233,3 +1233,29 @@ class TestNodeDdlFallbackContext:
         context = SkillContext(input={"design_scheme": "方案", "target_table": "dm.t"}, state={})
         result = DDLGenerateSkill().execute(context)
         assert "修复基础" not in result.data["prompt"]
+
+
+class TestPipelineTaskLogWiring:
+    """_run_pipeline 把任务日志 handler 挂到自身包根 logger。
+
+    run 6 实录：`from src.aqueduct...` 导入形态下 handler 曾硬挂
+    `aqueduct` logger，与模块 logger 的 `src.*` 树不同根——task log
+    0 字节，引擎链顺序/修复环行为不可观测。
+    """
+
+    def test_setup_task_logging_receives_package_root(self):
+        from src.aqueduct import core as core_mod
+
+        state = {
+            "requirement": "r",
+            "mode": "dev",
+            "metadata": {"requirement_name": "logwire"},
+            "errors": [],
+            "artifacts": [],
+        }
+        phases = [("req", MagicMock(side_effect=lambda s: s))]
+        with patch.object(core_mod, "setup_task_logging", return_value=None) as mock_setup:
+            _run_pipeline(state, phases)
+        pkg_root = core_mod.__name__.split(".", 1)[0]
+        mock_setup.assert_called_once()
+        assert mock_setup.call_args.kwargs.get("logger_name") == pkg_root

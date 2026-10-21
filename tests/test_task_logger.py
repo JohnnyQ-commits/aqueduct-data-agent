@@ -38,3 +38,33 @@ class TestSetupTaskLogging:
         blocker.write_text("i am a file", encoding="utf-8")
         handler = setup_task_logging("bad", blocker / "task.log")
         assert handler is None
+
+
+class TestLoggerNameParam:
+    """handler 可挂到指定包根 logger——src.aqueduct 导入形态路由。
+
+    run 6 实录：driver/测试用 `from src.aqueduct...` 导入时，模块 logger
+    全在 src.* 树上，handler 挂 aqueduct logger 收不到任何消息，task log
+    0 字节。core.py 现传入自身包根（__name__ 前缀），两棵树都可达。
+    """
+
+    def test_routes_messages_from_src_hierarchy(self, tmp_path):
+        log_path = tmp_path / "task.test.log"
+        handler = setup_task_logging("t", log_path, logger_name="src")
+        try:
+            assert handler is not None
+            logging.getLogger("src.aqueduct.core").info("src-tree-message")
+            for h in logging.getLogger("src").handlers:
+                h.flush()
+            assert "src-tree-message" in log_path.read_text(encoding="utf-8")
+        finally:
+            remove_task_handler(handler)
+
+    def test_logger_level_forced_to_info(self, tmp_path):
+        """包根 logger level 置 INFO，API 调用（不经 CLI）不丢 INFO。"""
+        log_path = tmp_path / "task.test2.log"
+        handler = setup_task_logging("t", log_path, logger_name="src")
+        try:
+            assert logging.getLogger("src").level == logging.INFO
+        finally:
+            remove_task_handler(handler)
