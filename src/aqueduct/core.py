@@ -288,6 +288,23 @@ def _run_fix_loop(state: WorkflowState) -> WorkflowState:
                 exc_info=True,
             )
 
+        # run 7 实录：回写后工具链产物联动刷新——校验报告/血缘图/成本预警
+        # 曾停留在修前快照（校验报告引用已消失的旧别名，审查判"过期信息"，
+        # state 的 validation_result 同样陈旧并污染复审 prompt）。试跑报告
+        # 不刷：平台调用昂贵且 Phase 4 有专属 trialfix 环，不在修复环重复。
+        from .engine.nodes.sql import _auto_cost_estimate, _auto_lineage_async, _auto_validate
+
+        try:
+            _auto_validate(state, canonical_sql_file)
+            _auto_lineage_async(state, canonical_sql_file)
+            _auto_cost_estimate(state, canonical_sql_file)
+        except Exception:
+            logger.warning(
+                "[task=%s] 修复循环: 工具链产物刷新失败（交付物可能停留在修前版本）",
+                req_name,
+                exc_info=True,
+            )
+
     logger.info(
         "[task=%s] 修复循环完成: fix_iterations=%d, fixed_sql=%d 字符",
         req_name,

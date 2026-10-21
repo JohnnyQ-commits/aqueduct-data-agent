@@ -396,6 +396,94 @@ class TestFixLoopZeroChange:
         mock_followup.assert_called_once()
 
 
+class TestFixLoopArtifactRefresh:
+    """run 7 实录：修复环回写规范文件后未刷新工具链产物——校验报告停留在
+    修前快照（引用已消失的 t. 别名，审查判为"过期信息"），state 里
+    validation_result 同样陈旧并污染复审 prompt。修法：修复被接受并回写
+    规范文件后，联动重跑确定性产物（校验报告/成本预警）+ 异步血缘；试跑
+    不刷（平台调用昂贵且 Phase 4 有专属 trialfix 环，不在修复环重复）。"""
+
+    @staticmethod
+    def _make_state(sql_file: str, output_dir: str) -> dict:
+        return {
+            "requirement": "test",
+            "mode": "dev",
+            "metadata": {"requirement_name": "test_req", "output_dir": output_dir},
+            "errors": [],
+            "artifacts": [],
+            # linter 1 Critical（SELECT *）；长度 >50 过 is_valid_sql 兜底
+            "sql_content": (
+                "select * from dm_tc_waybillinfo.dwd_order_info where inc_day = '20260101'"
+            ),
+            "sql_file": sql_file,
+            "_review_issues": [{"severity": "Critical", "message": "使用了 SELECT *"}],
+            "_needs_fix_loop": True,
+            "fix_iterations": 0,
+        }
+
+    _FIXED_SQL = (
+        "select order_id, dept_code from dm_tc_waybillinfo.dwd_order_info "
+        "where inc_day = '20260101'"
+    )
+
+    @patch("src.aqueduct.engine.nodes.sql._auto_cost_estimate")
+    @patch("src.aqueduct.engine.nodes.sql._auto_lineage_async")
+    @patch("src.aqueduct.engine.nodes.helpers.call_llm")
+    def test_artifacts_refreshed_after_accepted_fix(
+        self, mock_llm, mock_lineage, mock_cost, tmp_path
+    ):
+        """修复被接受并回写规范文件后：校验报告按新 SQL 重新生成、
+        validation_result 更新、血缘/成本联动重跑。"""
+        mock_llm.return_value = self._FIXED_SQL
+        canonical = tmp_path / "Phase4-test_req.sql"
+        canonical.write_text("select * from dm_tc_waybillinfo.dwd_order_info", encoding="utf-8")
+        state = self._make_state(str(canonical), str(tmp_path))
+
+        with patch("src.aqueduct.config.settings.get_settings") as mock_settings:
+            mock_settings.return_value.max_fix_iterations = 2
+            result = _run_fix_loop(state)
+
+        assert result["sql_content"] == self._FIXED_SQL
+        # 校验报告按修复后 SQL 重新生成：0 ERROR（修前 SELECT * 是 1 ERROR）
+        report = (tmp_path / "Phase4-SQL校验报告.md").read_text(encoding="utf-8")
+        assert "0 个" in report, "校验报告应反映修复后 SQL（0 ERROR）"
+        assert result["validation_result"].get("error_count") == 0
+        # 血缘/成本联动重跑（传入规范文件路径）
+        mock_lineage.assert_called_once()
+        mock_cost.assert_called_once()
+
+    @patch("src.aqueduct.engine.nodes.sql._auto_cost_estimate")
+    @patch("src.aqueduct.engine.nodes.sql._auto_lineage_async")
+    @patch("src.aqueduct.engine.nodes.helpers.call_llm")
+    def test_rejected_fix_skips_refresh(self, _mock_llm, mock_lineage, mock_cost, tmp_path):
+        """修复被 re-lint 门禁拒绝（越修越多 1→2 Critical）：保留原 SQL，
+        不触发任何产物刷新。"""
+        # 修前 1 Critical（裸除法）；修后 2 Critical（SELECT * + 裸除法）→ 回退
+        _mock_llm.return_value = (
+            "select * from dm_tc_waybillinfo.dwd_order_info where a / b > 0 "
+            "and inc_day = '20260101'"
+        )
+        canonical = tmp_path / "Phase4-test_req.sql"
+        canonical.write_text(
+            "select a / b from dm_tc_waybillinfo.dwd_order_info where inc_day = '20260101'",
+            encoding="utf-8",
+        )
+        state = self._make_state(str(canonical), str(tmp_path))
+        state["sql_content"] = (
+            "select a / b from dm_tc_waybillinfo.dwd_order_info where inc_day = '20260101'"
+        )
+        state["_review_issues"] = [{"severity": "Critical", "message": "除法未保护"}]
+
+        with patch("src.aqueduct.config.settings.get_settings") as mock_settings:
+            mock_settings.return_value.max_fix_iterations = 2
+            result = _run_fix_loop(state)
+
+        assert "select a / b" in result["sql_content"], "re-lint 回退应保留原 SQL"
+        assert not (tmp_path / "Phase4-SQL校验报告.md").exists(), "被拒修复不得刷新校验报告"
+        mock_lineage.assert_not_called()
+        mock_cost.assert_not_called()
+
+
 class TestFixFeedbackHardening:
     """刀② 修复反馈保真度（run 5 复盘，2026-09-18）。
 
