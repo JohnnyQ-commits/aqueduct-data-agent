@@ -400,3 +400,27 @@ class TestNodeRequirementSplit:
         assert "Phase3-表结构.sql" in saved
         assert state["metadata"]["ddl_done"] == "true"
         assert errors == []
+
+    def test_inconsistent_fallback_stores_hint(self):
+        """run 6 实录 P1：修复后仍缺字段 → 丢弃 B 回退 Phase 3 时必须落
+        ddl_fallback_hint（缺失字段清单 + 需求侧 DDL 草稿），Phase 3 以草稿
+        为修复基础补齐，不再从零另起炉灶与 SQL 各说各话。"""
+        _, saved, _errors, state = _run_split(
+            _req_state(), [_A_RESPONSE], [_B_RESPONSE_NO_CITY, _B_RESPONSE_NO_CITY]
+        )
+
+        assert "Phase3-表结构.sql" not in saved
+        hint = state.get("ddl_fallback_hint")
+        assert hint, "降级时必须落 ddl_fallback_hint"
+        assert "city" in hint["missing_fields"]
+        assert "CREATE TABLE" in hint["ddl_draft"], "缺失字段的 B 草稿应作为修复基础"
+
+    def test_b_gen_failure_stores_hint_without_draft(self):
+        """B 生成直接失败（无草稿）→ hint 只带失败原因，draft 为空。"""
+        _, saved, _, state = _run_split(_req_state(), [_A_RESPONSE], [_B_RESPONSE_NO_BLOCK])
+
+        assert "Phase3-表结构.sql" not in saved
+        hint = state.get("ddl_fallback_hint")
+        assert hint, "B 失败回退同样要落 hint"
+        assert hint.get("ddl_draft") == ""
+        assert hint.get("reason"), "失败原因供 Phase 3 prompt 交代上下文"

@@ -952,3 +952,70 @@ class TestCheckUnsupportedFunctions:
         v.lines = ["select a / nullif(b, 0) as ratio from t;"]
         v.check_division()
         assert any("除法" in r["message"] for r in v.results)
+
+
+class TestPartitionBoundGuard:
+    """检查 12: 分区谓词上界必须带下界（run 6 实录）。
+
+    维表取最新分区写法 `where inc_day <= '${bizdate}'` 无剪枝下界，单维表
+    扫 3209 个分区撞平台护栏 PartitionOverLimitException (max 400)——
+    试跑通道 Phase 4.5 才炸（每轮修复环重试一次）。静态校验应在生成后
+    秒级拦住：等值放行；年份窗口（有下界）放行；裸上界拦截并给出两种
+    正确形态。
+    """
+
+    def _bound_issues(self, content: str) -> list[dict]:
+        v = Validator("", content=content)
+        v.run()
+        return [r for r in v.results if "下界" in r["message"] or "上界" in r["message"]]
+
+    def test_unbounded_upper_bound_flagged(self):
+        sql = (
+            "insert overwrite table dm.t partition (inc_day = '${bizdate}')\n"
+            "select a.dept_code, d.dept_name\n"
+            "from dm.f a\n"
+            "left join (\n"
+            "    select dept_code, dept_name from dim.dim_info\n"
+            "    where inc_day <= '${bizdate}'\n"
+            ") d on a.dept_code = d.dept_code\n"
+            "where a.inc_day = '${bizdate}'\n"
+        )
+        issues = self._bound_issues(sql)
+        assert issues, "无下界的 inc_day <= 应被拦截"
+        assert issues[0]["level"] == "ERROR"
+        assert "年份窗口" in issues[0]["message"], "必须给出替代写法"
+
+    def test_max_subquery_unbounded_flagged(self):
+        """run 6 原形：max(inc_day) 子查询 + inc_day <= 关联。"""
+        sql = (
+            "select t.dept_code, d.dept_name\n"
+            "from dm.t t\n"
+            "left join (\n"
+            "    select dd.dept_code, dd.dept_name\n"
+            "    from dim.dim_info dd\n"
+            "    join (select max(inc_day) as max_inc_day from dim.dim_info\n"
+            "          where inc_day <= '${bizdate}') m\n"
+            "        on dd.inc_day = m.max_inc_day\n"
+            ") d on t.dept_code = d.dept_code\n"
+            "where t.inc_day = '${bizdate}'\n"
+        )
+        issues = self._bound_issues(sql)
+        assert issues, "维表 max+<= 无下界应被拦截"
+        assert issues[0]["line"] == 7, "行号应指向 inc_day <= 所在行"
+
+    def test_year_window_lower_bound_not_flagged(self):
+        sql = (
+            "select dd.dept_code from dim.dim_info dd\n"
+            "join (select max(inc_day) as max_inc_day from dim.dim_info\n"
+            "      where inc_day >= '20260101' and inc_day <= '${bizdate}') m\n"
+            "    on dd.inc_day = m.max_inc_day;\n"
+        )
+        assert self._bound_issues(sql) == [], "年份窗口（有下界）放行"
+
+    def test_equality_not_flagged(self):
+        sql = "select a.dept_code from dm.f a where a.inc_day = '${bizdate}';\n"
+        assert self._bound_issues(sql) == [], "等值过滤是标准写法"
+
+    def test_comment_only_occurrence_ignored(self):
+        sql = "-- 历史写法: where inc_day <= '${bizdate}'\nselect 1 as x from t;\n"
+        assert self._bound_issues(sql) == []

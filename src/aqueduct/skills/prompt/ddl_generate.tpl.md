@@ -22,6 +22,11 @@
 
 - 设计方案: $design_scheme
 - 目标表名: $target_table
+- 需求理解摘要: $requirement_summary
+- 源表结构（字段命名以此为准）: $table_schemas
+- 数据探查发现（实测行数/枚举/空值，字段口径以此为据）: $table_profiles
+
+$ddl_fallback_note
 
 > **注意**：如果目标表名以 `tmp_` 开头，说明是从需求名自动生成的临时表名。请在 DDL 中使用此表名，但在表注释中标注"表名待业务方确认"。
 

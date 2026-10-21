@@ -1119,3 +1119,117 @@ class TestSqlDevelopDeliveryCompleteness:
         assert "insert overwrite" in tpl
         assert "逐表" in tpl, "必须要求产出表逐表清点交付"
         assert "禁止遗漏" in tpl and "insert" in tpl, "必须显式禁止只交付部分目标表"
+
+
+class TestNodeDdlFallbackContext:
+    """run 6 实录 P1：Phase 3 独立生成与 SQL 各说各话（DDL 字段体系与
+    SQL 别名脱节 → 对齐审查炸 16 Critical）。修法：探查上下文 + 降级
+    线索（ddl_fallback_hint）注入 Phase 3——草稿为修复基础，不从零另起。"""
+
+    @staticmethod
+    def _make_state(**extra) -> dict:
+        state = {
+            "requirement": "test",
+            "mode": "dev",
+            "metadata": {"requirement_name": "test_req"},
+            "errors": [],
+            "artifacts": [],
+            "design_scheme": "### 字段映射\n| pickup_waybill_cnt | pickup_guid | 去重 |",
+            "requirement_summary": "统计各网点收派件量",
+            "table_schemas": {"dm.src": "表: dm.src\n字段: dept_code"},
+            "table_profiles": {"dm.src": "行数 36,951,183（20261019）"},
+        }
+        state.update(extra)
+        return state
+
+    def test_node_ddl_passes_profiles_and_schemas(self):
+        """Phase 3 独立生成时 skill 上下文必须带探查/摘要/表结构。"""
+        from src.aqueduct.engine.nodes import ddl as ddl_mod
+
+        captured: dict = {}
+
+        class FakeSkill:
+            def execute(self, context):
+                captured.update(context.input or {})
+                return type("R", (), {"success": True, "data": {"prompt": "p"}, "error": ""})()
+
+        with (
+            patch.object(ddl_mod, "get_skill", return_value=FakeSkill()),
+            patch(
+                "src.aqueduct.engine.nodes.ddl.call_llm",
+                return_value="```sql\nCREATE TABLE t (id bigint)\n```",
+            ),
+            patch(
+                "src.aqueduct.engine.nodes.ddl.save_artifact",
+                side_effect=lambda s, n, c: f"output/{n}",
+            ),
+        ):
+            ddl_mod.node_ddl(self._make_state())
+
+        assert captured.get("table_schemas"), "表结构应注入 Phase 3"
+        assert captured.get("table_profiles"), "数据探查发现应注入 Phase 3"
+        assert captured.get("requirement_summary")
+
+    def test_node_ddl_forwards_fallback_hint(self):
+        """Phase 1 降级线索透传给 skill（缺失字段 + 草稿）。"""
+        from src.aqueduct.engine.nodes import ddl as ddl_mod
+
+        captured: dict = {}
+
+        class FakeSkill:
+            def execute(self, context):
+                captured.update(context.input or {})
+                return type("R", (), {"success": True, "data": {"prompt": "p"}, "error": ""})()
+
+        hint = {
+            "missing_fields": ["pickup_waybill_cnt"],
+            "ddl_draft": "CREATE TABLE dm.t (dept_code string)",
+            "reason": "DDL 与设计方案字段映射不一致",
+        }
+        with (
+            patch.object(ddl_mod, "get_skill", return_value=FakeSkill()),
+            patch(
+                "src.aqueduct.engine.nodes.ddl.call_llm",
+                return_value="```sql\nCREATE TABLE t (id bigint)\n```",
+            ),
+            patch(
+                "src.aqueduct.engine.nodes.ddl.save_artifact",
+                side_effect=lambda s, n, c: f"output/{n}",
+            ),
+        ):
+            ddl_mod.node_ddl(self._make_state(ddl_fallback_hint=hint))
+
+        assert captured.get("ddl_fallback_hint") == hint
+
+    def test_skill_renders_hint_as_repair_base(self):
+        """skill 层：hint 渲染为「草稿为修复基础 + 缺失字段警示」prompt 段。"""
+        from src.aqueduct.skills.base import SkillContext
+        from src.aqueduct.skills.ddl_generate import DDLGenerateSkill
+
+        hint = {
+            "missing_fields": ["pickup_waybill_cnt", "scattered_pickup_ratio"],
+            "ddl_draft": "CREATE TABLE dm.t (dept_code string)",
+            "reason": "DDL 与设计方案字段映射不一致",
+        }
+        context = SkillContext(
+            input={
+                "design_scheme": "### 字段映射\n| pickup_waybill_cnt | guid | 去重 |",
+                "target_table": "dm.t",
+                "ddl_fallback_hint": hint,
+            },
+            state={},
+        )
+        result = DDLGenerateSkill().execute(context)
+        prompt = result.data["prompt"]
+        assert "CREATE TABLE dm.t (dept_code string)" in prompt, "草稿全文应进 prompt"
+        assert "pickup_waybill_cnt" in prompt and "scattered_pickup_ratio" in prompt
+        assert "修复基础" in prompt, "必须声明草稿是修复基础而非另起炉灶"
+
+    def test_skill_without_hint_unchanged(self):
+        """无 hint（正常路径）不渲染草稿段——零污染。"""
+        from src.aqueduct.skills.base import SkillContext
+        from src.aqueduct.skills.ddl_generate import DDLGenerateSkill
+
+        context = SkillContext(input={"design_scheme": "方案", "target_table": "dm.t"}, state={})
+        result = DDLGenerateSkill().execute(context)
+        assert "修复基础" not in result.data["prompt"]

@@ -396,6 +396,50 @@ class Validator:
                     i,
                 )
 
+    def check_partition_bound(self) -> None:
+        """检查 12: 分区谓词上界必须带下界（run 6 实录，ERROR）。
+
+        维表取最新分区写法 `where inc_day <= '${bizdate}'` 无剪枝下界，
+        单维表扫 3209 个分区撞平台护栏 PartitionOverLimitException
+        (max 400)——试跑通道 Phase 4.5 才炸且每轮修复环重试一次。静态
+        拦截：等值/年份窗口（有下界）放行，裸上界拦截并给出两种正确形态。
+
+        作用域取**最内层括号块**：同一语句里事实子查询的 `inc_day =`
+        不能替维表子查询的 `inc_day <=` 担保下界。
+        """
+        _RE_FIELD_BOUND = re.compile(r"\b(inc_day|data_day|day)\b\s*<=?\s*['\"${\w]", re.IGNORECASE)
+        text = re.sub(r"--[^\n]*", "", self.content)  # 剥行注释，保换行
+
+        def _enclosing_span(pos: int) -> tuple[int, int]:
+            """包含 pos 的最内层括号块；不在括号内返回全文范围。"""
+            best: tuple[int, int] | None = None
+            stack: list[int] = []
+            for idx, ch in enumerate(text):
+                if ch == "(":
+                    stack.append(idx)
+                elif ch == ")" and stack:
+                    s = stack.pop()
+                    if s < pos < idx and (best is None or s > best[0]):
+                        best = (s, idx)
+            return best if best else (0, len(text))
+
+        def _has_lower_or_eq(block: str, field: str) -> bool:
+            return re.search(rf"\b{field}\b\s*(>=|>|=)", block, re.IGNORECASE) is not None
+
+        for m in _RE_FIELD_BOUND.finditer(text):
+            field = m.group(1).lower()
+            start, end = _enclosing_span(m.start())
+            if _has_lower_or_eq(text[start:end], field):
+                continue
+            line_num = text.count("\n", 0, m.start()) + 1
+            self._log(
+                "ERROR",
+                f"分区谓词 {field} 只带上界（<=/<）无下界，将全分区扫描撞平台护栏"
+                f"（PartitionOverLimitException max 400）。改为等值 {field} = '${{bizdate}}'，"
+                f"或年份窗口 {field} >= '当年年初' AND {field} <= '${{bizdate}}'（剪枝后分区数可控）",
+                line_num,
+            )
+
     def run(self) -> dict[str, Any]:
         """执行全部校验，返回结构化报告。
 
@@ -422,6 +466,7 @@ class Validator:
         self.check_cross_join()
         self.check_tmp_database()
         self.check_unsupported_functions()
+        self.check_partition_bound()
 
         return {
             "filename": self.filepath.name if self._content is None else "<content>",

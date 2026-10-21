@@ -824,8 +824,15 @@ def node_requirement(state: WorkflowState) -> WorkflowState:
             ddl_content, ddl_error = b_future.result()
 
         if ddl_error:
-            # B 失败不炸管道：ddl_content 为空 → Phase 3 独立生成节点接管
+            # B 失败不炸管道：ddl_content 为空 → Phase 3 独立生成节点接管。
+            # run 6 实录 P1：降级线索（失败原因）落 hint 供 Phase 3 prompt
+            # 交代上下文，Phase 3 不再对降级一无所知
             state.setdefault("errors", []).append(ddl_error)
+            state["ddl_fallback_hint"] = {
+                "missing_fields": [],
+                "ddl_draft": "",
+                "reason": ddl_error,
+            }
 
         # A 响应拆分（二合一响应无 SQL 块，DDL 一律来自 B）
         def _split_pair(resp: str) -> dict[str, str]:
@@ -884,6 +891,14 @@ def node_requirement(state: WorkflowState) -> WorkflowState:
                         req_name,
                         "、".join(miss_fields),
                     )
+                    # run 6 实录 P1：丢弃 B 草稿 = Phase 3 从零另起炉灶，DDL
+                    # 字段体系与 SQL 别名脱节 → 对齐审查炸 16 Critical。落
+                    # hint（缺失清单 + 草稿全文）供 Phase 3 以草稿为修复基础
+                    state["ddl_fallback_hint"] = {
+                        "missing_fields": list(miss_fields),
+                        "ddl_draft": ddl_content,
+                        "reason": "DDL 与设计方案字段映射不一致",
+                    }
                     ddl_content = ""
 
         # 保存需求理解摘要

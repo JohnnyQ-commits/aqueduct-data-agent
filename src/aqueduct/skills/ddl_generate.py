@@ -56,6 +56,37 @@ def _resolve_target_table(context: SkillContext) -> str:
     return "dw_demo.tmp_target_table"
 
 
+def _render_fallback_note(hint: dict) -> str:
+    """降级线索（ddl_fallback_hint）渲染为 prompt 段；空 hint 返回空串。
+
+    run 6 实录 P1：Phase 1 需求侧 DDL 一致性门禁降级后，Phase 3 曾对降级
+    一无所知、从零另起炉灶——字段体系与 SQL 别名脱节。hint 带缺失字段
+    清单 + B 路径草稿全文，声明草稿是修复基础而非参考。
+    """
+    if not isinstance(hint, dict):
+        return ""
+    reason = hint.get("reason", "")
+    missing = hint.get("missing_fields") or []
+    draft = hint.get("ddl_draft") or ""
+    if not (reason or missing or draft):
+        return ""
+    lines = ["---", "", "⚠️ **Phase 1 降级线索**：需求侧 DDL 直出失败，本次生成是承接修复。"]
+    if reason:
+        lines.append(f"- 失败原因：{reason}")
+    if missing:
+        lines.append(f"- 缺失字段（必须补齐）：{'、'.join(str(f) for f in missing)}")
+    if draft:
+        lines += [
+            "- 以下草稿是**修复基础**——在草稿上补齐缺失字段、修正不一致命名，"
+            "字段命名必须与设计方案映射逐字对齐，**禁止另起炉灶重新命名**：",
+            "",
+            "```sql",
+            draft,
+            "```",
+        ]
+    return "\n".join(lines)
+
+
 @register_skill
 class DDLGenerateSkill(BaseSkill):
     """DDL 生成 Skill — 注册到全局 Skill 注册中心。"""
@@ -74,14 +105,36 @@ class DDLGenerateSkill(BaseSkill):
           3. 校验 DDL 规范（分区、存储格式、注释）
         """
         inp = context.input if isinstance(context.input, dict) else {}
+        state = context.state
 
-        design_scheme = inp.get("design_scheme") or context.state.get("design_scheme", "")
+        design_scheme = inp.get("design_scheme") or state.get("design_scheme", "")
         target_table = _resolve_target_table(context)
+
+        # run 6 实录 P1：探查上下文 + 降级线索注入 prompt——DDL 与 SQL 同源
+        schemas = inp.get("table_schemas") or state.get("table_schemas") or {}
+        schemas_text = (
+            "\n\n".join(str(v) for v in schemas.values())
+            if isinstance(schemas, dict)
+            else str(schemas)
+        ) or "未获取"
+        profiles = inp.get("table_profiles") or state.get("table_profiles") or {}
+        profiles_text = (
+            "\n\n".join(str(v) for v in profiles.values())
+            if isinstance(profiles, dict)
+            else str(profiles)
+        ) or "未获取"
+        fallback_note = _render_fallback_note(inp.get("ddl_fallback_hint") or {})
 
         # 加载 Prompt 模板
         prompt = self.load_prompt_template(
             design_scheme=design_scheme,
             target_table=target_table,
+            requirement_summary=inp.get("requirement_summary")
+            or state.get("requirement_summary", "")
+            or "未获取",
+            table_schemas=schemas_text,
+            table_profiles=profiles_text,
+            ddl_fallback_note=fallback_note,
         )
 
         return SkillResult(

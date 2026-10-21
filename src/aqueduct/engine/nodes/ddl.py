@@ -41,10 +41,18 @@ def node_ddl(state: WorkflowState) -> WorkflowState:
 
     try:
         skill = get_skill("ddl_generate")
+        # run 6 实录 P1：独立生成曾是信息黑洞（只有设计方案）——DDL 字段
+        # 体系与 SQL 别名脱节 → 对齐审查炸 16 Critical。探查上下文 + 降级
+        # 线索（ddl_fallback_hint：缺失字段清单 + 需求侧 DDL 草稿）全部注入，
+        # 草稿为修复基础，DDL 与 SQL 同源
         context = SkillContext(
             input={
                 "design_scheme": state.get("design_scheme", ""),
                 "domain_context": state.get("domain_context", ""),
+                "table_schemas": state.get("table_schemas", {}),
+                "table_profiles": state.get("table_profiles", {}),
+                "requirement_summary": state.get("requirement_summary", ""),
+                "ddl_fallback_hint": state.get("ddl_fallback_hint") or {},
             },
             state=state,
         )
