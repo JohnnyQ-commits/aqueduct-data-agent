@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from typing import TypedDict
@@ -422,6 +423,30 @@ def _auto_execute_dqc(state: WorkflowState, dqc_sql: str) -> None:
         state["dqc_execution_reason"] = "执行异常"
 
 
+def _finalize_dqc_stmt(lines: list[str]) -> str:
+    """用例收尾：剥语句终结分号 + 调度参数哨兵替换。
+
+    run 8 实录（2026-10-21，22 failed 解剖）：DQC 模板每条用例是
+    `SQL` + `;` 行 + `-- 预期:` 注释行——rstrip(";") 只剥字符串末尾
+    （末尾是注释），夹在中间的 `;` 原样进引擎 → ParseException
+    `near ';' <EOF>`；占位符 '${bizdate}' 未替换直接进引擎（试跑通道
+    有哨兵替换，DQC 通道没对齐）。两种形态都让检查 SQL 的真实可执行性
+    验证失效，报告全是无信息量语法错。
+    """
+    sql = "\n".join(lines).strip()
+    # 剥语句终结分号：行尾分号（含 `;` 独立行），字符串字面量内分号不受影响
+    # （DQC SQL 由本框架模板生成，行尾分号即终结符）
+    sql = re.sub(r";\s*(?:--.*)?$", "", sql, flags=re.MULTILINE)
+    sql = sql.strip()
+    # 调度参数哨兵（对齐试跑通道，sql.py 两段式替换同源）：先带引号形态
+    # 再裸占位补引号，避免产出 ''...'' 非法字面量
+    from .sql import _RE_SCHED_PARAM, _RE_SCHED_PARAM_QUOTED, _TRIAL_PARAM_SENTINEL
+
+    sql = _RE_SCHED_PARAM_QUOTED.sub(f"'{_TRIAL_PARAM_SENTINEL}'", sql)
+    sql = _RE_SCHED_PARAM.sub(f"'{_TRIAL_PARAM_SENTINEL}'", sql)
+    return sql
+
+
 def _parse_dqc_sql(dqc_sql: str) -> list[dict[str, str]]:
     """解析 DQC SQL，按 '-- [' 注释拆分为多条测试用例。"""
     test_cases: list[dict[str, str]] = []
@@ -433,7 +458,7 @@ def _parse_dqc_sql(dqc_sql: str) -> list[dict[str, str]]:
         if stripped.startswith("-- ["):
             # 保存前一条
             if current_name and current_lines:
-                sql = "\n".join(current_lines).strip().rstrip(";")
+                sql = _finalize_dqc_stmt(current_lines)
                 if sql:
                     test_cases.append({"name": current_name, "sql": sql})
             current_name = stripped
@@ -443,7 +468,7 @@ def _parse_dqc_sql(dqc_sql: str) -> list[dict[str, str]]:
 
     # 保存最后一条
     if current_name and current_lines:
-        sql = "\n".join(current_lines).strip().rstrip(";")
+        sql = _finalize_dqc_stmt(current_lines)
         if sql:
             test_cases.append({"name": current_name, "sql": sql})
 
